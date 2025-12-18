@@ -1,24 +1,39 @@
 import type { Express } from "express";
-import { createServer, type Server } from "http";
+import type { Server } from "http";
 import multer from "multer";
 import * as XLSX from "xlsx";
 import Papa from "papaparse";
-import { storage, processCallRecords, generateCSV } from "./storage";
+import fs from "fs";
+import path from "path";
 
-const upload = multer({ storage: multer.memoryStorage() });
+import { storage, processCallRecords, generateCSV, applyRecordFilters, computeAnalysisMeta } from "./storage";
+import type { RecordsFilter } from "@shared/schema";
 
-export async function registerRoutes(
-  httpServer: Server,
-  app: Express
-): Promise<Server> {
-  
+// Guardamos archivos temporales en disco para no cargar todo en RAM.
+const UPLOAD_TMP_DIR = path.resolve(process.cwd(), "uploads_tmp");
+if (!fs.existsSync(UPLOAD_TMP_DIR)) {
+  fs.mkdirSync(UPLOAD_TMP_DIR, { recursive: true });
+}
+
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, UPLOAD_TMP_DIR),
+    filename: (_req, file, cb) => {
+      const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
+      cb(null, `${Date.now()}_${Math.random().toString(16).slice(2)}_${safe}`);
+    },
+  }),
+});
+
+export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
+  app.get("/api/health", (_req, res) => res.json({ ok: true }));
+  app.get("/health", (_req, res) => res.json({ ok: true }));
+
+  // 1) Upload a disco + parseo + store (pero respuesta liviana)
   app.post("/api/upload", upload.array("files"), async (req, res) => {
     try {
       const files = req.files as Express.Multer.File[];
-      
-      if (!files || files.length === 0) {
-        return res.status(400).json({ message: "No se recibieron archivos" });
-      }
+      if (!files || files.length === 0) return res.status(400).json({ message: "No se recibieron archivos" });
 
       const allRecords: Record<string, any>[] = [];
 
@@ -28,20 +43,16 @@ export async function registerRoutes(
 
         try {
           if (fileName.endsWith(".csv") || fileName.endsWith(".txt")) {
-            const content = file.buffer.toString("latin1");
+            const content = fs.readFileSync(file.path, { encoding: "latin1" });
             const result = Papa.parse(content, {
               header: true,
               skipEmptyLines: true,
               dynamicTyping: true,
             });
             records = result.data as Record<string, any>[];
-          } else if (
-            fileName.endsWith(".xlsx") ||
-            fileName.endsWith(".xlsm") ||
-            fileName.endsWith(".xlsb") ||
-            fileName.endsWith(".xls")
-          ) {
-            const workbook = XLSX.read(file.buffer, { type: "buffer" });
+          } else if (fileName.endsWith(".xlsx") || fileName.endsWith(".xls")) {
+            const buf = fs.readFileSync(file.path);
+            const workbook = XLSX.read(buf, { type: "buffer" });
             const sheetName = workbook.SheetNames[0];
             const worksheet = workbook.Sheets[sheetName];
             records = XLSX.utils.sheet_to_json(worksheet);
@@ -51,165 +62,93 @@ export async function registerRoutes(
           }
 
           allRecords.push(...records);
-        } catch (parseError) {
-          console.error(`Error parsing ${fileName}:`, parseError);
+        } finally {
+          // Limpieza
+          try {
+            if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+          } catch {}
         }
       }
 
-      if (allRecords.length === 0) {
-        return res.status(400).json({ message: "No se pudieron leer datos de los archivos" });
-      }
+      if (allRecords.length === 0) return res.status(400).json({ message: "No se pudieron leer datos" });
 
       const analysisResult = processCallRecords(allRecords);
       await storage.storeAnalysis(analysisResult);
 
-      res.json(analysisResult);
+      // ✅ Respuesta liviana: NO devolvemos rawRecords
+      const { rawRecords: _raw, ...summary } = analysisResult;
+      res.json(summary);
     } catch (error) {
-      console.error("Error processing upload:", error);
-      res.status(500).json({ message: "Error interno al procesar los archivos" });
+      console.error(error);
+      res.status(500).json({ message: "Error interno al procesar archivos" });
     }
   });
 
-  app.post("/api/export/resumen", async (req, res) => {
-    try {
-      const { analysisId } = req.body;
-      const analysis = await storage.getAnalysis(analysisId);
-
-      if (!analysis) {
-        return res.status(404).json({ message: "Análisis no encontrado" });
-      }
-
-      const data = analysis.aniSummaries.map((s) => ({
-        ANI: s.ani,
-        intentos_totales: s.intentosTotales,
-        intentos_answer_agent: s.intentosAnswerAgent,
-        intentos_answering_machine: s.intentosAnsweringMachine,
-        intentos_no_answer: s.intentosNoAnswer,
-        intentos_busy: s.intentosBusy,
-        intentos_unallocated: s.intentosUnallocated,
-        intentos_rejected: s.intentosRejected,
-        primer_llamado: s.primerLlamado || "",
-        ultimo_llamado: s.ultimoLlamado || "",
-        tag_telefono: s.tagTelefono,
-      }));
-
-      const csv = generateCSV(data);
-
-      res.setHeader("Content-Type", "text/csv; charset=utf-8");
-      res.setHeader("Content-Disposition", "attachment; filename=resumen_por_ani.csv");
-      res.send(csv);
-    } catch (error) {
-      console.error("Error exporting resumen:", error);
-      res.status(500).json({ message: "Error al exportar" });
-    }
+  // 2) Meta para poblar filtros del frontend
+  app.get("/api/analysis/:id/meta", async (req, res) => {
+    const analysis = await storage.getAnalysis(req.params.id);
+    if (!analysis) return res.status(404).json({ message: "Análisis no encontrado" });
+    res.json(computeAnalysisMeta(analysis));
   });
 
-  app.post("/api/export/filtrado", async (req, res) => {
-    try {
-      const { analysisId, tags } = req.body;
-      const analysis = await storage.getAnalysis(analysisId);
+  // 3) Preview paginada de registros filtrados (sin traer todo)
+  app.post("/api/analysis/:id/records/query", async (req, res) => {
+    const analysis = await storage.getAnalysis(req.params.id);
+    if (!analysis) return res.status(404).json({ message: "Análisis no encontrado" });
 
-      if (!analysis) {
-        return res.status(404).json({ message: "Análisis no encontrado" });
-      }
+    const filters = (req.body?.filters || {}) as RecordsFilter;
+    const offset = Number(req.body?.offset || 0);
+    const limit = Math.min(Number(req.body?.limit || 500), 2000);
 
-      const selectedTags = new Set(tags as string[]);
-      const filteredAnis = new Set(
-        analysis.aniSummaries
-          .filter((s) => selectedTags.has(s.tagTelefono))
-          .map((s) => s.ani)
-      );
+    const filtered = applyRecordFilters(analysis.rawRecords, filters);
 
-      const filteredRecords = analysis.rawRecords.filter((r) =>
-        filteredAnis.has(r.ani)
-      );
+    const answer = filtered.filter((r) => (r.estado || "").toUpperCase() === "ANSWER").length;
+    const noAnswer = filtered.filter((r) => {
+      const e = (r.estado || "").toUpperCase();
+      return e === "NOANSWER" || e === "NO ANSWER";
+    }).length;
 
-      const data = filteredRecords.map((r) => ({
-        Fecha: r.fecha || "",
-        Estado: r.estado,
-        SubEstado: r.subestado || "",
-        ANI: r.ani,
-        Base: r.base || "",
-        Duracion: r.duracion || "",
-        Direccion: r.direccion || "",
-      }));
-
-      const csv = generateCSV(data);
-
-      res.setHeader("Content-Type", "text/csv; charset=utf-8");
-      res.setHeader("Content-Disposition", "attachment; filename=base_filtrada.csv");
-      res.send(csv);
-    } catch (error) {
-      console.error("Error exporting filtrado:", error);
-      res.status(500).json({ message: "Error al exportar" });
-    }
+    const page = filtered.slice(offset, offset + limit);
+    res.json({ total: filtered.length, answer, noAnswer, records: page });
   });
 
+  // 4) Export server-side: analysisId + filtros
   app.post("/api/export/records", async (req, res) => {
-    try {
-      const { records, format } = req.body;
+    const { analysisId, filters, format } = req.body as {
+      analysisId: string;
+      filters?: RecordsFilter;
+      format: "csv" | "txt" | "xlsx";
+    };
 
-      const data = (records as any[]).map((r) => ({
-        Fecha: r.fecha || "",
-        Estado: r.estado || "",
-        SubEstado: r.subestado || "",
-        ANI: r.ani || "",
-        Base: r.base || "",
-        Duracion: r.duracion || "",
-        Direccion: r.direccion || "",
-      }));
+    const analysis = await storage.getAnalysis(analysisId);
+    if (!analysis) return res.status(404).json({ message: "Análisis no encontrado" });
 
-      if (format === "xlsx") {
-        const worksheet = XLSX.utils.json_to_sheet(data);
-        const workbook = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(workbook, worksheet, "Registros");
-        const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+    const filteredRecords = applyRecordFilters(analysis.rawRecords, filters);
 
-        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-        res.setHeader("Content-Disposition", "attachment; filename=registros_filtrados.xlsx");
-        res.send(buffer);
-      } else {
-        const csv = generateCSV(data);
-        const contentType = format === "txt" ? "text/plain" : "text/csv";
-        const extension = format === "txt" ? "txt" : "csv";
+    const data = filteredRecords.map((r) => ({
+      Fecha: r.fecha || "",
+      Estado: r.estado || "",
+      SubEstado: r.subestado || "",
+      ANI: r.ani || "",
+      Base: r.base || "",
+      Duracion: r.duracion || "",
+      Direccion: r.direccion || "",
+    }));
 
-        res.setHeader("Content-Type", `${contentType}; charset=utf-8`);
-        res.setHeader("Content-Disposition", `attachment; filename=registros_filtrados.${extension}`);
-        res.send(csv);
-      }
-    } catch (error) {
-      console.error("Error exporting records:", error);
-      res.status(500).json({ message: "Error al exportar" });
+    if (format === "xlsx") {
+      const worksheet = XLSX.utils.json_to_sheet(data);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Registros");
+      const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", "attachment; filename=registros_filtrados.xlsx");
+      return res.send(buffer);
     }
-  });
 
-  app.get("/api/analyses", async (_req, res) => {
-    try {
-      const analyses = await storage.getAllAnalyses();
-      res.json(analyses.map((a) => ({
-        id: a.id,
-        fileName: a.fileName,
-        uploadedAt: a.uploadedAt,
-        totalRecords: a.totalRecords,
-        totalAnis: a.totalAnis,
-      })));
-    } catch (error) {
-      console.error("Error fetching analyses:", error);
-      res.status(500).json({ message: "Error al obtener análisis" });
-    }
-  });
-
-  app.get("/api/analysis/:id", async (req, res) => {
-    try {
-      const analysis = await storage.getAnalysis(req.params.id);
-      if (!analysis) {
-        return res.status(404).json({ message: "Análisis no encontrado" });
-      }
-      res.json(analysis);
-    } catch (error) {
-      console.error("Error fetching analysis:", error);
-      res.status(500).json({ message: "Error al obtener análisis" });
-    }
+    const csv = generateCSV(data);
+    res.setHeader("Content-Type", `${format === "txt" ? "text/plain" : "text/csv"}; charset=utf-8`);
+    res.setHeader("Content-Disposition", `attachment; filename=registros_filtrados.${format}`);
+    res.send(csv);
   });
 
   return httpServer;
