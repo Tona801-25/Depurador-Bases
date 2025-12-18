@@ -29,7 +29,6 @@ export class MemStorage implements IStorage {
 }
 
 export const storage = new MemStorage();
-
 function normalizeColumn(col: string): string {
   return col
     .trim()
@@ -37,6 +36,51 @@ function normalizeColumn(col: string): string {
     .replace(/[\u0300-\u036f]/g, "")
     .toUpperCase()
     .replace(/[\s\-\/]/g, "");
+}
+
+export function applyRecordFilters(records: CallRecord[], filters?: RecordsFilter): CallRecord[] {
+  if (!filters) return records;
+
+  const estados = new Set((filters.estados || []).map((s) => s.toUpperCase()));
+  const subestados = new Set((filters.subestados || []).map((s) => s.toUpperCase()));
+  const bases = new Set(filters.bases || []);
+  const aniContains = (filters.aniContains || "").trim();
+  const durMin = typeof filters.durMin === "number" ? filters.durMin : 0;
+  const durMax = typeof filters.durMax === "number" ? filters.durMax : Number.POSITIVE_INFINITY;
+
+  return records.filter((r) => {
+    if (estados.size > 0 && !estados.has((r.estado || "").toUpperCase())) return false;
+    if (subestados.size > 0 && !subestados.has((r.subestado || "").toUpperCase())) return false;
+    if (bases.size > 0 && !bases.has(r.base || "")) return false;
+    if (aniContains && !(r.ani || "").includes(aniContains)) return false;
+    const d = r.duracion ?? 0;
+    if (d < durMin || d > durMax) return false;
+    return true;
+  });
+}
+
+export function computeAnalysisMeta(analysis: AnalysisResult): AnalysisMeta {
+  const estados = new Set<string>();
+  const subestados = new Set<string>();
+  const bases = new Set<string>();
+  let maxDur = 0;
+
+  for (const r of analysis.rawRecords) {
+    if (r.estado) estados.add(r.estado.toUpperCase());
+    if (r.subestado) subestados.add(r.subestado.toUpperCase());
+    if (r.base) bases.add(r.base);
+    const d = r.duracion ?? 0;
+    if (d > maxDur) maxDur = d;
+  }
+
+  if (maxDur <= 0) maxDur = 3600;
+
+  return {
+    distinctEstados: Array.from(estados).sort(),
+    distinctSubestados: Array.from(subestados).sort(),
+    distinctBases: Array.from(bases).sort(),
+    maxDuracion: maxDur,
+  };
 }
 
 function findColumn(columns: string[], possibles: string[]): string | null {
@@ -327,5 +371,4 @@ export function generateCSV(data: Record<string, any>[]): string {
     }).join(",")
   );
   
-  return [headers.join(","), ...rows].join("\n");
-}
+return [headers.join(","), ...rows].join("\n")

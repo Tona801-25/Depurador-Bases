@@ -103,3 +103,46 @@ export const simuladorCorteResultSchema = z.object({
 });
 
 export type SimuladorCorteResult = z.infer<typeof simuladorCorteResultSchema>;
+
+// ============================
+// NUEVO: Resumen liviano (sin rawRecords)
+// ============================
+export const analysisSummarySchema = analysisResultSchema.omit({
+  rawRecords: true,
+});
+export type AnalysisSummary = z.infer<typeof analysisSummarySchema>;
+
+// ============================
+// NUEVO: Filtros server-side para consultar/exportar registros
+// ============================
+export const recordsFilterSchema = z.object({
+  estados: z.array(z.string()).optional(),
+  subestados: z.array(z.string()).optional(),
+  bases: z.array(z.string()).optional(),
+  aniContains: z.string().optional(),
+  durMin: z.number().optional(),
+  durMax: z.number().optional(),
+});
+export type RecordsFilter = z.infer<typeof recordsFilterSchema>;
+
+// ============================
+// NUEVO: Meta para poblar filtros (sin traer rawRecords)
+// ============================
+export const analysisMetaSchema = z.object({
+  distinctEstados: z.array(z.string()),
+  distinctSubestados: z.array(z.string()),
+  distinctBases: z.array(z.string()),
+  maxDuracion: z.number(),
+});
+export type AnalysisMeta = z.infer<typeof analysisMetaSchema>;
+
+// ============================
+// NUEVO: Respuesta de query paginada de registros filtrados
+// ============================
+export const recordsQueryResponseSchema = z.object({
+  total: z.number(),
+  answer: z.number(),
+  noAnswer: z.number(),
+  records: z.array(callRecordSchema),
+});
+export type RecordsQueryResponse = z.infer<typeof recordsQueryResponseSchema>;
