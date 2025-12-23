@@ -151,5 +151,63 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.send(csv);
   });
 
+  // 5) Export resumen por ANI (CSV)
+  app.post("/api/export/resumen", async (req, res) => {
+    const { analysisId } = req.body as { analysisId: string };
+    const analysis = await storage.getAnalysis(analysisId);
+    if (!analysis) return res.status(404).json({ message: "Análisis no encontrado" });
+
+    const data = analysis.aniSummaries.map((summary) => ({
+      ANI: summary.ani || "",
+      IntentosTotales: summary.intentosTotales || 0,
+      IntentosAnswerAgent: summary.intentosAnswerAgent || 0,
+      IntentosAnsweringMachine: summary.intentosAnsweringMachine || 0,
+      IntentosNoAnswer: summary.intentosNoAnswer || 0,
+      IntentosBusy: summary.intentosBusy || 0,
+      IntentosUnallocated: summary.intentosUnallocated || 0,
+      IntentosRejected: summary.intentosRejected || 0,
+      PrimerLlamado: summary.primerLlamado || "",
+      UltimoLlamado: summary.ultimoLlamado || "",
+      TagTelefono: summary.tagTelefono || "",
+    }));
+
+    const csv = generateCSV(data);
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", "attachment; filename=resumen_por_ani.csv");
+    res.send(csv);
+  });
+
+  // 6) Export base filtrada por tags (CSV)
+  app.post("/api/export/filtrado", async (req, res) => {
+    const { analysisId, tags } = req.body as { analysisId: string; tags?: string[] };
+    const analysis = await storage.getAnalysis(analysisId);
+    if (!analysis) return res.status(404).json({ message: "Análisis no encontrado" });
+
+    const selectedTags = new Set(tags || []);
+    const anisFiltrados = new Set(
+      analysis.aniSummaries
+        .filter((summary) => selectedTags.has(summary.tagTelefono))
+        .map((summary) => summary.ani)
+    );
+    const filteredRecords = analysis.rawRecords.filter((record) =>
+      anisFiltrados.has(record.ani || "")
+    );
+
+    const data = filteredRecords.map((r) => ({
+      Fecha: r.fecha || "",
+      Estado: r.estado || "",
+      SubEstado: r.subestado || "",
+      ANI: r.ani || "",
+      Base: r.base || "",
+      Duracion: r.duracion || "",
+      Direccion: r.direccion || "",
+    }));
+
+    const csv = generateCSV(data);
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", "attachment; filename=base_filtrada.csv");
+    res.send(csv);
+  });
+
   return httpServer;
 }
