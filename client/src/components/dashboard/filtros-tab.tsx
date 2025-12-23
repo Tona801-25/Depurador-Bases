@@ -8,12 +8,12 @@ import { Slider } from "@/components/ui/slider";
 import { KPICard } from "@/components/kpi-card";
 import { DataTable, type Column } from "@/components/data-table";
 import { Download, X, Filter } from "lucide-react";
-import type { AnalysisResult, CallRecord } from "@shared/schema";
+import type { AnalysisResult, CallRecord, RecordsFilter } from "@shared/schema";
 import { cn } from "@/lib/utils";
 
 interface FiltrosTabProps {
   data: AnalysisResult;
-  onExportFiltrado: (records: CallRecord[], format: "csv" | "txt" | "xlsx") => void;
+  onExportFiltrado: (filters: RecordsFilter, format: "csv" | "txt" | "xlsx") => void;
 }
 
 export function FiltrosTab({ data, onExportFiltrado }: FiltrosTabProps) {
@@ -114,6 +114,15 @@ export function FiltrosTab({ data, onExportFiltrado }: FiltrosTabProps) {
     },
     { key: "direccion", header: "Dirección", sortable: true },
   ];
+
+    const exportFilters: RecordsFilter = {
+    estados: selectedEstados.length > 0 ? selectedEstados : undefined,
+    subestados: selectedSubestados.length > 0 ? selectedSubestados : undefined,
+    bases: selectedBases.length > 0 ? selectedBases : undefined,
+    aniContains: aniSearch ? aniSearch : undefined,
+    durMin: duracionRange[0],
+    durMax: duracionRange[1],
+  };
 
   return (
     <div className="space-y-6">
@@ -268,7 +277,7 @@ export function FiltrosTab({ data, onExportFiltrado }: FiltrosTabProps) {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => onExportFiltrado(filteredRecords, "csv")}
+              onClick={() => onExportFiltrado(exportFilters, "csv")}
               className="gap-2"
               data-testid="button-export-csv"
             >
@@ -278,7 +287,7 @@ export function FiltrosTab({ data, onExportFiltrado }: FiltrosTabProps) {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => onExportFiltrado(filteredRecords, "txt")}
+              onClick={() => onExportFiltrado(exportFilters, "txt")}
               className="gap-2"
               data-testid="button-export-txt"
             >
@@ -288,7 +297,7 @@ export function FiltrosTab({ data, onExportFiltrado }: FiltrosTabProps) {
             <Button
               variant="default"
               size="sm"
-              onClick={() => onExportFiltrado(filteredRecords, "xlsx")}
+              onClick={() => onExportFiltrado(exportFilters, "xlsx")}
               className="gap-2"
               data-testid="button-export-xlsx"
             >

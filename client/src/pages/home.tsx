@@ -19,7 +19,7 @@ import { SimuladorCortesTab } from "@/components/dashboard/simulador-cortes";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import type { AnalysisResult, CallRecord } from "@shared/schema";
+import type { AnalysisResult, RecordsFilter } from "@shared/schema";
 import {
   BarChart3,
   TrendingUp,
@@ -125,12 +125,13 @@ export default function Home() {
   );
 
   const handleExportRecords = useCallback(
-    async (records: CallRecord[], format: "csv" | "txt" | "xlsx") => {
+    async (filters: RecordsFilter, format: "csv" | "txt" | "xlsx") => {
+      if (!analysisResult) return;
       try {
         const response = await fetch("/api/export/records", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ records, format }),
+          body: JSON.stringify({ analysisId: analysisResult.id, filters, format }),
         });
         const blob = await response.blob();
         const url = window.URL.createObjectURL(blob);
@@ -147,7 +148,7 @@ export default function Home() {
         });
       }
     },
-    [toast]
+    [analysisResult, toast]
   );
 
   return (
