@@ -1,4 +1,3 @@
-import { Database } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 export function Header() {
@@ -8,12 +7,14 @@ export function Header() {
         {/* Izquierda vacía para balancear */}
         <div aria-hidden="true" />
 
-        {/* Centro: ícono + título */}
+        {/* Centro: logo + título */}
         <div className="flex items-center justify-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary">
-            {/* 👇 fuerza el color del ícono */}
-            <Database className="h-5 w-5 text-primary-foreground" />
-          </div>
+            <img
+              src="/osar.png"
+              alt="Logo de la empresa"
+              className="h-6 w-6 rounded-[4px]"
+              />
+        </div>
 
           <div className="text-center">
             <h1 className="text-lg font-bold tracking-tight" data-testid="text-app-title">
@@ -29,7 +30,6 @@ export function Header() {
         <div className="flex justify-end">
           <ThemeToggle />
         </div>
-      </div>
     </header>
   );
 }
