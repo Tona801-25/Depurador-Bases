@@ -67,6 +67,11 @@ export const analysisResultSchema = z.object({
     total: z.number(),
     pctSobreTotal: z.number(),
   })),
+    prefijoPorHora: z.array(z.object({
+    hora: z.number(),
+    prefijo: z.string(),
+    total: z.number(),
+  })),
   curvaContactacion: z.array(z.object({
     intento: z.number(),
     cantidad: z.number(),

@@ -16,12 +16,14 @@ import { DepuracionTab } from "@/components/dashboard/depuracion-tab";
 import { FiltrosTab } from "@/components/dashboard/filtros-tab";
 import { CatalogoPrefijosTab } from "@/components/dashboard/catalogo-prefijos";
 import { SimuladorCortesTab } from "@/components/dashboard/simulador-cortes";
+import { PrefijosPorHoraTab } from "@/components/dashboard/prefijos-por-hora-tab";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { AnalysisResult, RecordsFilter } from "@shared/schema";
 import {
   BarChart3,
+  Clock,
   TrendingUp,
   Trash2,
   Filter,
@@ -196,7 +198,7 @@ export default function Home() {
 
         {analysisResult && !uploadMutation.isPending && (
           <Tabs defaultValue="dashboard" className="space-y-6">
-            <TabsList className="grid w-full grid-cols-3 lg:grid-cols-6 h-auto gap-1 p-1">
+            <TabsList className="grid w-full grid-cols-3 lg:grid-cols-7 h-auto gap-1 p-1">
               <TabsTrigger
                 value="dashboard"
                 className="flex items-center gap-2 py-2"
@@ -212,6 +214,14 @@ export default function Home() {
               >
                 <TrendingUp className="h-4 w-4" />
                 <span className="hidden sm:inline">Turnos y prefijos</span>
+              </TabsTrigger>
+              <TabsTrigger
+                value="prefijos-hora"
+                className="flex items-center gap-2 py-2"
+                data-testid="tab-prefijos-hora"
+              >
+                <Clock className="h-4 w-4" />
+                <span className="hidden sm:inline">Prefijos por hora</span>
               </TabsTrigger>
               <TabsTrigger
                 value="depuracion"
@@ -305,6 +315,9 @@ export default function Home() {
               <TurnosPrefijosTab data={analysisResult} />
             </TabsContent>
 
+                        <TabsContent value="prefijos-hora">
+              <PrefijosPorHoraTab data={analysisResult} />
+            </TabsContent>
             <TabsContent value="depuracion">
               <DepuracionTab
                 data={analysisResult}

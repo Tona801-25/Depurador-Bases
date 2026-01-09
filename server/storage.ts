@@ -1,5 +1,12 @@
-import type {AnalysisResult,AnalysisMeta,ANISummary,CallRecord,PrefijoCatalogo,RecordsFilter,TagType,} from "@shared/schema";
-import { randomUUID } from "crypto";
+import type {
+  AnalysisResult,
+  AnalysisMeta,
+  ANISummary,
+  CallRecord,
+  PrefijoCatalogo,
+  RecordsFilter,
+  TagType,
+} from "@shared/schema";import { randomUUID } from "crypto";
 
 export interface IStorage {
   storeAnalysis(analysis: AnalysisResult): Promise<AnalysisResult>;
@@ -285,6 +292,28 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     .sort((a, b) => b.total - a.total)
     .slice(0, 20);
 
+  const prefijoPorHoraMap: Record<number, Record<string, number>> = {};
+  records.forEach((record) => {
+    if (!record.fecha) return;
+    const date = new Date(record.fecha);
+    if (Number.isNaN(date.getTime())) return;
+    const hour = date.getHours();
+    const prefijo = extractPrefijo(record.ani);
+    if (!prefijoPorHoraMap[hour]) prefijoPorHoraMap[hour] = {};
+    prefijoPorHoraMap[hour][prefijo] = (prefijoPorHoraMap[hour][prefijo] || 0) + 1;
+  });
+
+  const prefijoPorHora = Object.entries(prefijoPorHoraMap)
+    .map(([hora, counts]) => {
+      const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+      return {
+        hora: Number(hora),
+        prefijo: top?.[0] ?? "",
+        total: top?.[1] ?? 0,
+      };
+    })
+    .sort((a, b) => a.hora - b.hora);
+  
   const firstContactIntento: Record<number, number> = {};
   aniGroups.forEach((calls, ani) => {
     const sortedCalls = [...calls].sort((a, b) => {
@@ -348,6 +377,7 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     tagDistribucion,
     turnoDistribucion,
     prefijoDistribucion,
+    prefijoPorHora,
     curvaContactacion,
     intentosDistribucion,
     aniSummaries,
