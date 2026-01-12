@@ -67,6 +67,11 @@ export const analysisResultSchema = z.object({
     total: z.number(),
     pctSobreTotal: z.number(),
   })),
+   prefijoDistribucionAnswer: z.array(z.object({
+    prefijo: z.string(),
+    total: z.number(),
+    pctSobreTotal: z.number(),
+  })),
     prefijoPorHora: z.array(z.object({
     hora: z.number(),
     prefijo: z.string(),
@@ -151,3 +156,4 @@ export const recordsQueryResponseSchema = z.object({
   records: z.array(callRecordSchema),
 });
 export type RecordsQueryResponse = z.infer<typeof recordsQueryResponseSchema>;
+
