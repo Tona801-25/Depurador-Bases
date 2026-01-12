@@ -6,7 +6,8 @@ import type {
   PrefijoCatalogo,
   RecordsFilter,
   TagType,
-} from "@shared/schema";import { randomUUID } from "crypto";
+} from "@shared/schema";
+import { randomUUID } from "crypto";
 
 export interface IStorage {
   storeAnalysis(analysis: AnalysisResult): Promise<AnalysisResult>;
@@ -93,7 +94,7 @@ export function computeAnalysisMeta(analysis: AnalysisResult): AnalysisMeta {
 function findColumn(columns: string[], possibles: string[]): string | null {
   const normalizedColumns = columns.map(normalizeColumn);
   const columnMap = new Map(columns.map((c, i) => [normalizedColumns[i], c]));
-  
+
   for (const p of possibles) {
     if (columnMap.has(p)) {
       return columnMap.get(p) || null;
@@ -167,7 +168,7 @@ function getTurno(dateStr: string | undefined): string {
 
 export function processCallRecords(rawData: Record<string, any>[]): AnalysisResult {
   const columns = rawData.length > 0 ? Object.keys(rawData[0]) : [];
-  
+
   const colEstado = findColumn(columns, ["ESTADO", "STATUS", "STATE"]) || "Estado";
   const colSubestado = findColumn(columns, ["SUBESTADO", "SUBESTATUS", "SUBSTATE"]) || "Sub-Estado";
   const colAni = findColumn(columns, ["ANI", "ANITELEFONO", "TELEFONO", "PHONE", "NUMEROLLAMADO", "NUMERO"]) || "ANI/Teléfono";
@@ -196,7 +197,7 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
   });
 
   const aniSummaries: ANISummary[] = [];
-  
+
   aniGroups.forEach((calls, ani) => {
     const sortedCalls = [...calls].sort((a, b) => {
       if (!a.fecha || !b.fecha) return 0;
@@ -218,41 +219,46 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
         intentosAnswerAgent++;
       } else if (
         estado === "answer" &&
-        (subestado.includes("answering") || subestado.includes("machine"))
+        (subestado.includes("machine") || subestado.includes("buzon"))
       ) {
         intentosAnsweringMachine++;
       } else if (estado === "noanswer") {
         intentosNoAnswer++;
       } else if (estado === "busy") {
         intentosBusy++;
-      } else if (estado === "unallocated" || subestado === "unallocated") {
+      } else if (estado === "unallocated") {
         intentosUnallocated++;
-      } else if (estado === "rejected" || subestado === "rejected") {
+      } else if (estado === "rejected") {
         intentosRejected++;
       }
     });
 
+    const intentosTotales = sortedCalls.length;
+    const primerLlamado = sortedCalls[0]?.fecha;
+    const ultimoLlamado = sortedCalls[sortedCalls.length - 1]?.fecha;
+
     const summary: ANISummary = {
       ani,
-      intentosTotales: calls.length,
+      intentosTotales,
       intentosAnswerAgent,
       intentosAnsweringMachine,
       intentosNoAnswer,
       intentosBusy,
       intentosUnallocated,
       intentosRejected,
-      primerLlamado: sortedCalls[0]?.fecha,
-      ultimoLlamado: sortedCalls[sortedCalls.length - 1]?.fecha,
-      tagTelefono: "SEGUIR_INTENTANDO",
+      primerLlamado,
+      ultimoLlamado,
+      tagTelefono: "",
     };
 
     summary.tagTelefono = assignTag(summary);
+
     aniSummaries.push(summary);
   });
 
   const estadoDistribucion: Record<string, number> = {};
   records.forEach((record) => {
-    const estado = (record.estado || "UNKNOWN").toUpperCase();
+    const estado = record.estado?.toUpperCase() || "SIN_ESTADO";
     estadoDistribucion[estado] = (estadoDistribucion[estado] || 0) + 1;
   });
 
@@ -277,9 +283,15 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
   });
 
   const prefijoCount: Record<string, number> = {};
+  const prefijoAnswerCount: Record<string, number> = {};
   records.forEach((record) => {
     const prefijo = extractPrefijo(record.ani);
     prefijoCount[prefijo] = (prefijoCount[prefijo] || 0) + 1;
+
+    const estado = (record.estado || "").toLowerCase().replace(/\s/g, "");
+    if (estado === "answer") {
+      prefijoAnswerCount[prefijo] = (prefijoAnswerCount[prefijo] || 0) + 1;
+    }
   });
 
   const totalRecords = records.length;
@@ -288,6 +300,16 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
       prefijo,
       total,
       pctSobreTotal: totalRecords > 0 ? (total / totalRecords) * 100 : 0,
+    }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 20);
+
+  const totalAnswerPrefijos = Object.values(prefijoAnswerCount).reduce((a, b) => a + b, 0);
+  const prefijoDistribucionAnswer = Object.entries(prefijoAnswerCount)
+    .map(([prefijo, total]) => ({
+      prefijo,
+      total,
+      pctSobreTotal: totalAnswerPrefijos > 0 ? (total / totalAnswerPrefijos) * 100 : 0,
     }))
     .sort((a, b) => b.total - a.total)
     .slice(0, 20);
@@ -313,7 +335,7 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
       };
     })
     .sort((a, b) => a.hora - b.hora);
-  
+
   const firstContactIntento: Record<number, number> = {};
   aniGroups.forEach((calls, ani) => {
     const sortedCalls = [...calls].sort((a, b) => {
@@ -377,6 +399,7 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     tagDistribucion,
     turnoDistribucion,
     prefijoDistribucion,
+    prefijoDistribucionAnswer,
     prefijoPorHora,
     curvaContactacion,
     intentosDistribucion,

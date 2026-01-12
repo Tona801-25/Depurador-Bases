@@ -18,6 +18,11 @@ interface TurnosPrefijosProps {
 }
 
 export function TurnosPrefijosTab({ data }: TurnosPrefijosProps) {
+  const prefijoAnswerData = (
+    data as AnalysisResult & {
+      prefijoDistribucionAnswer?: { prefijo: string; total: number; pctSobreTotal: number }[];
+    }
+  ).prefijoDistribucionAnswer ?? [];
   const turnoChartData = useMemo(() => {
     return Object.entries(data.turnoDistribucion).map(([turno, stats]) => ({
       turno,
@@ -48,7 +53,7 @@ export function TurnosPrefijosTab({ data }: TurnosPrefijosProps) {
     },
   ];
 
-  const prefijoColumns: Column<typeof data.prefijoDistribucion[0]>[] = [
+  const prefijoColumns: Column<(typeof prefijoAnswerData)[0]>[] = [
     { key: "prefijo", header: "Prefijo", sortable: true },
     {
       key: "total",
@@ -135,15 +140,15 @@ export function TurnosPrefijosTab({ data }: TurnosPrefijosProps) {
         <CardHeader className="pb-2">
           <CardTitle className="text-base font-medium flex items-center gap-2">
             <span className="text-chart-5">*</span>
-            Análisis por prefijos
+            Análisis por prefijos (atendidos)
           </CardTitle>
           <p className="text-xs text-muted-foreground">
-            Prefijos con mayor volumen de llamados (según catálogo de prefijos)
+            Prefijos con mayor volumen de llamados atendidos (ANSWER)
           </p>
         </CardHeader>
         <CardContent>
           <DataTable
-            data={data.prefijoDistribucion}
+            data={prefijoAnswerData}
             columns={prefijoColumns}
             searchPlaceholder="Buscar prefijo..."
             pageSize={10}

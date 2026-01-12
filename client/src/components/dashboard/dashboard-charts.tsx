@@ -59,7 +59,7 @@ export function EstadoDistribucionChart({ data }: DashboardChartsProps) {
                 outerRadius={100}
                 paddingAngle={2}
                 dataKey="value"
-                label={({ name, percentage }) => `${percentage}%`}
+                label={false}
                 labelLine={false}
               >
                 {chartData.map((entry, index) => (
@@ -80,10 +80,16 @@ export function EstadoDistribucionChart({ data }: DashboardChartsProps) {
               />
               <Legend
                 verticalAlign="bottom"
-                height={36}
-                formatter={(value) => (
-                  <span className="text-sm text-foreground">{value}</span>
-                )}
+                height={48}
+                formatter={(value, entry) => {
+                  const pct = (entry as { payload?: { percentage?: string } })?.payload
+                    ?.percentage;
+                  return (
+                    <span className="text-sm text-foreground">
+                      {value} {pct ? `(${pct}%)` : ""}
+                    </span>
+                  );
+                }}
               />
             </PieChart>
           </ResponsiveContainer>
@@ -141,134 +147,6 @@ export function TagDistribucionChart({ data }: DashboardChartsProps) {
             </BarChart>
           </ResponsiveContainer>
         </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-export function CurvaContactacionChart({ data }: DashboardChartsProps) {
-  const chartData = useMemo(() => {
-    return data.curvaContactacion.map((item) => ({
-      intento: item.intento,
-      cantidad: item.cantidad,
-    }));
-  }, [data]);
-
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-base font-medium flex items-center gap-2">
-          <span className="text-chart-1">*</span>
-          Estrategia de reintentos
-        </CardTitle>
-        <p className="text-xs text-muted-foreground">
-          Intento del primer ANSWER-AGENT
-        </p>
-      </CardHeader>
-      <CardContent>
-        <div className="h-[280px]">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
-              <XAxis
-                dataKey="intento"
-                label={{
-                  value: "Intento del primer ANSWER-AGENT",
-                  position: "insideBottom",
-                  offset: -5,
-                  style: { fontSize: 11, fill: "hsl(var(--muted-foreground))" },
-                }}
-              />
-              <YAxis />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "hsl(var(--popover))",
-                  border: "1px solid hsl(var(--border))",
-                  borderRadius: "0.5rem",
-                }}
-                formatter={(value: number) => [
-                  value.toLocaleString("es-AR"),
-                  "ANIs",
-                ]}
-              />
-              <Bar
-                dataKey="cantidad"
-                fill="hsl(var(--chart-1))"
-                radius={[4, 4, 0, 0]}
-                label={{
-                  position: "top",
-                  fontSize: 10,
-                  fill: "hsl(var(--foreground))",
-                }}
-              />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-export function IntentosDistribucionChart({ data }: DashboardChartsProps) {
-  const chartData = useMemo(() => {
-    return data.intentosDistribucion.map((item) => ({
-      ...item,
-      label: `${item.cantidad.toLocaleString("es-AR")} (${item.porcentaje.toFixed(1)}%)`,
-    }));
-  }, [data]);
-
-  return (
-    <Card>
-      <CardHeader className="pb-2">
-        <CardTitle className="text-base font-medium flex items-center gap-2">
-          <span className="text-chart-4">*</span>
-          Distribución de intentos totales por ANI
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="h-[280px]">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
-              <XAxis
-                dataKey="intentos"
-                label={{
-                  value: "Intentos totales por ANI",
-                  position: "insideBottom",
-                  offset: -5,
-                  style: { fontSize: 11, fill: "hsl(var(--muted-foreground))" },
-                }}
-              />
-              <YAxis
-                label={{
-                  value: "Cantidad de ANIs",
-                  angle: -90,
-                  position: "insideLeft",
-                  style: { fontSize: 11, fill: "hsl(var(--muted-foreground))" },
-                }}
-              />
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: "hsl(var(--popover))",
-                  border: "1px solid hsl(var(--border))",
-                  borderRadius: "0.5rem",
-                }}
-                formatter={(value: number, _name: string, props: any) => [
-                  `${value.toLocaleString("es-AR")} (${props.payload.porcentaje.toFixed(1)}%)`,
-                  "ANIs",
-                ]}
-              />
-              <Bar
-                dataKey="cantidad"
-                fill="hsl(var(--chart-1))"
-                radius={[4, 4, 0, 0]}
-              />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-        <p className="text-xs text-muted-foreground text-center mt-2">
-          Aquí vemos cuántos ANIs reciben 1, 2, 3... intentos en total.
-        </p>
       </CardContent>
     </Card>
   );
