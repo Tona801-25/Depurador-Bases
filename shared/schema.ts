@@ -88,6 +88,11 @@ export const analysisResultSchema = z.object({
   })),
   aniSummaries: z.array(aniSummarySchema),
   rawRecords: z.array(callRecordSchema),
+  rangoDistribucion: z.record(z.string(), z.object({
+  total: z.number(),
+  answer: z.number(),
+  noAnswer: z.number(),
+})),
 });
 
 export type AnalysisResult = z.infer<typeof analysisResultSchema>;
