@@ -155,15 +155,89 @@ function extractPrefijo(ani: string): string {
   return digits.slice(0, 2) || "00";
 }
 
-function getTurno(dateStr: string | undefined): string {
-  if (!dateStr) return "Mañana";
-  try {
-    const date = new Date(dateStr);
-    const hour = date.getHours();
-    return hour < 14 ? "Mañana" : "Tarde";
-  } catch {
-    return "Mañana";
+function parseTicketDate(dateStr?: string): Date | null {
+  if (!dateStr) return null;
+
+  const s = String(dateStr).trim();
+  if (!s) return null;
+
+  // Caso 1: YYYYMMDD (ej: 20260213)
+  if (/^\d{8}$/.test(s)) {
+    const year = Number(s.slice(0, 4));
+    const month = Number(s.slice(4, 6));
+    const day = Number(s.slice(6, 8));
+    const d = new Date(year, month - 1, day, 0, 0, 0);
+    return Number.isNaN(d.getTime()) ? null : d;
   }
+
+  // Caso 2: ISO o YYYY-MM-DD...
+  const isoTry = new Date(s);
+  if (!Number.isNaN(isoTry.getTime())) return isoTry;
+
+  // Caso 3: "DD-MM-YYYY HH:mm:ss" o "DD/MM/YYYY HH:mm:ss" (tu caso)
+  const [datePart, timePart] = s.split(" ");
+  if (!datePart) return null;
+
+  const sep = datePart.includes("-") ? "-" : (datePart.includes("/") ? "/" : null);
+  if (!sep) return null;
+
+  const [ddStr, mmStr, yyyyStr] = datePart.split(sep);
+  const dd = Number(ddStr);
+  const mm = Number(mmStr);
+  const yyyy = Number(yyyyStr);
+
+  let hh = 0, mi = 0, ss = 0;
+  if (timePart) {
+    const t = timePart.split(":").map(Number);
+    hh = t[0] ?? 0;
+    mi = t[1] ?? 0;
+    ss = t[2] ?? 0;
+  }
+
+  if (![dd, mm, yyyy, hh, mi, ss].every(Number.isFinite)) return null;
+
+  const d = new Date(yyyy, mm - 1, dd, hh, mi, ss);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function getRangoHorario(dateStr?: string): string {
+  const d = parseTicketDate(dateStr);
+  if (!d) return "Sin hora";
+
+  const h = d.getHours();
+  if (h >= 9 && h < 12) return "09:00-12:00";
+  if (h >= 12 && h < 15) return "12:00-15:00";
+  if (h >= 15 && h < 18) return "15:00-18:00";
+  return "Fuera de rango";
+}
+
+function getTurno(dateStr: string | undefined): string {
+  const d = parseTicketDate(dateStr);
+  if (!d) return "Mañana"; // default seguro
+  const hour = d.getHours();
+  return hour < 14 ? "Mañana" : "Tarde";
+}
+
+function parseNeotelDate(dateStr?: string) {
+  if (!dateStr) return null;
+
+  // Esperado: "DD/MM/YYYY HH:mm:ss" (o sin segundos)
+  const [datePart, timePart] = dateStr.trim().split(" ");
+  if (!datePart || !timePart) return null;
+
+  const [day, month, year] = datePart.split("/").map(Number);
+  const timePieces = timePart.split(":").map(Number);
+  const [hour, minute, second = 0] = timePieces;
+
+  if (
+    !Number.isFinite(day) || !Number.isFinite(month) || !Number.isFinite(year) ||
+    !Number.isFinite(hour) || !Number.isFinite(minute) || !Number.isFinite(second)
+  ) return null;
+
+  const d = new Date(year, month - 1, day, hour, minute, second);
+  if (Number.isNaN(d.getTime())) return null;
+
+  return d;
 }
 
 export function processCallRecords(rawData: Record<string, any>[]): AnalysisResult {
@@ -175,6 +249,19 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
   const colBase = findColumn(columns, ["BASE", "NOMBREBASE", "ORIGEN"]) || "Base";
   const colDuracion = findColumn(columns, ["DURACION", "DURACIONENSEGUNDOS", "SEGUNDOS", "DURATION"]) || "Duración";
   const colFecha = findColumn(columns, ["FECHAINICIO", "FECHAHORA", "INICIO", "LOGTIME", "FECHALLAMADA"]) || "Inicio";
+  const rangoDistribucion: Record<string, { total: number; answer: number; noAnswer: number }> = {};
+
+  records.forEach((record) => {
+    const rango = getRangoHorario(record.fecha);
+    if (!rangoDistribucion[rango]) {
+      rangoDistribucion[rango] = { total: 0, answer: 0, noAnswer: 0 };
+    }
+    rangoDistribucion[rango].total++;
+
+    const estado = (record.estado || "").toLowerCase().replace(/\s/g, "");
+    if (estado === "answer") rangoDistribucion[rango].answer++;
+    else if (estado === "noanswer") rangoDistribucion[rango].noAnswer++;
+  });
 
   const records: CallRecord[] = rawData.map((row) => ({
     fecha: row[colFecha]?.toString() || undefined,
@@ -201,7 +288,10 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
   aniGroups.forEach((calls, ani) => {
     const sortedCalls = [...calls].sort((a, b) => {
       if (!a.fecha || !b.fecha) return 0;
-      return new Date(a.fecha).getTime() - new Date(b.fecha).getTime();
+      const da = parseNeotelDate(a.fecha);
+      const db = parseNeotelDate(b.fecha);
+      if (!da || !db) return 0;
+      return da.getTime() - db.getTime();
     });
 
     let intentosAnswerAgent = 0;
@@ -317,8 +407,8 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
   const prefijoPorHoraMap: Record<number, Record<string, number>> = {};
   records.forEach((record) => {
     if (!record.fecha) return;
-    const date = new Date(record.fecha);
-    if (Number.isNaN(date.getTime())) return;
+    const date = parseNeotelDate(record.fecha);
+    if (!date) return;
     const hour = date.getHours();
     const prefijo = extractPrefijo(record.ani);
     if (!prefijoPorHoraMap[hour]) prefijoPorHoraMap[hour] = {};
@@ -340,7 +430,10 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
   aniGroups.forEach((calls, ani) => {
     const sortedCalls = [...calls].sort((a, b) => {
       if (!a.fecha || !b.fecha) return 0;
-      return new Date(a.fecha).getTime() - new Date(b.fecha).getTime();
+      const da = parseNeotelDate(a.fecha);
+      const db = parseNeotelDate(b.fecha);
+      if (!da || !db) return 0;
+      return da.getTime() - db.getTime();
     });
 
     for (let i = 0; i < sortedCalls.length; i++) {
@@ -405,6 +498,7 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     intentosDistribucion,
     aniSummaries,
     rawRecords: records,
+    rangoDistribucion,
   };
 }
 

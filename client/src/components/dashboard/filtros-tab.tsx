@@ -17,6 +17,9 @@ interface FiltrosTabProps {
 }
 
 export function FiltrosTab({ data, onExportFiltrado }: FiltrosTabProps) {
+  // En algunos flujos el backend retorna un resumen sin rawRecords; evitamos crash.
+  const rawRecords = data.rawRecords ?? [];
+
   const [selectedEstados, setSelectedEstados] = useState<string[]>([]);
   const [selectedSubestados, setSelectedSubestados] = useState<string[]>([]);
   const [selectedBases, setSelectedBases] = useState<string[]>([]);
@@ -25,34 +28,34 @@ export function FiltrosTab({ data, onExportFiltrado }: FiltrosTabProps) {
 
   const uniqueEstados = useMemo(() => {
     const estados = new Set<string>();
-    data.rawRecords.forEach((r) => {
+    rawRecords.forEach((r) => {
       if (r.estado) estados.add(r.estado.toUpperCase());
     });
     return Array.from(estados).sort();
-  }, [data.rawRecords]);
+  }, [rawRecords]);
 
   const uniqueSubestados = useMemo(() => {
     const subestados = new Set<string>();
-    data.rawRecords.forEach((r) => {
+    rawRecords.forEach((r) => {
       if (r.subestado) subestados.add(r.subestado.toUpperCase());
     });
     return Array.from(subestados).sort();
-  }, [data.rawRecords]);
+  }, [rawRecords]);
 
   const uniqueBases = useMemo(() => {
     const bases = new Set<string>();
-    data.rawRecords.forEach((r) => {
+    rawRecords.forEach((r) => {
       if (r.base) bases.add(r.base);
     });
     return Array.from(bases).sort();
-  }, [data.rawRecords]);
+  }, [rawRecords]);
 
   const maxDuracion = useMemo(() => {
-    return Math.max(...data.rawRecords.map((r) => r.duracion || 0), 3600);
-  }, [data.rawRecords]);
+    return Math.max(...rawRecords.map((r) => r.duracion || 0), 3600);
+  }, [rawRecords]);
 
   const filteredRecords = useMemo(() => {
-    return data.rawRecords.filter((record) => {
+    return rawRecords.filter((record) => {
       if (selectedEstados.length > 0 && !selectedEstados.includes(record.estado?.toUpperCase() || "")) {
         return false;
       }
@@ -71,7 +74,7 @@ export function FiltrosTab({ data, onExportFiltrado }: FiltrosTabProps) {
       }
       return true;
     });
-  }, [data.rawRecords, selectedEstados, selectedSubestados, selectedBases, aniSearch, duracionRange]);
+  }, [rawRecords, selectedEstados, selectedSubestados, selectedBases, aniSearch, duracionRange]);
 
   const toggleFilter = (
     value: string,
@@ -115,7 +118,7 @@ export function FiltrosTab({ data, onExportFiltrado }: FiltrosTabProps) {
     { key: "direccion", header: "Dirección", sortable: true },
   ];
 
-    const exportFilters: RecordsFilter = {
+  const exportFilters: RecordsFilter = {
     estados: selectedEstados.length > 0 ? selectedEstados : undefined,
     subestados: selectedSubestados.length > 0 ? selectedSubestados : undefined,
     bases: selectedBases.length > 0 ? selectedBases : undefined,
