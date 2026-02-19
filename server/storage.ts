@@ -218,51 +218,27 @@ function getTurno(dateStr: string | undefined): string {
   return hour < 14 ? "Mañana" : "Tarde";
 }
 
-function parseNeotelDate(dateStr?: string) {
-  if (!dateStr) return null;
-
-  // Esperado: "DD/MM/YYYY HH:mm:ss" (o sin segundos)
-  const [datePart, timePart] = dateStr.trim().split(" ");
-  if (!datePart || !timePart) return null;
-
-  const [day, month, year] = datePart.split("/").map(Number);
-  const timePieces = timePart.split(":").map(Number);
-  const [hour, minute, second = 0] = timePieces;
-
-  if (
-    !Number.isFinite(day) || !Number.isFinite(month) || !Number.isFinite(year) ||
-    !Number.isFinite(hour) || !Number.isFinite(minute) || !Number.isFinite(second)
-  ) return null;
-
-  const d = new Date(year, month - 1, day, hour, minute, second);
-  if (Number.isNaN(d.getTime())) return null;
-
-  return d;
-}
-
 export function processCallRecords(rawData: Record<string, any>[]): AnalysisResult {
   const columns = rawData.length > 0 ? Object.keys(rawData[0]) : [];
 
-  const colEstado = findColumn(columns, ["ESTADO", "STATUS", "STATE"]) || "Estado";
-  const colSubestado = findColumn(columns, ["SUBESTADO", "SUBESTATUS", "SUBSTATE"]) || "Sub-Estado";
-  const colAni = findColumn(columns, ["ANI", "ANITELEFONO", "TELEFONO", "PHONE", "NUMEROLLAMADO", "NUMERO"]) || "ANI/Teléfono";
-  const colBase = findColumn(columns, ["BASE", "NOMBREBASE", "ORIGEN"]) || "Base";
-  const colDuracion = findColumn(columns, ["DURACION", "DURACIONENSEGUNDOS", "SEGUNDOS", "DURATION"]) || "Duración";
-  const colFecha = findColumn(columns, ["FECHAINICIO", "FECHAHORA", "INICIO", "LOGTIME", "FECHALLAMADA"]) || "Inicio";
-  const rangoDistribucion: Record<string, { total: number; answer: number; noAnswer: number }> = {};
+  const colEstado =
+    findColumn(columns, ["ESTADO", "STATUS", "STATE"]) || "Estado";
+  const colSubestado =
+    findColumn(columns, ["SUBESTADO", "SUBESTATUS", "SUBSTATE"]) || "Sub-Estado";
+  const colAni =
+    findColumn(columns, ["ANI", "ANITELEFONO", "TELEFONO", "PHONE", "NUMEROLLAMADO", "NUMERO"]) ||
+    "ANI/Teléfono";
+  const colBase =
+    findColumn(columns, ["BASE", "NOMBREBASE", "ORIGEN"]) || "Base";
+  const colDuracion =
+    findColumn(columns, ["DURACION", "DURACIONENSEGUNDOS", "SEGUNDOS", "DURATION"]) || "Duración";
 
-  records.forEach((record) => {
-    const rango = getRangoHorario(record.fecha);
-    if (!rangoDistribucion[rango]) {
-      rangoDistribucion[rango] = { total: 0, answer: 0, noAnswer: 0 };
-    }
-    rangoDistribucion[rango].total++;
+  // IMPORTANTE: priorizamos INICIO porque FECHA (YYYYMMDD) no trae hora
+  const colFecha =
+    findColumn(columns, ["INICIO", "FECHAINICIO", "FECHAHORA", "LOGTIME", "FECHALLAMADA"]) ||
+    "Inicio";
 
-    const estado = (record.estado || "").toLowerCase().replace(/\s/g, "");
-    if (estado === "answer") rangoDistribucion[rango].answer++;
-    else if (estado === "noanswer") rangoDistribucion[rango].noAnswer++;
-  });
-
+  // 1) Normalizamos records
   const records: CallRecord[] = rawData.map((row) => ({
     fecha: row[colFecha]?.toString() || undefined,
     estado: row[colEstado]?.toString() || "",
@@ -275,6 +251,21 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     fin: row["Fin"]?.toString() || undefined,
   }));
 
+  // 2) Rango horario (09-12 / 12-15 / 15-18)
+  const rangoDistribucion: Record<string, { total: number; answer: number; noAnswer: number }> = {};
+  records.forEach((record) => {
+    const rango = getRangoHorario(record.fecha);
+    if (!rangoDistribucion[rango]) {
+      rangoDistribucion[rango] = { total: 0, answer: 0, noAnswer: 0 };
+    }
+    rangoDistribucion[rango].total++;
+
+    const estado = (record.estado || "").toLowerCase().replace(/\s/g, "");
+    if (estado === "answer") rangoDistribucion[rango].answer++;
+    else if (estado === "noanswer") rangoDistribucion[rango].noAnswer++;
+  });
+
+  // 3) Agrupación por ANI
   const aniGroups = new Map<string, CallRecord[]>();
   records.forEach((record) => {
     if (!record.ani) return;
@@ -283,13 +274,13 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     aniGroups.set(record.ani, existing);
   });
 
+  // 4) Resumen por ANI
   const aniSummaries: ANISummary[] = [];
 
   aniGroups.forEach((calls, ani) => {
     const sortedCalls = [...calls].sort((a, b) => {
-      if (!a.fecha || !b.fecha) return 0;
-      const da = parseNeotelDate(a.fecha);
-      const db = parseNeotelDate(b.fecha);
+      const da = parseTicketDate(a.fecha);
+      const db = parseTicketDate(b.fecha);
       if (!da || !db) return 0;
       return da.getTime() - db.getTime();
     });
@@ -342,38 +333,46 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     };
 
     summary.tagTelefono = assignTag(summary);
-
     aniSummaries.push(summary);
   });
 
+  // 5) Distribución de estados
   const estadoDistribucion: Record<string, number> = {};
   records.forEach((record) => {
     const estado = record.estado?.toUpperCase() || "SIN_ESTADO";
     estadoDistribucion[estado] = (estadoDistribucion[estado] || 0) + 1;
   });
 
+  // 6) Distribución de tags
   const tagDistribucion: Record<string, number> = {};
   aniSummaries.forEach((s) => {
     tagDistribucion[s.tagTelefono] = (tagDistribucion[s.tagTelefono] || 0) + 1;
   });
 
+  // 7) Turno Mañana / Tarde (blindado)
   const turnoDistribucion: Record<string, { total: number; answer: number; noAnswer: number }> = {
-    "Mañana": { total: 0, answer: 0, noAnswer: 0 },
-    "Tarde": { total: 0, answer: 0, noAnswer: 0 },
+    Mañana: { total: 0, answer: 0, noAnswer: 0 },
+    Tarde: { total: 0, answer: 0, noAnswer: 0 },
   };
+
   records.forEach((record) => {
     const turno = getTurno(record.fecha);
-    turnoDistribucion[turno].total++;
-    const estado = (record.estado || "").toLowerCase().replace(/\s/g, "");
-    if (estado === "answer") {
-      turnoDistribucion[turno].answer++;
-    } else if (estado === "noanswer") {
-      turnoDistribucion[turno].noAnswer++;
+
+    if (!turnoDistribucion[turno]) {
+      turnoDistribucion[turno] = { total: 0, answer: 0, noAnswer: 0 };
     }
+
+    turnoDistribucion[turno].total++;
+
+    const estado = (record.estado || "").toLowerCase().replace(/\s/g, "");
+    if (estado === "answer") turnoDistribucion[turno].answer++;
+    else if (estado === "noanswer") turnoDistribucion[turno].noAnswer++;
   });
 
+  // 8) Prefijos (total y sobre ANSWER)
   const prefijoCount: Record<string, number> = {};
   const prefijoAnswerCount: Record<string, number> = {};
+
   records.forEach((record) => {
     const prefijo = extractPrefijo(record.ani);
     prefijoCount[prefijo] = (prefijoCount[prefijo] || 0) + 1;
@@ -385,6 +384,7 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
   });
 
   const totalRecords = records.length;
+
   const prefijoDistribucion = Object.entries(prefijoCount)
     .map(([prefijo, total]) => ({
       prefijo,
@@ -395,6 +395,7 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     .slice(0, 20);
 
   const totalAnswerPrefijos = Object.values(prefijoAnswerCount).reduce((a, b) => a + b, 0);
+
   const prefijoDistribucionAnswer = Object.entries(prefijoAnswerCount)
     .map(([prefijo, total]) => ({
       prefijo,
@@ -404,13 +405,16 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     .sort((a, b) => b.total - a.total)
     .slice(0, 20);
 
+  // 9) Prefijo predominante por HORA (usa parseTicketDate)
   const prefijoPorHoraMap: Record<number, Record<string, number>> = {};
+
   records.forEach((record) => {
-    if (!record.fecha) return;
-    const date = parseNeotelDate(record.fecha);
+    const date = parseTicketDate(record.fecha);
     if (!date) return;
+
     const hour = date.getHours();
     const prefijo = extractPrefijo(record.ani);
+
     if (!prefijoPorHoraMap[hour]) prefijoPorHoraMap[hour] = {};
     prefijoPorHoraMap[hour][prefijo] = (prefijoPorHoraMap[hour][prefijo] || 0) + 1;
   });
@@ -418,20 +422,17 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
   const prefijoPorHora = Object.entries(prefijoPorHoraMap)
     .map(([hora, counts]) => {
       const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
-      return {
-        hora: Number(hora),
-        prefijo: top?.[0] ?? "",
-        total: top?.[1] ?? 0,
-      };
+      return { hora: Number(hora), prefijo: top?.[0] ?? "", total: top?.[1] ?? 0 };
     })
     .sort((a, b) => a.hora - b.hora);
 
+  // 10) Curva de contactación (primer ANSWER+AGENT por intento)
   const firstContactIntento: Record<number, number> = {};
-  aniGroups.forEach((calls, ani) => {
+
+  aniGroups.forEach((calls) => {
     const sortedCalls = [...calls].sort((a, b) => {
-      if (!a.fecha || !b.fecha) return 0;
-      const da = parseNeotelDate(a.fecha);
-      const db = parseNeotelDate(b.fecha);
+      const da = parseTicketDate(a.fecha);
+      const db = parseTicketDate(b.fecha);
       if (!da || !db) return 0;
       return da.getTime() - db.getTime();
     });
@@ -440,6 +441,7 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
       const call = sortedCalls[i];
       const estado = (call.estado || "").toLowerCase().replace(/\s/g, "");
       const subestado = (call.subestado || "").toLowerCase();
+
       if (estado === "answer" && subestado.includes("agent")) {
         const intento = i + 1;
         firstContactIntento[intento] = (firstContactIntento[intento] || 0) + 1;
@@ -449,18 +451,17 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
   });
 
   const curvaContactacion = Object.entries(firstContactIntento)
-    .map(([intento, cantidad]) => ({
-      intento: parseInt(intento),
-      cantidad,
-    }))
+    .map(([intento, cantidad]) => ({ intento: parseInt(intento), cantidad }))
     .sort((a, b) => a.intento - b.intento);
 
+  // 11) Distribución de intentos por ANI
   const intentosCount: Record<number, number> = {};
   aniSummaries.forEach((s) => {
     intentosCount[s.intentosTotales] = (intentosCount[s.intentosTotales] || 0) + 1;
   });
 
   const totalAnis = aniSummaries.length;
+
   const intentosDistribucion = Object.entries(intentosCount)
     .map(([intentos, cantidad]) => ({
       intentos: parseInt(intentos),
@@ -470,11 +471,13 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     .sort((a, b) => a.intentos - b.intentos)
     .slice(0, 10);
 
+  // 12) KPIs
   const anisContactados = aniSummaries.filter((s) => s.intentosAnswerAgent > 0).length;
   const anisADepurar = aniSummaries.filter((s) => s.tagTelefono !== "SEGUIR_INTENTANDO").length;
 
   const totalAnswer = estadoDistribucion["ANSWER"] || 0;
   const totalNoAnswer = estadoDistribucion["NOANSWER"] || estadoDistribucion["NO ANSWER"] || 0;
+
   const pctAnswer = totalRecords > 0 ? (totalAnswer / totalRecords) * 100 : 0;
   const pctNoAnswer = totalRecords > 0 ? (totalNoAnswer / totalRecords) * 100 : 0;
 

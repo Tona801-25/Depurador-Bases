@@ -29,59 +29,70 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/health", (_req, res) => res.json({ ok: true }));
   app.get("/health", (_req, res) => res.json({ ok: true }));
 
-  // 1) Upload a disco + parseo + store (pero respuesta liviana)
+  // 1) Upload a disco + parseo + store (DEVOLVEMOS FULL)
   app.post("/api/upload", upload.array("files"), async (req, res) => {
-    try {
-      const files = req.files as Express.Multer.File[];
-      if (!files || files.length === 0) return res.status(400).json({ message: "No se recibieron archivos" });
+  try {
+    const files = req.files as Express.Multer.File[];
+    if (!files || files.length === 0) {
+      return res.status(400).json({ message: "No se recibieron archivos" });
+    }
 
-      const allRecords: Record<string, any>[] = [];
+    const allRecords: Record<string, any>[] = [];
 
-      for (const file of files) {
-        const fileName = file.originalname.toLowerCase();
-        let records: Record<string, any>[] = [];
+    for (const file of files) {
+      const fileName = file.originalname.toLowerCase();
+      let records: Record<string, any>[] = [];
 
-        try {
-          if (fileName.endsWith(".csv") || fileName.endsWith(".txt")) {
-            const content = fs.readFileSync(file.path, { encoding: "latin1" });
-            const result = Papa.parse(content, {
-              header: true,
-              skipEmptyLines: true,
-              dynamicTyping: true,
-            });
-            records = result.data as Record<string, any>[];
-          } else if (fileName.endsWith(".xlsx") || fileName.endsWith(".xls")) {
-            const buf = fs.readFileSync(file.path);
-            const workbook = XLSX.read(buf, { type: "buffer" });
-            const sheetName = workbook.SheetNames[0];
-            const worksheet = workbook.Sheets[sheetName];
-            records = XLSX.utils.sheet_to_json(worksheet);
-          } else {
-            console.warn(`Formato no soportado: ${fileName}`);
-            continue;
+      try {
+        if (fileName.endsWith(".csv") || fileName.endsWith(".txt")) {
+          // ✅ Intento UTF-8 primero, fallback latin1
+          let content = "";
+          try {
+            content = fs.readFileSync(file.path, { encoding: "utf8" });
+          } catch {
+            content = fs.readFileSync(file.path, { encoding: "latin1" });
           }
 
-          allRecords.push(...records);
-        } finally {
-          // Limpieza
-          try {
-            if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
-          } catch {}
+          const result = Papa.parse(content, {
+            header: true,
+            skipEmptyLines: true,
+            dynamicTyping: true,
+          });
+
+          records = result.data as Record<string, any>[];
+        } else if (fileName.endsWith(".xlsx") || fileName.endsWith(".xls")) {
+          const buf = fs.readFileSync(file.path);
+          const workbook = XLSX.read(buf, { type: "buffer" });
+          const sheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[sheetName];
+          records = XLSX.utils.sheet_to_json(worksheet);
+        } else {
+          console.warn(`Formato no soportado: ${fileName}`);
+          continue;
         }
+
+        allRecords.push(...records);
+      } finally {
+        // Limpieza
+        try {
+          if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+        } catch {}
       }
-
-      if (allRecords.length === 0) return res.status(400).json({ message: "No se pudieron leer datos" });
-
-      const analysisResult = processCallRecords(allRecords);
-      await storage.storeAnalysis(analysisResult);
-
-      // ✅ Respuesta liviana: NO devolvemos rawRecords
-      const { rawRecords: _raw, ...summary } = analysisResult;
-      res.json(summary);
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ message: "Error interno al procesar archivos" });
     }
+
+    if (allRecords.length === 0) {
+      return res.status(400).json({ message: "No se pudieron leer datos" });
+    }
+
+    const analysisResult = processCallRecords(allRecords);
+    await storage.storeAnalysis(analysisResult);
+
+    // ✅ DEVOLVEMOS FULL (incluye rawRecords + prefijoPorHora)
+    res.json(analysisResult);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Error interno al procesar archivos" });
+  }
   });
 
   // 2) Meta para poblar filtros del frontend
