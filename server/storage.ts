@@ -155,13 +155,35 @@ function extractPrefijo(ani: string): string {
   return digits.slice(0, 2) || "00";
 }
 
-function parseTicketDate(dateStr?: string): Date | null {
-  if (!dateStr) return null;
+function excelSerialToDate(serial: number): Date | null {
+  if (!Number.isFinite(serial)) return null;
 
-  const s = String(dateStr).trim();
+  // Excel (Windows) epoch: 1899-12-30
+  const ms = (serial - 25569) * 86400 * 1000;
+  const d = new Date(ms);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function parseTicketDate(value?: unknown): Date | null {
+  if (value === null || value === undefined) return null;
+
+  // 1) Si ya viene como número (Excel serial)
+  if (typeof value === "number") {
+    // Heurística: serials válidos suelen ser > 20000 (~1954)
+    if (value > 20000) return excelSerialToDate(value);
+    return null;
+  }
+
+  const s = String(value).trim();
   if (!s) return null;
 
-  // Caso 1: YYYYMMDD (ej: 20260213)
+  // 2) Si viene como string numérico (ej: "46096.46079")
+  if (/^\d+(\.\d+)?$/.test(s)) {
+    const num = Number(s);
+    if (Number.isFinite(num) && num > 20000) return excelSerialToDate(num);
+  }
+
+  // 3) Caso YYYYMMDD (ej: 20260213)
   if (/^\d{8}$/.test(s)) {
     const year = Number(s.slice(0, 4));
     const month = Number(s.slice(4, 6));
@@ -170,11 +192,11 @@ function parseTicketDate(dateStr?: string): Date | null {
     return Number.isNaN(d.getTime()) ? null : d;
   }
 
-  // Caso 2: ISO o YYYY-MM-DD...
+  // 4) ISO o YYYY-MM-DD...
   const isoTry = new Date(s);
   if (!Number.isNaN(isoTry.getTime())) return isoTry;
 
-  // Caso 3: "DD-MM-YYYY HH:mm:ss" o "DD/MM/YYYY HH:mm:ss" (tu caso)
+  // 5) "DD-MM-YYYY HH:mm:ss" o "DD/MM/YYYY HH:mm:ss"
   const [datePart, timePart] = s.split(" ");
   if (!datePart) return null;
 
@@ -238,9 +260,14 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     findColumn(columns, ["INICIO", "FECHAINICIO", "FECHAHORA", "LOGTIME", "FECHALLAMADA"]) ||
     "Inicio";
 
+  console.log("colFecha detectada:", colFecha);
+  console.log("raw sample:", rawData[0]);
+
   // 1) Normalizamos records
-  const records: CallRecord[] = rawData.map((row) => ({
-    fecha: row[colFecha]?.toString() || undefined,
+  const records: CallRecord[] = rawData.map((row) => {
+  const parsed = parseTicketDate(row[colFecha]);
+  return {
+    fecha: parsed ? parsed.toISOString() : (row[colFecha]?.toString() || undefined),
     estado: row[colEstado]?.toString() || "",
     subestado: row[colSubestado]?.toString() || undefined,
     ani: row[colAni]?.toString()?.trim() || "",
@@ -249,7 +276,10 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     direccion: row["Dirección"]?.toString() || row["Direccion"]?.toString() || undefined,
     conexion: row["Conexión"]?.toString() || row["Conexion"]?.toString() || undefined,
     fin: row["Fin"]?.toString() || undefined,
-  }));
+  };
+  });
+
+  console.log("records[0].fecha:", records[0]?.fecha);
 
   // 2) Rango horario (09-12 / 12-15 / 15-18)
   const rangoDistribucion: Record<string, { total: number; answer: number; noAnswer: number }> = {};
