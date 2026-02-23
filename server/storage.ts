@@ -3,7 +3,6 @@ import type {
   AnalysisMeta,
   ANISummary,
   CallRecord,
-  PrefijoCatalogo,
   RecordsFilter,
   TagType,
 } from "@shared/schema";
@@ -37,6 +36,7 @@ export class MemStorage implements IStorage {
 }
 
 export const storage = new MemStorage();
+
 function normalizeColumn(col: string): string {
   return col
     .trim()
@@ -91,85 +91,69 @@ export function computeAnalysisMeta(analysis: AnalysisResult): AnalysisMeta {
   };
 }
 
+/**
+ * ✅ FIX IMPORTANTE:
+ * - normalizamos también los "possibles"
+ * - así no dependés de mayúsculas/acentos/espacios en el Excel
+ */
 function findColumn(columns: string[], possibles: string[]): string | null {
   const normalizedColumns = columns.map(normalizeColumn);
   const columnMap = new Map(columns.map((c, i) => [normalizedColumns[i], c]));
 
   for (const p of possibles) {
-    if (columnMap.has(p)) {
-      return columnMap.get(p) || null;
+    const np = normalizeColumn(p);
+    if (columnMap.has(np)) {
+      return columnMap.get(np) || null;
     }
   }
   return null;
 }
 
 function assignTag(summary: ANISummary): TagType {
-  if (summary.intentosUnallocated >= 3) {
-    return "INVALIDO";
-  }
-  if (summary.intentosAnswerAgent >= 1) {
-    return "CONTACTADO";
-  }
-  if (summary.intentosAnsweringMachine >= 5 && summary.intentosAnswerAgent === 0) {
-    return "SOLO_BUZON";
-  }
+  if (summary.intentosUnallocated >= 3) return "INVALIDO";
+  if (summary.intentosAnswerAgent >= 1) return "CONTACTADO";
+  if (summary.intentosAnsweringMachine >= 5 && summary.intentosAnswerAgent === 0) return "SOLO_BUZON";
   if (
     summary.intentosNoAnswer >= 6 &&
     summary.intentosAnswerAgent === 0 &&
     summary.intentosAnsweringMachine === 0
-  ) {
-    return "NO_ATIENDE";
-  }
-  if (summary.intentosRejected >= 3 && summary.intentosAnswerAgent === 0) {
-    return "RECHAZA";
-  }
+  ) return "NO_ATIENDE";
+  if (summary.intentosRejected >= 3 && summary.intentosAnswerAgent === 0) return "RECHAZA";
   return "SEGUIR_INTENTANDO";
 }
 
 function extractPrefijo(ani: string): string {
-  const digits = ani.replace(/\D/g, "");
+  const digits = (ani || "").replace(/\D/g, "");
   if (digits.startsWith("54")) {
     const rest = digits.slice(2);
     if (rest.startsWith("9")) {
       const afterNine = rest.slice(1);
       if (afterNine.startsWith("11")) return "11";
-      for (const len of [4, 3, 2]) {
-        if (afterNine.length >= len) {
-          return afterNine.slice(0, len);
-        }
-      }
+      for (const len of [4, 3, 2]) if (afterNine.length >= len) return afterNine.slice(0, len);
     }
     if (rest.startsWith("11")) return "11";
-    for (const len of [4, 3, 2]) {
-      if (rest.length >= len) {
-        return rest.slice(0, len);
-      }
-    }
+    for (const len of [4, 3, 2]) if (rest.length >= len) return rest.slice(0, len);
   }
   if (digits.startsWith("11")) return "11";
-  for (const len of [4, 3, 2]) {
-    if (digits.length >= len) {
-      return digits.slice(0, len);
-    }
-  }
+  for (const len of [4, 3, 2]) if (digits.length >= len) return digits.slice(0, len);
   return digits.slice(0, 2) || "00";
 }
 
 function excelSerialToDate(serial: number): Date | null {
   if (!Number.isFinite(serial)) return null;
-
   // Excel (Windows) epoch: 1899-12-30
   const ms = (serial - 25569) * 86400 * 1000;
   const d = new Date(ms);
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/**
+ * ✅ Parser robusto (serial Excel, string numérica, YYYYMMDD, ISO, dd/mm/yyyy hh:mm:ss)
+ */
 function parseTicketDate(value?: unknown): Date | null {
   if (value === null || value === undefined) return null;
 
-  // 1) Si ya viene como número (Excel serial)
   if (typeof value === "number") {
-    // Heurística: serials válidos suelen ser > 20000 (~1954)
     if (value > 20000) return excelSerialToDate(value);
     return null;
   }
@@ -177,13 +161,13 @@ function parseTicketDate(value?: unknown): Date | null {
   const s = String(value).trim();
   if (!s) return null;
 
-  // 2) Si viene como string numérico (ej: "46096.46079")
+  // string numérica serial
   if (/^\d+(\.\d+)?$/.test(s)) {
     const num = Number(s);
     if (Number.isFinite(num) && num > 20000) return excelSerialToDate(num);
   }
 
-  // 3) Caso YYYYMMDD (ej: 20260213)
+  // YYYYMMDD
   if (/^\d{8}$/.test(s)) {
     const year = Number(s.slice(0, 4));
     const month = Number(s.slice(4, 6));
@@ -192,15 +176,15 @@ function parseTicketDate(value?: unknown): Date | null {
     return Number.isNaN(d.getTime()) ? null : d;
   }
 
-  // 4) ISO o YYYY-MM-DD...
+  // ISO / Date parseable
   const isoTry = new Date(s);
   if (!Number.isNaN(isoTry.getTime())) return isoTry;
 
-  // 5) "DD-MM-YYYY HH:mm:ss" o "DD/MM/YYYY HH:mm:ss"
+  // DD-MM-YYYY o DD/MM/YYYY + hora
   const [datePart, timePart] = s.split(" ");
   if (!datePart) return null;
 
-  const sep = datePart.includes("-") ? "-" : (datePart.includes("/") ? "/" : null);
+  const sep = datePart.includes("-") ? "-" : datePart.includes("/") ? "/" : null;
   if (!sep) return null;
 
   const [ddStr, mmStr, yyyyStr] = datePart.split(sep);
@@ -235,61 +219,49 @@ function getRangoHorario(dateStr?: string): string {
 
 function getTurno(dateStr: string | undefined): string {
   const d = parseTicketDate(dateStr);
-  if (!d) return "Mañana"; // default seguro
-  const hour = d.getHours();
-  return hour < 14 ? "Mañana" : "Tarde";
+  if (!d) return "Mañana";
+  return d.getHours() < 14 ? "Mañana" : "Tarde";
 }
 
 export function processCallRecords(rawData: Record<string, any>[]): AnalysisResult {
   const columns = rawData.length > 0 ? Object.keys(rawData[0]) : [];
 
-  const colEstado =
-    findColumn(columns, ["ESTADO", "STATUS", "STATE"]) || "Estado";
-  const colSubestado =
-    findColumn(columns, ["SUBESTADO", "SUBESTATUS", "SUBSTATE"]) || "Sub-Estado";
+  const colEstado = findColumn(columns, ["ESTADO", "STATUS", "STATE"]) || "Estado";
+  const colSubestado = findColumn(columns, ["SUBESTADO", "SUBESTATUS", "SUBSTATE"]) || "Sub-Estado";
   const colAni =
-    findColumn(columns, ["ANI", "ANITELEFONO", "TELEFONO", "PHONE", "NUMEROLLAMADO", "NUMERO"]) ||
+    findColumn(columns, ["ANI", "ANI/TELÉFONO", "ANITELEFONO", "TELEFONO", "PHONE", "NUMEROLLAMADO", "NUMERO"]) ||
     "ANI/Teléfono";
-  const colBase =
-    findColumn(columns, ["BASE", "NOMBREBASE", "ORIGEN"]) || "Base";
-  const colDuracion =
-    findColumn(columns, ["DURACION", "DURACIONENSEGUNDOS", "SEGUNDOS", "DURATION"]) || "Duración";
+  const colBase = findColumn(columns, ["BASE", "NOMBREBASE", "ORIGEN"]) || "Base";
+  const colDuracion = findColumn(columns, ["DURACION", "DURACIONENSEGUNDOS", "SEGUNDOS", "DURATION"]) || "Duración";
 
-  // IMPORTANTE: priorizamos INICIO porque FECHA (YYYYMMDD) no trae hora
+  // ✅ Prioridad: INICIO (tiene hora) sobre FECHA (YYYYMMDD sin hora)
   const colFecha =
-    findColumn(columns, ["INICIO", "FECHAINICIO", "FECHAHORA", "LOGTIME", "FECHALLAMADA"]) ||
+    findColumn(columns, ["INICIO", "FECHAINICIO", "FECHAHORA", "LOGTIME", "FECHALLAMADA", "START", "BEGIN"]) ||
     "Inicio";
 
-  console.log("colFecha detectada:", colFecha);
-  console.log("raw sample:", rawData[0]);
-
-  // 1) Normalizamos records
+  // 1) Normalizamos records (fecha -> ISO si se puede)
   const records: CallRecord[] = rawData.map((row) => {
-  const parsed = parseTicketDate(row[colFecha]);
-  return {
-    fecha: parsed ? parsed.toISOString() : (row[colFecha]?.toString() || undefined),
-    estado: row[colEstado]?.toString() || "",
-    subestado: row[colSubestado]?.toString() || undefined,
-    ani: row[colAni]?.toString()?.trim() || "",
-    base: row[colBase]?.toString() || undefined,
-    duracion: parseFloat(row[colDuracion]) || undefined,
-    direccion: row["Dirección"]?.toString() || row["Direccion"]?.toString() || undefined,
-    conexion: row["Conexión"]?.toString() || row["Conexion"]?.toString() || undefined,
-    fin: row["Fin"]?.toString() || undefined,
-  };
+    const parsed = parseTicketDate(row[colFecha]);
+    return {
+      fecha: parsed ? parsed.toISOString() : (row[colFecha]?.toString() || undefined),
+      estado: row[colEstado]?.toString() || "",
+      subestado: row[colSubestado]?.toString() || undefined,
+      ani: row[colAni]?.toString()?.trim() || "",
+      base: row[colBase]?.toString() || undefined,
+      duracion: Number.isFinite(Number(row[colDuracion])) ? Number(row[colDuracion]) : undefined,
+      direccion: row["Dirección"]?.toString() || row["Direccion"]?.toString() || undefined,
+      conexion: row["Conexión"]?.toString() || row["Conexion"]?.toString() || undefined,
+      fin: row["Fin"]?.toString() || undefined,
+    };
   });
 
-  console.log("records[0].fecha:", records[0]?.fecha);
-
-  // 2) Rango horario (09-12 / 12-15 / 15-18)
+  // 2) Rango horario
   const rangoDistribucion: Record<string, { total: number; answer: number; noAnswer: number }> = {};
   records.forEach((record) => {
     const rango = getRangoHorario(record.fecha);
-    if (!rangoDistribucion[rango]) {
-      rangoDistribucion[rango] = { total: 0, answer: 0, noAnswer: 0 };
-    }
-    rangoDistribucion[rango].total++;
+    if (!rangoDistribucion[rango]) rangoDistribucion[rango] = { total: 0, answer: 0, noAnswer: 0 };
 
+    rangoDistribucion[rango].total++;
     const estado = (record.estado || "").toLowerCase().replace(/\s/g, "");
     if (estado === "answer") rangoDistribucion[rango].answer++;
     else if (estado === "noanswer") rangoDistribucion[rango].noAnswer++;
@@ -306,7 +278,6 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
 
   // 4) Resumen por ANI
   const aniSummaries: ANISummary[] = [];
-
   aniGroups.forEach((calls, ani) => {
     const sortedCalls = [...calls].sort((a, b) => {
       const da = parseTicketDate(a.fecha);
@@ -326,39 +297,26 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
       const estado = (call.estado || "").toLowerCase().replace(/\s/g, "");
       const subestado = (call.subestado || "").toLowerCase();
 
-      if (estado === "answer" && subestado.includes("agent")) {
-        intentosAnswerAgent++;
-      } else if (
-        estado === "answer" &&
-        (subestado.includes("machine") || subestado.includes("buzon"))
-      ) {
+      if (estado === "answer" && subestado.includes("agent")) intentosAnswerAgent++;
+      else if (estado === "answer" && (subestado.includes("machine") || subestado.includes("buzon")))
         intentosAnsweringMachine++;
-      } else if (estado === "noanswer") {
-        intentosNoAnswer++;
-      } else if (estado === "busy") {
-        intentosBusy++;
-      } else if (estado === "unallocated") {
-        intentosUnallocated++;
-      } else if (estado === "rejected") {
-        intentosRejected++;
-      }
+      else if (estado === "noanswer") intentosNoAnswer++;
+      else if (estado === "busy") intentosBusy++;
+      else if (estado === "unallocated") intentosUnallocated++;
+      else if (estado === "rejected") intentosRejected++;
     });
-
-    const intentosTotales = sortedCalls.length;
-    const primerLlamado = sortedCalls[0]?.fecha;
-    const ultimoLlamado = sortedCalls[sortedCalls.length - 1]?.fecha;
 
     const summary: ANISummary = {
       ani,
-      intentosTotales,
+      intentosTotales: sortedCalls.length,
       intentosAnswerAgent,
       intentosAnsweringMachine,
       intentosNoAnswer,
       intentosBusy,
       intentosUnallocated,
       intentosRejected,
-      primerLlamado,
-      ultimoLlamado,
+      primerLlamado: sortedCalls[0]?.fecha,
+      ultimoLlamado: sortedCalls[sortedCalls.length - 1]?.fecha,
       tagTelefono: "",
     };
 
@@ -379,7 +337,7 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     tagDistribucion[s.tagTelefono] = (tagDistribucion[s.tagTelefono] || 0) + 1;
   });
 
-  // 7) Turno Mañana / Tarde (blindado)
+  // 7) Turno Mañana / Tarde
   const turnoDistribucion: Record<string, { total: number; answer: number; noAnswer: number }> = {
     Mañana: { total: 0, answer: 0, noAnswer: 0 },
     Tarde: { total: 0, answer: 0, noAnswer: 0 },
@@ -387,13 +345,9 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
 
   records.forEach((record) => {
     const turno = getTurno(record.fecha);
-
-    if (!turnoDistribucion[turno]) {
-      turnoDistribucion[turno] = { total: 0, answer: 0, noAnswer: 0 };
-    }
+    if (!turnoDistribucion[turno]) turnoDistribucion[turno] = { total: 0, answer: 0, noAnswer: 0 };
 
     turnoDistribucion[turno].total++;
-
     const estado = (record.estado || "").toLowerCase().replace(/\s/g, "");
     if (estado === "answer") turnoDistribucion[turno].answer++;
     else if (estado === "noanswer") turnoDistribucion[turno].noAnswer++;
@@ -408,9 +362,7 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     prefijoCount[prefijo] = (prefijoCount[prefijo] || 0) + 1;
 
     const estado = (record.estado || "").toLowerCase().replace(/\s/g, "");
-    if (estado === "answer") {
-      prefijoAnswerCount[prefijo] = (prefijoAnswerCount[prefijo] || 0) + 1;
-    }
+    if (estado === "answer") prefijoAnswerCount[prefijo] = (prefijoAnswerCount[prefijo] || 0) + 1;
   });
 
   const totalRecords = records.length;
@@ -435,9 +387,8 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     .sort((a, b) => b.total - a.total)
     .slice(0, 20);
 
-  // 9) Prefijo predominante por HORA (usa parseTicketDate)
+  // 9) Prefijo predominante por HORA
   const prefijoPorHoraMap: Record<number, Record<string, number>> = {};
-
   records.forEach((record) => {
     const date = parseTicketDate(record.fecha);
     if (!date) return;
@@ -456,9 +407,8 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     })
     .sort((a, b) => a.hora - b.hora);
 
-  // 10) Curva de contactación (primer ANSWER+AGENT por intento)
+  // 10) Curva de contactación
   const firstContactIntento: Record<number, number> = {};
-
   aniGroups.forEach((calls) => {
     const sortedCalls = [...calls].sort((a, b) => {
       const da = parseTicketDate(a.fecha);
@@ -471,7 +421,6 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
       const call = sortedCalls[i];
       const estado = (call.estado || "").toLowerCase().replace(/\s/g, "");
       const subestado = (call.subestado || "").toLowerCase();
-
       if (estado === "answer" && subestado.includes("agent")) {
         const intento = i + 1;
         firstContactIntento[intento] = (firstContactIntento[intento] || 0) + 1;
