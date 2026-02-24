@@ -232,9 +232,9 @@
   /* .no-default-hover-elevate/no-default-active-elevate is an escape hatch so consumers of
    * buttons/badges can remove the automatic brightness adjustment on interactions
    * and program their own. */
-  .no-default-hover-elevate {}
+  .no-default-hover-elevate { }
 
-  .no-default-active-elevate {}
+  .no-default-active-elevate { }
 
   /**
    * Toggleable backgrounds go behind the content. Hoverable/active goes on top.
@@ -305,3 +305,17 @@
     inset: -1px;
   }
 }
+
+  .glass-card {
+    background: hsl(var(--glass));
+    border: 1px solid hsl(var(--glass-border));
+    border-radius: var(--radius);
+    box-shadow: 0 10px 30px rgba(0,0,0,.12);
+    backdrop-filter: blur(10px);
+  }
+  .gradient-text {
+    background: linear-gradient(90deg, hsl(var(--chart-1)), hsl(var(--chart-2)));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
