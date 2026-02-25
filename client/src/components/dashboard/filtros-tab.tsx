@@ -51,7 +51,14 @@ export function FiltrosTab({ data, onExportFiltrado }: FiltrosTabProps) {
   }, [rawRecords]);
 
   const maxDuracion = useMemo(() => {
-    return Math.max(...rawRecords.map((r) => r.duracion || 0), 3600);
+  let max = 0;
+
+  for (const r of rawRecords) {
+    const d = typeof r.duracion === "number" ? r.duracion : Number(r.duracion) || 0;
+    if (d > max) max = d;
+  }
+
+  return Math.max(max, 3600);
   }, [rawRecords]);
 
   const filteredRecords = useMemo(() => {
