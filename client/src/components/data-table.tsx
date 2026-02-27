@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, type ReactNode } from "react";
 import {
   Table,
   TableBody,
@@ -16,7 +16,7 @@ export interface Column<T> {
   key: keyof T | string;
   header: string;
   sortable?: boolean;
-  render?: (item: T) => React.ReactNode;
+  render?: (item: T) => ReactNode;
   className?: string;
 }
 
@@ -119,11 +119,7 @@ export function DataTable<T extends Record<string, unknown>>({
                       column.sortable && "cursor-pointer select-none",
                       column.className
                     )}
-                    onClick={
-                      column.sortable
-                        ? () => handleSort(String(column.key))
-                        : undefined
-                    }
+                    onClick={column.sortable ? () => handleSort(String(column.key)) : undefined}
                   >
                     <div className="flex items-center gap-1">
                       {column.header}
@@ -139,31 +135,20 @@ export function DataTable<T extends Record<string, unknown>>({
                 ))}
               </TableRow>
             </TableHeader>
+
             <TableBody>
               {paginatedData.length === 0 ? (
                 <TableRow>
-                  <TableCell
-                    colSpan={columns.length}
-                    className="h-24 text-center text-muted-foreground"
-                  >
+                  <TableCell colSpan={columns.length} className="h-24 text-center text-muted-foreground">
                     No hay datos para mostrar
                   </TableCell>
                 </TableRow>
               ) : (
                 paginatedData.map((item, index) => (
-                  <TableRow
-                    key={index}
-                    className="hover-elevate"
-                    data-testid={`table-row-${index}`}
-                  >
+                  <TableRow key={index} className="hover-elevate" data-testid={`table-row-${index}`}>
                     {columns.map((column) => (
-                      <TableCell
-                        key={String(column.key)}
-                        className={column.className}
-                      >
-                        {column.render
-                          ? column.render(item)
-                          : String(item[column.key as keyof T] ?? "-")}
+                      <TableCell key={String(column.key)} className={column.className}>
+                        {column.render ? column.render(item) : String(item[column.key as keyof T] ?? "-")}
                       </TableCell>
                     ))}
                   </TableRow>
@@ -178,9 +163,9 @@ export function DataTable<T extends Record<string, unknown>>({
         <div className="flex items-center justify-between gap-2 text-sm">
           <p className="text-muted-foreground">
             Mostrando {(currentPage - 1) * pageSize + 1} -{" "}
-            {Math.min(currentPage * pageSize, sortedData.length)} de{" "}
-            {sortedData.length}
+            {Math.min(currentPage * pageSize, sortedData.length)} de {sortedData.length}
           </p>
+
           <div className="flex items-center gap-1">
             <Button
               variant="outline"
@@ -191,9 +176,9 @@ export function DataTable<T extends Record<string, unknown>>({
             >
               <ChevronLeft className="h-4 w-4" />
             </Button>
-            <span className="px-2">
-              {currentPage} / {totalPages}
-            </span>
+
+            <span className="px-2">{currentPage} / {totalPages}</span>
+
             <Button
               variant="outline"
               size="icon"
