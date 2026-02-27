@@ -1,5 +1,4 @@
 import { cn } from "@/lib/utils";
-import { Card, CardContent } from "@/components/ui/card";
 import { TrendingUp, TrendingDown, Minus } from "lucide-react";
 
 interface KPICardProps {
@@ -30,56 +29,72 @@ export function KPICard({
     if (trend.value < 0) return <TrendingDown className="h-3 w-3" />;
     return <Minus className="h-3 w-3" />;
   };
-
+  
   const getTrendColor = () => {
     if (!trend) return "";
-    if (trend.value > 0) return "text-green-500";
-    if (trend.value < 0) return "text-red-500";
+    if (trend.value > 0) return "text-success";
+    if (trend.value < 0) return "text-destructive";
     return "text-muted-foreground";
+  };
+
+  const getAccentColor = () => {
+    switch (variant) {
+      case "success":
+        return "border-l-success";
+      case "warning":
+        return "border-l-warning";
+      case "danger":
+        return "border-l-destructive";
+      default:
+        return "border-l-primary";
+    }
   };
 
   const getValueColor = () => {
     switch (variant) {
       case "success":
-        return "text-green-500";
+        return "text-success";
       case "warning":
-        return "text-yellow-500";
+        return "text-warning";
       case "danger":
-        return "text-red-500";
+        return "text-destructive";
       default:
-        return "";
+        return "text-foreground";
     }
   };
 
   return (
-    <Card className={cn("", className)} data-testid={testId}>
-      <CardContent className="p-4">
-        <div className="space-y-1">
-          <p className="text-xs text-muted-foreground uppercase tracking-wide">
-            {title}
+    <div
+      className={cn(
+        "glass-card p-4 border-l-[3px] animate-slide-up",
+        getAccentColor(),
+        className
+      )}
+      data-testid={testId}
+    >
+      <div className="space-y-1.5">
+        <p className="stat-label">{title}</p>
+        <div className="flex items-baseline gap-2 flex-wrap">
+          <p className={cn("stat-value", getValueColor())}>
+            {typeof value === "number" ? value.toLocaleString("es-AR") : value}
           </p>
-          <div className="flex items-baseline gap-2 flex-wrap">
-            <p className={cn("text-2xl font-bold", getValueColor())}>
-              {typeof value === "number" ? value.toLocaleString("es-AR") : value}
-            </p>
-            {subtitle && (
-              <span className="text-sm text-muted-foreground">{subtitle}</span>
-            )}
-          </div>
-          {trend && (
-            <div className={cn("flex items-center gap-1 text-xs", getTrendColor())}>
-              {getTrendIcon()}
-              <span>
-                {trend.value > 0 ? "+" : ""}
-                {trend.value.toFixed(1)}%
-              </span>
-              {trend.label && (
-                <span className="text-muted-foreground">{trend.label}</span>
-              )}
-            </div>
+          {subtitle && (
+            <span className="text-sm font-medium text-muted-foreground">{subtitle}</span>
           )}
         </div>
-      </CardContent>
-    </Card>
+        {trend && (
+          <div className={cn("flex items-center gap-1 text-xs font-medium", getTrendColor())}>
+            {getTrendIcon()}
+            <span>
+              {trend.value > 0 ? "+" : ""}
+              {trend.value.toFixed(1)}%
+            </span>
+            {trend.label && (
+              <span className="text-muted-foreground">{trend.label}</span>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
