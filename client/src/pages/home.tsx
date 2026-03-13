@@ -30,6 +30,10 @@ import {
   BookOpen,
   Settings,
   Upload,
+  Users,
+  Phone,
+  Target,
+  PhoneOff,
 } from "lucide-react";
 
 export default function Home() {
@@ -157,14 +161,8 @@ export default function Home() {
     <div className="min-h-screen bg-background">
       <Header />
 
-      <main className="container max-w-7xl mx-auto px-6 py-8">
-        <section className="mb-8">
-          <div className="text-center mb-6">
-            <h2 className="text-xl font-semibold flex items-center justify-center gap-2">
-              <Upload className="h-5 w-5 text-primary" />
-              Carga de archivos
-            </h2>
-          </div>
+          <main className="mx-auto w-full max-w-[1320px] px-5 py-6">        
+          <section className="mb-8">
           <FileUpload
             onFilesSelected={handleFilesSelected}
             isUploading={uploadMutation.isPending}
@@ -258,49 +256,50 @@ export default function Home() {
             </TabsList>
 
             <TabsContent value="dashboard" className="space-y-6">
-              <div className="text-center mb-6">
-                <h2 className="text-xl font-semibold flex items-center justify-center gap-2">
-                  <BarChart3 className="h-5 w-5 text-chart-1" />
+              <div className="pt-1 text-center">
+                <h2 className="text-[1.7rem] font-semibold tracking-tight text-cyan-400">                  
                   Tablero visual de calidad de base
                 </h2>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-                <KPICard
-                  title="ANIs totales"
-                  value={analysisResult.totalAnis}
-                  testId="kpi-anis-totales"
-                />
-                <KPICard
-                  title="ANIs contactados (ANSWER-AGENT)"
-                  value={analysisResult.anisContactados}
-                  trend={{
-                    value: (analysisResult.anisContactados / analysisResult.totalAnis) * 100,
-                  }}
-                  variant="success"
-                  testId="kpi-anis-contactados"
-                />
-                <KPICard
-                  title="ANIs a depurar"
-                  value={analysisResult.anisADepurar}
-                  trend={{
-                    value: (analysisResult.anisADepurar / analysisResult.totalAnis) * 100,
-                  }}
-                  variant="danger"
-                  testId="kpi-anis-depurar"
-                />
-                <KPICard
-                  title="% ANSWER"
-                  value={`${analysisResult.pctAnswer.toFixed(1)}%`}
-                  variant="success"
-                  testId="kpi-pct-answer"
-                />
-                <KPICard
-                  title="% NO ANSWER"
-                  value={`${analysisResult.pctNoAnswer.toFixed(1)}%`}
-                  testId="kpi-pct-noanswer"
-                />
-              </div>
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
+              <KPICard
+                title="ANIs totales"
+                value={analysisResult.totalAnis}
+                icon={Users}
+                testId="kpi-anis-totales"
+              />
+              <KPICard
+                title="ANIs contactados"
+                value={analysisResult.anisContactados}
+                icon={Phone}
+                trend={{
+                  value: (analysisResult.anisContactados / analysisResult.totalAnis) * 100,
+                }}
+                testId="kpi-anis-contactados"
+              />
+              <KPICard
+                title="ANIs a depurar"
+                value={analysisResult.anisADepurar}
+                icon={Target}
+                trend={{
+                  value: (analysisResult.anisADepurar / analysisResult.totalAnis) * 100,
+                }}
+                testId="kpi-anis-depurar"
+              />
+              <KPICard
+                title="% Answer"
+                value={`${analysisResult.pctAnswer.toFixed(1)}%`}
+                icon={Phone}
+                testId="kpi-pct-answer"
+              />
+              <KPICard
+                title="% No Answer"
+                value={`${analysisResult.pctNoAnswer.toFixed(1)}%`}
+                icon={PhoneOff}
+                testId="kpi-pct-noanswer"
+              />
+            </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 <EstadoDistribucionChart data={analysisResult} />
@@ -344,22 +343,19 @@ export default function Home() {
         )}
 
         {!analysisResult && !uploadMutation.isPending && (
-          <Card className="border-dashed">
-            <CardContent className="py-16">
-              <div className="flex flex-col items-center justify-center gap-4 text-center">
-                <div className="rounded-full bg-muted p-4">
-                  <BarChart3 className="h-8 w-8 text-muted-foreground" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold">
-                    Sin datos para mostrar
-                  </h3>
-                  <p className="text-sm text-muted-foreground max-w-md">
-                    Subí al menos un archivo de Neotel (CSV, TXT, XLS o XLSX)
-                    para habilitar las pestañas de análisis.
-                  </p>
-                </div>
+          <Card>
+            <CardContent className="flex min-h-[280px] flex-col items-center justify-center p-10 text-center">
+              <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-white/5">
+                <BarChart3 className="h-7 w-7 text-slate-500" />
               </div>
+
+              <h3 className="text-3xl font-semibold text-white">
+                Sin datos para mostrar
+              </h3>
+
+              <p className="mt-3 max-w-[540px] text-base leading-relaxed text-slate-400">
+                Subí al menos un archivo de Neotel (CSV, TXT, XLS o XLSX) para habilitar las pestañas de análisis.
+              </p>
             </CardContent>
           </Card>
         )}
