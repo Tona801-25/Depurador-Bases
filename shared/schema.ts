@@ -45,6 +45,40 @@ export const tagTypes = [
 
 export type TagType = (typeof tagTypes)[number];
 
+export const baseInsightSchema = z.object({
+  base: z.string(),
+  totalRegistros: z.number(),
+  totalAnis: z.number(),
+  contactados: z.number(),
+  pctContactoEfectivo: z.number(),
+  pctBuzon: z.number(),
+  pctInvalidos: z.number(),
+  pctADepurar: z.number(),
+  intentosPromedio: z.number(),
+  scoreCalidad: z.number(),
+  recomendacion: z.string(),
+});
+
+export type BaseInsight = z.infer<typeof baseInsightSchema>;
+
+export const depuracionInsightSchema = z.object({
+  ani: z.string(),
+  tag: z.string(),
+  prioridad: z.string(),
+  accion: z.string(),
+  motivo: z.string(),
+});
+
+export type DepuracionInsight = z.infer<typeof depuracionInsightSchema>;
+
+export const franjaDistribucionItemSchema = z.object({
+  total: z.number(),
+  contactoEfectivo: z.number(),
+  noContacto: z.number(),
+});
+
+export type FranjaDistribucionItem = z.infer<typeof franjaDistribucionItemSchema>;
+
 export const analysisResultSchema = z.object({
   id: z.string(),
   fileName: z.string(),
@@ -55,44 +89,67 @@ export const analysisResultSchema = z.object({
   anisADepurar: z.number(),
   pctAnswer: z.number(),
   pctNoAnswer: z.number(),
+
   estadoDistribucion: z.record(z.string(), z.number()),
   tagDistribucion: z.record(z.string(), z.number()),
-  turnoDistribucion: z.record(z.string(), z.object({
-    total: z.number(),
-    answer: z.number(),
-    noAnswer: z.number(),
-  })),
-  prefijoDistribucion: z.array(z.object({
-    prefijo: z.string(),
-    total: z.number(),
-    pctSobreTotal: z.number(),
-  })),
-   prefijoDistribucionAnswer: z.array(z.object({
-    prefijo: z.string(),
-    total: z.number(),
-    pctSobreTotal: z.number(),
-  })),
-    prefijoPorHora: z.array(z.object({
-    hora: z.number(),
-    prefijo: z.string(),
-    total: z.number(),
-  })),
-  curvaContactacion: z.array(z.object({
-    intento: z.number(),
-    cantidad: z.number(),
-  })),
-  intentosDistribucion: z.array(z.object({
-    intentos: z.number(),
-    cantidad: z.number(),
-    porcentaje: z.number(),
-  })),
+
+  turnoDistribucion: z.record(
+    z.string(),
+    z.object({
+      total: z.number(),
+      answer: z.number(),
+      noAnswer: z.number(),
+    })
+  ),
+
+  prefijoDistribucion: z.array(
+    z.object({
+      prefijo: z.string(),
+      total: z.number(),
+      pctSobreTotal: z.number(),
+    })
+  ),
+
+  prefijoDistribucionAnswer: z.array(
+    z.object({
+      prefijo: z.string(),
+      total: z.number(),
+      pctSobreTotal: z.number(),
+    })
+  ),
+
+  curvaContactacion: z.array(
+    z.object({
+      intento: z.number(),
+      cantidad: z.number(),
+    })
+  ),
+
+  intentosDistribucion: z.array(
+    z.object({
+      intentos: z.number(),
+      cantidad: z.number(),
+      porcentaje: z.number(),
+    })
+  ),
+
   aniSummaries: z.array(aniSummarySchema),
   rawRecords: z.array(callRecordSchema),
-  rangoDistribucion: z.record(z.string(), z.object({
-  total: z.number(),
-  answer: z.number(),
-  noAnswer: z.number(),
-})),
+
+  rangoDistribucion: z.record(
+    z.string(),
+    z.object({
+      total: z.number(),
+      answer: z.number(),
+      noAnswer: z.number(),
+    })
+  ),
+
+  baseInsights: z.array(baseInsightSchema).optional(),
+  depuracionInsights: z.array(depuracionInsightSchema).optional(),
+  franjaDistribucion: z
+    .record(z.string(), franjaDistribucionItemSchema)
+    .optional(),
 });
 
 export type AnalysisResult = z.infer<typeof analysisResultSchema>;
@@ -119,17 +176,12 @@ export const simuladorCorteResultSchema = z.object({
 
 export type SimuladorCorteResult = z.infer<typeof simuladorCorteResultSchema>;
 
-// ============================
-// NUEVO: Resumen liviano (sin rawRecords)
-// ============================
 export const analysisSummarySchema = analysisResultSchema.omit({
   rawRecords: true,
 });
+
 export type AnalysisSummary = z.infer<typeof analysisSummarySchema>;
 
-// ============================
-// NUEVO: Filtros server-side para consultar/exportar registros
-// ============================
 export const recordsFilterSchema = z.object({
   estados: z.array(z.string()).optional(),
   subestados: z.array(z.string()).optional(),
@@ -138,27 +190,23 @@ export const recordsFilterSchema = z.object({
   durMin: z.number().optional(),
   durMax: z.number().optional(),
 });
+
 export type RecordsFilter = z.infer<typeof recordsFilterSchema>;
 
-// ============================
-// NUEVO: Meta para poblar filtros (sin traer rawRecords)
-// ============================
 export const analysisMetaSchema = z.object({
   distinctEstados: z.array(z.string()),
   distinctSubestados: z.array(z.string()),
   distinctBases: z.array(z.string()),
   maxDuracion: z.number(),
 });
+
 export type AnalysisMeta = z.infer<typeof analysisMetaSchema>;
 
-// ============================
-// NUEVO: Respuesta de query paginada de registros filtrados
-// ============================
 export const recordsQueryResponseSchema = z.object({
   total: z.number(),
   answer: z.number(),
   noAnswer: z.number(),
   records: z.array(callRecordSchema),
 });
-export type RecordsQueryResponse = z.infer<typeof recordsQueryResponseSchema>;
 
+export type RecordsQueryResponse = z.infer<typeof recordsQueryResponseSchema>;

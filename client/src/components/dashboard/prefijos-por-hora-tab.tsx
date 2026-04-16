@@ -53,24 +53,6 @@ function parseTicketDateClient(dateStr?: string): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-// Misma lógica que backend, compacta
-function extractPrefijoClient(ani: string): string {
-  const digits = (ani || "").replace(/\D/g, "");
-  if (digits.startsWith("54")) {
-    const rest = digits.slice(2);
-    if (rest.startsWith("9")) {
-      const afterNine = rest.slice(1);
-      if (afterNine.startsWith("11")) return "11";
-      for (const len of [4, 3, 2]) if (afterNine.length >= len) return afterNine.slice(0, len);
-    }
-    if (rest.startsWith("11")) return "11";
-    for (const len of [4, 3, 2]) if (rest.length >= len) return rest.slice(0, len);
-  }
-  if (digits.startsWith("11")) return "11";
-  for (const len of [4, 3, 2]) if (digits.length >= len) return digits.slice(0, len);
-  return digits.slice(0, 2) || "00";
-}
-
   export function PrefijosPorHoraTab({ data }: PrefijosPorHoraTabProps) {
 
   console.log("prefijoPorHora:", data.prefijoPorHora);
@@ -194,34 +176,30 @@ const tableData = useMemo(() => {
   return (
     <div className="space-y-6">
       <div className="text-center mb-6">
-        <h2 className="text-xl font-semibold flex items-center justify-center gap-2">
+        <h2 className="section-title">
+          <span className="dot-indicator bg-primary" />
           Prefijo predominante por hora
         </h2>
-        <p className="text-sm text-muted-foreground mt-1">
+        <p className="section-subtitle">
           Detectá en qué horario domina cada prefijo para ajustar tu estrategia.
         </p>
       </div>
 
-      <Card>
+      <Card className="glass-card border-glass-border">
         <CardHeader className="pb-2">
-          <CardTitle className="text-base font-medium">Resumen por hora</CardTitle>
+          <CardTitle className="text-sm font-display font-bold">Resumen por hora</CardTitle>
         </CardHeader>
         <CardContent>
           {tableData.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
+            <p className="text-sm text-muted-foreground py-8 text-center">
               No hay datos horarios disponibles para mostrar.
             </p>
           ) : (
-            <DataTable
-              data={tableData}
-              columns={columns}
-              searchable={false}
-              pageSize={12}
-              testId="table-prefijos-por-hora"
-            />
+            <DataTable data={tableData} columns={columns} searchable={false} pageSize={12} testId="table-prefijos-por-hora" />
           )}
         </CardContent>
       </Card>
     </div>
   );
 }
+

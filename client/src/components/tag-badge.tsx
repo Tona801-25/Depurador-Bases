@@ -39,15 +39,20 @@ export function TagBadge({ tag, className }: TagBadgeProps) {
     label: tag,
     className: "bg-muted text-muted-foreground",
   };
+
   return (
     <Badge
       variant="outline"
-      className={cn("font-display font-semibold text-[10px] border tracking-wide", config.className, className)}
+      className={cn(
+        "border text-[10px] font-display font-semibold tracking-wide",
+        config.className,
+        className
+      )}
     >
       {config.label}
     </Badge>
   );
-};
+}
 
 export function getTagColor(tag: TagType): string {
   const colors: Record<TagType, string> = {
@@ -58,5 +63,6 @@ export function getTagColor(tag: TagType): string {
     NO_ATIENDE: "hsl(var(--muted-foreground))",
     RECHAZA: "hsl(var(--chart-5))",
   };
+
   return colors[tag] || "hsl(var(--muted-foreground))";
 }

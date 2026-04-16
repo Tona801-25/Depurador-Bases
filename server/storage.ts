@@ -46,7 +46,63 @@ function normalizeColumn(col: string): string {
     .replace(/[\s\-\/]/g, "");
 }
 
-export function applyRecordFilters(records: CallRecord[], filters?: RecordsFilter): CallRecord[] {
+function normalizeEstado(value?: string): string {
+  return (value || "").toLowerCase().replace(/\s/g, "");
+}
+
+function normalizeSubestado(value?: string): string {
+  return (value || "").toLowerCase().replace(/\s/g, "");
+}
+
+function isAnswerAgent(record: CallRecord): boolean {
+  const estado = normalizeEstado(record.estado);
+  const subestado = normalizeSubestado(record.subestado);
+
+  return estado === "answer" && subestado.includes("agent");
+}
+
+function isAnswerMachine(record: CallRecord): boolean {
+  const estado = normalizeEstado(record.estado);
+  const subestado = normalizeSubestado(record.subestado);
+
+  return (
+    estado === "answer" &&
+    (subestado.includes("machine") ||
+      subestado.includes("answering") ||
+      subestado.includes("buzon") ||
+      subestado.includes("voicemail"))
+  );
+}
+
+function isNoAnswer(record: CallRecord): boolean {
+  return normalizeEstado(record.estado) === "noanswer";
+}
+
+function isBusy(record: CallRecord): boolean {
+  return normalizeEstado(record.estado) === "busy";
+}
+
+function isRejected(record: CallRecord): boolean {
+  return normalizeEstado(record.estado) === "rejected";
+}
+
+function isUnallocated(record: CallRecord): boolean {
+  return normalizeEstado(record.estado) === "unallocated";
+}
+
+function isNoContacto(record: CallRecord): boolean {
+  return (
+    isNoAnswer(record) ||
+    isBusy(record) ||
+    isRejected(record) ||
+    isUnallocated(record)
+  );
+}
+
+export function applyRecordFilters(
+  records: CallRecord[],
+  filters?: RecordsFilter
+): CallRecord[] {
   if (!filters) return records;
 
   const estados = new Set((filters.estados || []).map((s) => s.toUpperCase()));
@@ -54,15 +110,18 @@ export function applyRecordFilters(records: CallRecord[], filters?: RecordsFilte
   const bases = new Set(filters.bases || []);
   const aniContains = (filters.aniContains || "").trim();
   const durMin = typeof filters.durMin === "number" ? filters.durMin : 0;
-  const durMax = typeof filters.durMax === "number" ? filters.durMax : Number.POSITIVE_INFINITY;
+  const durMax =
+    typeof filters.durMax === "number" ? filters.durMax : Number.POSITIVE_INFINITY;
 
   return records.filter((r) => {
     if (estados.size > 0 && !estados.has((r.estado || "").toUpperCase())) return false;
     if (subestados.size > 0 && !subestados.has((r.subestado || "").toUpperCase())) return false;
     if (bases.size > 0 && !bases.has(r.base || "")) return false;
     if (aniContains && !(r.ani || "").includes(aniContains)) return false;
+
     const d = r.duracion ?? 0;
     if (d < durMin || d > durMax) return false;
+
     return true;
   });
 }
@@ -91,11 +150,6 @@ export function computeAnalysisMeta(analysis: AnalysisResult): AnalysisMeta {
   };
 }
 
-/**
- * ✅ FIX IMPORTANTE:
- * - normalizamos también los "possibles"
- * - así no dependés de mayúsculas/acentos/espacios en el Excel
- */
 function findColumn(columns: string[], possibles: string[]): string | null {
   const normalizedColumns = columns.map(normalizeColumn);
   const columnMap = new Map(columns.map((c, i) => [normalizedColumns[i], c]));
@@ -106,50 +160,69 @@ function findColumn(columns: string[], possibles: string[]): string | null {
       return columnMap.get(np) || null;
     }
   }
+
   return null;
 }
 
 function assignTag(summary: ANISummary): TagType {
   if (summary.intentosUnallocated >= 3) return "INVALIDO";
   if (summary.intentosAnswerAgent >= 1) return "CONTACTADO";
-  if (summary.intentosAnsweringMachine >= 5 && summary.intentosAnswerAgent === 0) return "SOLO_BUZON";
+  if (summary.intentosAnsweringMachine >= 5 && summary.intentosAnswerAgent === 0) {
+    return "SOLO_BUZON";
+  }
+
   if (
     summary.intentosNoAnswer >= 6 &&
     summary.intentosAnswerAgent === 0 &&
     summary.intentosAnsweringMachine === 0
-  ) return "NO_ATIENDE";
-  if (summary.intentosRejected >= 3 && summary.intentosAnswerAgent === 0) return "RECHAZA";
+  ) {
+    return "NO_ATIENDE";
+  }
+
+  if (summary.intentosRejected >= 3 && summary.intentosAnswerAgent === 0) {
+    return "RECHAZA";
+  }
+
   return "SEGUIR_INTENTANDO";
 }
 
 function extractPrefijo(ani: string): string {
   const digits = (ani || "").replace(/\D/g, "");
+
   if (digits.startsWith("54")) {
     const rest = digits.slice(2);
+
     if (rest.startsWith("9")) {
       const afterNine = rest.slice(1);
       if (afterNine.startsWith("11")) return "11";
-      for (const len of [4, 3, 2]) if (afterNine.length >= len) return afterNine.slice(0, len);
+      for (const len of [4, 3, 2]) {
+        if (afterNine.length >= len) return afterNine.slice(0, len);
+      }
     }
+
     if (rest.startsWith("11")) return "11";
-    for (const len of [4, 3, 2]) if (rest.length >= len) return rest.slice(0, len);
+
+    for (const len of [4, 3, 2]) {
+      if (rest.length >= len) return rest.slice(0, len);
+    }
   }
+
   if (digits.startsWith("11")) return "11";
-  for (const len of [4, 3, 2]) if (digits.length >= len) return digits.slice(0, len);
+
+  for (const len of [4, 3, 2]) {
+    if (digits.length >= len) return digits.slice(0, len);
+  }
+
   return digits.slice(0, 2) || "00";
 }
 
 function excelSerialToDate(serial: number): Date | null {
   if (!Number.isFinite(serial)) return null;
-  // Excel (Windows) epoch: 1899-12-30
   const ms = (serial - 25569) * 86400 * 1000;
   const d = new Date(ms);
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-/**
- * ✅ Parser robusto (serial Excel, string numérica, YYYYMMDD, ISO, dd/mm/yyyy hh:mm:ss)
- */
 function parseTicketDate(value?: unknown): Date | null {
   if (value === null || value === undefined) return null;
 
@@ -161,13 +234,11 @@ function parseTicketDate(value?: unknown): Date | null {
   const s = String(value).trim();
   if (!s) return null;
 
-  // string numérica serial
   if (/^\d+(\.\d+)?$/.test(s)) {
     const num = Number(s);
     if (Number.isFinite(num) && num > 20000) return excelSerialToDate(num);
   }
 
-  // YYYYMMDD
   if (/^\d{8}$/.test(s)) {
     const year = Number(s.slice(0, 4));
     const month = Number(s.slice(4, 6));
@@ -176,11 +247,9 @@ function parseTicketDate(value?: unknown): Date | null {
     return Number.isNaN(d.getTime()) ? null : d;
   }
 
-  // ISO / Date parseable
   const isoTry = new Date(s);
   if (!Number.isNaN(isoTry.getTime())) return isoTry;
 
-  // DD-MM-YYYY o DD/MM/YYYY + hora
   const [datePart, timePart] = s.split(" ");
   if (!datePart) return null;
 
@@ -192,7 +261,10 @@ function parseTicketDate(value?: unknown): Date | null {
   const mm = Number(mmStr);
   const yyyy = Number(yyyyStr);
 
-  let hh = 0, mi = 0, ss = 0;
+  let hh = 0;
+  let mi = 0;
+  let ss = 0;
+
   if (timePart) {
     const t = timePart.split(":").map(Number);
     hh = t[0] ?? 0;
@@ -211,16 +283,159 @@ function getRangoHorario(dateStr?: string): string {
   if (!d) return "Sin hora";
 
   const h = d.getHours();
-  if (h >= 9 && h < 12) return "09:00-12:00";
-  if (h >= 12 && h < 15) return "12:00-15:00";
-  if (h >= 15 && h < 18) return "15:00-18:00";
+
+  if (h >= 9 && h < 11) return "09:00-11:00";
+  if (h >= 11 && h < 13) return "11:00-13:00";
+  if (h >= 13 && h < 15) return "13:00-15:00";
+  if (h >= 15 && h < 17) return "15:00-17:00";
+  if (h >= 17 && h < 19) return "17:00-19:00";
   return "Fuera de rango";
 }
 
-function getTurno(dateStr: string | undefined): string {
+function getTurno(dateStr?: string): string {
   const d = parseTicketDate(dateStr);
   if (!d) return "Mañana";
+
   return d.getHours() < 14 ? "Mañana" : "Tarde";
+}
+
+function buildBaseInsights(records: CallRecord[], aniSummaries: ANISummary[]) {
+  const baseMap = new Map<string, CallRecord[]>();
+
+  records.forEach((record) => {
+    const base = (record.base || "SIN_BASE").trim();
+    const current = baseMap.get(base) || [];
+    current.push(record);
+    baseMap.set(base, current);
+  });
+
+  return Array.from(baseMap.entries())
+    .map(([base, baseRecords]) => {
+      const anisBase = new Set(baseRecords.map((r) => r.ani).filter(Boolean));
+      const totalAnis = anisBase.size || 1;
+
+      const summariesBase = aniSummaries.filter((s) => anisBase.has(s.ani));
+
+      const contactados = summariesBase.filter((s) => s.intentosAnswerAgent > 0).length;
+      const conBuzon = summariesBase.filter((s) => s.intentosAnsweringMachine > 0).length;
+      const invalidos = summariesBase.filter((s) => s.tagTelefono === "INVALIDO").length;
+      const aDepurar = summariesBase.filter((s) =>
+        ["INVALIDO", "SOLO_BUZON", "NO_ATIENDE", "RECHAZA"].includes(s.tagTelefono)
+      ).length;
+
+      const pctContactoEfectivo = contactados / totalAnis;
+      const pctBuzon = conBuzon / totalAnis;
+      const pctInvalidos = invalidos / totalAnis;
+      const pctADepurar = aDepurar / totalAnis;
+
+      const intentosPromedio =
+        summariesBase.length > 0
+          ? summariesBase.reduce((acc, s) => acc + s.intentosTotales, 0) / summariesBase.length
+          : 0;
+
+      const scoreCalidad =
+        pctContactoEfectivo * 0.5 +
+        (1 - pctADepurar) * 0.25 +
+        (1 - pctInvalidos) * 0.15 +
+        Math.max(0, 1 - intentosPromedio / 10) * 0.1;
+
+      let recomendacion = "REVISAR";
+      if (scoreCalidad >= 0.75) recomendacion = "UTILIZAR";
+      else if (scoreCalidad < 0.45) recomendacion = "DESCARTAR";
+
+      return {
+        base,
+        totalRegistros: baseRecords.length,
+        totalAnis,
+        contactados,
+        pctContactoEfectivo,
+        pctBuzon,
+        pctInvalidos,
+        pctADepurar,
+        intentosPromedio,
+        scoreCalidad,
+        recomendacion,
+      };
+    })
+    .sort((a, b) => b.scoreCalidad - a.scoreCalidad);
+}
+
+function buildDepuracionInsights(aniSummaries: ANISummary[]) {
+  return aniSummaries.map((s) => {
+    let prioridad = "MEDIA";
+    let accion = "REINTENTAR";
+    let motivo = "Aún tiene margen operativo";
+
+    switch (s.tagTelefono) {
+      case "CONTACTADO":
+        prioridad = "BAJA";
+        accion = "NO_REINTENTAR";
+        motivo = "Ya tuvo contacto efectivo";
+        break;
+      case "INVALIDO":
+        prioridad = "ALTA";
+        accion = "ELIMINAR";
+        motivo = "Múltiples intentos unallocated";
+        break;
+      case "SOLO_BUZON":
+        prioridad = "MEDIA";
+        accion = "CAMBIAR_ESTRATEGIA";
+        motivo = "Predominio de contestador";
+        break;
+      case "NO_ATIENDE":
+        prioridad = "ALTA";
+        accion = "LIMITAR_REINTENTOS";
+        motivo = "Exceso de no answer sin contacto";
+        break;
+      case "RECHAZA":
+        prioridad = "ALTA";
+        accion = "EXCLUIR";
+        motivo = "Rechazo reiterado";
+        break;
+      case "SEGUIR_INTENTANDO":
+        prioridad = "MEDIA";
+        accion = "REINTENTAR";
+        motivo = "No agotó criterios de corte";
+        break;
+    }
+
+    return {
+      ani: s.ani,
+      tag: s.tagTelefono,
+      prioridad,
+      accion,
+      motivo,
+    };
+  });
+}
+
+function buildFranjaDistribucion(records: CallRecord[]) {
+  const franjaDistribucion: Record<
+    string,
+    { total: number; contactoEfectivo: number; noContacto: number }
+  > = {};
+
+  records.forEach((record) => {
+    const rango = getRangoHorario(record.fecha);
+
+    if (!franjaDistribucion[rango]) {
+      franjaDistribucion[rango] = {
+        total: 0,
+        contactoEfectivo: 0,
+        noContacto: 0,
+      };
+    }
+
+    franjaDistribucion[rango].total++;
+
+    if (isAnswerAgent(record)) {
+      franjaDistribucion[rango].contactoEfectivo++;
+    } else if (isNoContacto(record) || isAnswerMachine(record)) {
+      franjaDistribucion[rango].noContacto++;
+    }
+  });
+
+  return franjaDistribucion;
 }
 
 export function processCallRecords(rawData: Record<string, any>[]): AnalysisResult {
@@ -229,45 +444,66 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
   const colEstado = findColumn(columns, ["ESTADO", "STATUS", "STATE"]) || "Estado";
   const colSubestado = findColumn(columns, ["SUBESTADO", "SUBESTATUS", "SUBSTATE"]) || "Sub-Estado";
   const colAni =
-    findColumn(columns, ["ANI", "ANI/TELÉFONO", "ANITELEFONO", "TELEFONO", "PHONE", "NUMEROLLAMADO", "NUMERO"]) ||
-    "ANI/Teléfono";
+    findColumn(columns, [
+      "ANI",
+      "ANI/TELÉFONO",
+      "ANITELEFONO",
+      "TELEFONO",
+      "PHONE",
+      "NUMEROLLAMADO",
+      "NUMERO",
+    ]) || "ANI/Teléfono";
   const colBase = findColumn(columns, ["BASE", "NOMBREBASE", "ORIGEN"]) || "Base";
-  const colDuracion = findColumn(columns, ["DURACION", "DURACIONENSEGUNDOS", "SEGUNDOS", "DURATION"]) || "Duración";
-
-  // ✅ Prioridad: INICIO (tiene hora) sobre FECHA (YYYYMMDD sin hora)
+  const colDuracion =
+    findColumn(columns, ["DURACION", "DURACIONENSEGUNDOS", "SEGUNDOS", "DURATION"]) ||
+    "Duración";
   const colFecha =
-    findColumn(columns, ["INICIO", "FECHAINICIO", "FECHAHORA", "LOGTIME", "FECHALLAMADA", "START", "BEGIN"]) ||
-    "Inicio";
+    findColumn(columns, [
+      "INICIO",
+      "FECHAINICIO",
+      "FECHAHORA",
+      "LOGTIME",
+      "FECHALLAMADA",
+      "START",
+      "BEGIN",
+    ]) || "Inicio";
 
-  // 1) Normalizamos records (fecha -> ISO si se puede)
   const records: CallRecord[] = rawData.map((row) => {
     const parsed = parseTicketDate(row[colFecha]);
+
     return {
-      fecha: parsed ? parsed.toISOString() : (row[colFecha]?.toString() || undefined),
+      fecha: parsed ? parsed.toISOString() : row[colFecha]?.toString() || undefined,
       estado: row[colEstado]?.toString() || "",
       subestado: row[colSubestado]?.toString() || undefined,
       ani: row[colAni]?.toString()?.trim() || "",
       base: row[colBase]?.toString() || undefined,
-      duracion: Number.isFinite(Number(row[colDuracion])) ? Number(row[colDuracion]) : undefined,
+      duracion: Number.isFinite(Number(row[colDuracion]))
+        ? Number(row[colDuracion])
+        : undefined,
       direccion: row["Dirección"]?.toString() || row["Direccion"]?.toString() || undefined,
       conexion: row["Conexión"]?.toString() || row["Conexion"]?.toString() || undefined,
       fin: row["Fin"]?.toString() || undefined,
     };
   });
 
-  // 2) Rango horario
   const rangoDistribucion: Record<string, { total: number; answer: number; noAnswer: number }> = {};
+
   records.forEach((record) => {
     const rango = getRangoHorario(record.fecha);
-    if (!rangoDistribucion[rango]) rangoDistribucion[rango] = { total: 0, answer: 0, noAnswer: 0 };
+
+    if (!rangoDistribucion[rango]) {
+      rangoDistribucion[rango] = { total: 0, answer: 0, noAnswer: 0 };
+    }
 
     rangoDistribucion[rango].total++;
-    const estado = (record.estado || "").toLowerCase().replace(/\s/g, "");
-    if (estado === "answer") rangoDistribucion[rango].answer++;
-    else if (estado === "noanswer") rangoDistribucion[rango].noAnswer++;
+
+    if (isAnswerAgent(record)) {
+      rangoDistribucion[rango].answer++;
+    } else if (isNoContacto(record) || isAnswerMachine(record)) {
+      rangoDistribucion[rango].noAnswer++;
+    }
   });
 
-  // 3) Agrupación por ANI
   const aniGroups = new Map<string, CallRecord[]>();
   records.forEach((record) => {
     if (!record.ani) return;
@@ -276,8 +512,8 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     aniGroups.set(record.ani, existing);
   });
 
-  // 4) Resumen por ANI
   const aniSummaries: ANISummary[] = [];
+
   aniGroups.forEach((calls, ani) => {
     const sortedCalls = [...calls].sort((a, b) => {
       const da = parseTicketDate(a.fecha);
@@ -294,16 +530,12 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     let intentosRejected = 0;
 
     sortedCalls.forEach((call) => {
-      const estado = (call.estado || "").toLowerCase().replace(/\s/g, "");
-      const subestado = (call.subestado || "").toLowerCase();
-
-      if (estado === "answer" && subestado.includes("agent")) intentosAnswerAgent++;
-      else if (estado === "answer" && (subestado.includes("machine") || subestado.includes("buzon")))
-        intentosAnsweringMachine++;
-      else if (estado === "noanswer") intentosNoAnswer++;
-      else if (estado === "busy") intentosBusy++;
-      else if (estado === "unallocated") intentosUnallocated++;
-      else if (estado === "rejected") intentosRejected++;
+      if (isAnswerAgent(call)) intentosAnswerAgent++;
+      else if (isAnswerMachine(call)) intentosAnsweringMachine++;
+      else if (isNoAnswer(call)) intentosNoAnswer++;
+      else if (isBusy(call)) intentosBusy++;
+      else if (isUnallocated(call)) intentosUnallocated++;
+      else if (isRejected(call)) intentosRejected++;
     });
 
     const summary: ANISummary = {
@@ -324,20 +556,17 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     aniSummaries.push(summary);
   });
 
-  // 5) Distribución de estados
   const estadoDistribucion: Record<string, number> = {};
   records.forEach((record) => {
     const estado = record.estado?.toUpperCase() || "SIN_ESTADO";
     estadoDistribucion[estado] = (estadoDistribucion[estado] || 0) + 1;
   });
 
-  // 6) Distribución de tags
   const tagDistribucion: Record<string, number> = {};
   aniSummaries.forEach((s) => {
     tagDistribucion[s.tagTelefono] = (tagDistribucion[s.tagTelefono] || 0) + 1;
   });
 
-  // 7) Turno Mañana / Tarde
   const turnoDistribucion: Record<string, { total: number; answer: number; noAnswer: number }> = {
     Mañana: { total: 0, answer: 0, noAnswer: 0 },
     Tarde: { total: 0, answer: 0, noAnswer: 0 },
@@ -345,15 +574,20 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
 
   records.forEach((record) => {
     const turno = getTurno(record.fecha);
-    if (!turnoDistribucion[turno]) turnoDistribucion[turno] = { total: 0, answer: 0, noAnswer: 0 };
+
+    if (!turnoDistribucion[turno]) {
+      turnoDistribucion[turno] = { total: 0, answer: 0, noAnswer: 0 };
+    }
 
     turnoDistribucion[turno].total++;
-    const estado = (record.estado || "").toLowerCase().replace(/\s/g, "");
-    if (estado === "answer") turnoDistribucion[turno].answer++;
-    else if (estado === "noanswer") turnoDistribucion[turno].noAnswer++;
+
+    if (isAnswerAgent(record)) {
+      turnoDistribucion[turno].answer++;
+    } else if (isNoContacto(record) || isAnswerMachine(record)) {
+      turnoDistribucion[turno].noAnswer++;
+    }
   });
 
-  // 8) Prefijos (total y sobre ANSWER)
   const prefijoCount: Record<string, number> = {};
   const prefijoAnswerCount: Record<string, number> = {};
 
@@ -361,8 +595,9 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     const prefijo = extractPrefijo(record.ani);
     prefijoCount[prefijo] = (prefijoCount[prefijo] || 0) + 1;
 
-    const estado = (record.estado || "").toLowerCase().replace(/\s/g, "");
-    if (estado === "answer") prefijoAnswerCount[prefijo] = (prefijoAnswerCount[prefijo] || 0) + 1;
+    if (isAnswerAgent(record)) {
+      prefijoAnswerCount[prefijo] = (prefijoAnswerCount[prefijo] || 0) + 1;
+    }
   });
 
   const totalRecords = records.length;
@@ -387,27 +622,6 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     .sort((a, b) => b.total - a.total)
     .slice(0, 20);
 
-  // 9) Prefijo predominante por HORA
-  const prefijoPorHoraMap: Record<number, Record<string, number>> = {};
-  records.forEach((record) => {
-    const date = parseTicketDate(record.fecha);
-    if (!date) return;
-
-    const hour = date.getHours();
-    const prefijo = extractPrefijo(record.ani);
-
-    if (!prefijoPorHoraMap[hour]) prefijoPorHoraMap[hour] = {};
-    prefijoPorHoraMap[hour][prefijo] = (prefijoPorHoraMap[hour][prefijo] || 0) + 1;
-  });
-
-  const prefijoPorHora = Object.entries(prefijoPorHoraMap)
-    .map(([hora, counts]) => {
-      const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
-      return { hora: Number(hora), prefijo: top?.[0] ?? "", total: top?.[1] ?? 0 };
-    })
-    .sort((a, b) => a.hora - b.hora);
-
-  // 10) Curva de contactación
   const firstContactIntento: Record<number, number> = {};
   aniGroups.forEach((calls) => {
     const sortedCalls = [...calls].sort((a, b) => {
@@ -418,10 +632,7 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     });
 
     for (let i = 0; i < sortedCalls.length; i++) {
-      const call = sortedCalls[i];
-      const estado = (call.estado || "").toLowerCase().replace(/\s/g, "");
-      const subestado = (call.subestado || "").toLowerCase();
-      if (estado === "answer" && subestado.includes("agent")) {
+      if (isAnswerAgent(sortedCalls[i])) {
         const intento = i + 1;
         firstContactIntento[intento] = (firstContactIntento[intento] || 0) + 1;
         break;
@@ -430,10 +641,12 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
   });
 
   const curvaContactacion = Object.entries(firstContactIntento)
-    .map(([intento, cantidad]) => ({ intento: parseInt(intento), cantidad }))
+    .map(([intento, cantidad]) => ({
+      intento: parseInt(intento, 10),
+      cantidad,
+    }))
     .sort((a, b) => a.intento - b.intento);
 
-  // 11) Distribución de intentos por ANI
   const intentosCount: Record<number, number> = {};
   aniSummaries.forEach((s) => {
     intentosCount[s.intentosTotales] = (intentosCount[s.intentosTotales] || 0) + 1;
@@ -443,22 +656,27 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
 
   const intentosDistribucion = Object.entries(intentosCount)
     .map(([intentos, cantidad]) => ({
-      intentos: parseInt(intentos),
+      intentos: parseInt(intentos, 10),
       cantidad,
       porcentaje: totalAnis > 0 ? (cantidad / totalAnis) * 100 : 0,
     }))
     .sort((a, b) => a.intentos - b.intentos)
     .slice(0, 10);
 
-  // 12) KPIs
   const anisContactados = aniSummaries.filter((s) => s.intentosAnswerAgent > 0).length;
-  const anisADepurar = aniSummaries.filter((s) => s.tagTelefono !== "SEGUIR_INTENTANDO").length;
+  const anisADepurar = aniSummaries.filter((s) =>
+    ["INVALIDO", "SOLO_BUZON", "NO_ATIENDE", "RECHAZA"].includes(s.tagTelefono)
+  ).length;
 
-  const totalAnswer = estadoDistribucion["ANSWER"] || 0;
-  const totalNoAnswer = estadoDistribucion["NOANSWER"] || estadoDistribucion["NO ANSWER"] || 0;
+  const totalContactoEfectivo = records.filter(isAnswerAgent).length;
+  const totalNoContacto = records.filter((r) => isNoContacto(r) || isAnswerMachine(r)).length;
 
-  const pctAnswer = totalRecords > 0 ? (totalAnswer / totalRecords) * 100 : 0;
-  const pctNoAnswer = totalRecords > 0 ? (totalNoAnswer / totalRecords) * 100 : 0;
+  const pctAnswer = totalRecords > 0 ? (totalContactoEfectivo / totalRecords) * 100 : 0;
+  const pctNoAnswer = totalRecords > 0 ? (totalNoContacto / totalRecords) * 100 : 0;
+
+  const baseInsights = buildBaseInsights(records, aniSummaries);
+  const depuracionInsights = buildDepuracionInsights(aniSummaries);
+  const franjaDistribucion = buildFranjaDistribucion(records);
 
   return {
     id: randomUUID(),
@@ -475,12 +693,14 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     turnoDistribucion,
     prefijoDistribucion,
     prefijoDistribucionAnswer,
-    prefijoPorHora,
     curvaContactacion,
     intentosDistribucion,
     aniSummaries,
     rawRecords: records,
     rangoDistribucion,
+    baseInsights,
+    depuracionInsights,
+    franjaDistribucion,
   };
 }
 
