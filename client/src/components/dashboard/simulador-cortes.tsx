@@ -22,6 +22,7 @@ import {
 } from "recharts";
 import { Settings } from "lucide-react";
 import type { AnalysisResult } from "@shared/schema";
+import { chartTooltipStyle } from "@/components/dashboard/chartStyles";
 
 interface SimuladorCortesProps {
   data: AnalysisResult;
@@ -80,119 +81,65 @@ export function SimuladorCortesTab({ data }: SimuladorCortesProps) {
     },
   ];
 
-  return (
+return (
     <div className="space-y-6">
       <div className="text-center mb-6">
-        <h2 className="text-xl font-semibold flex items-center justify-center gap-2">
-          <Settings className="h-5 w-5 text-chart-5" />
+        <h2 className="section-title">
+          <Settings className="h-5 w-5 text-[hsl(var(--chart-5))]" />
           Simulador de corte de intentos por ANI
         </h2>
       </div>
-
-      <Card>
+      <Card className="glass-card border-glass-border">
         <CardContent className="pt-6 space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="space-y-2">
-              <Label className="text-sm font-medium">
-                Filtrar por campaña / base (opcional):
-              </Label>
+              <Label className="text-xs font-display font-semibold uppercase tracking-wider">Filtrar por campaña / base</Label>
               <Select value={selectedBase} onValueChange={setSelectedBase}>
-                <SelectTrigger data-testid="select-base-simulador">
+                <SelectTrigger className="border-glass-border bg-secondary/50" data-testid="select-base-simulador">
                   <SelectValue placeholder="Seleccionar base" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">(Todas)</SelectItem>
                   {uniqueBases.map((base) => (
-                    <SelectItem key={base} value={base}>
-                      {base}
-                    </SelectItem>
+                    <SelectItem key={base} value={base}>{base}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground">
-                ANIs en el ámbito seleccionado:{" "}
-                <span className="font-semibold">
-                  {filteredAnis.length.toLocaleString("es-AR")}
-                </span>
+                ANIs en el ámbito: <span className="font-display font-bold text-foreground">{filteredAnis.length.toLocaleString("es-AR")}</span>
               </p>
             </div>
-
             <div className="space-y-2">
-              <Label className="text-sm font-medium">
-                Elegí el nuevo corte máximo de intentos por ANI (solo ANIs sin
-                ANSWER-AGENT se cortarán):
-              </Label>
+              <Label className="text-xs font-display font-semibold uppercase tracking-wider">Corte máximo de intentos</Label>
               <div className="pt-4">
-                <Slider
-                  value={[maxIntentos]}
-                  min={1}
-                  max={20}
-                  step={1}
-                  onValueChange={(value) => setMaxIntentos(value[0])}
-                  data-testid="slider-max-intentos"
-                />
+                <Slider value={[maxIntentos]} min={1} max={20} step={1} onValueChange={(value) => setMaxIntentos(value[0])} data-testid="slider-max-intentos" />
               </div>
-              <p className="text-sm text-center font-semibold text-primary">
+              <p className="text-sm text-center font-display font-bold text-primary">
                 Corte en: {maxIntentos} intentos
               </p>
             </div>
           </div>
         </CardContent>
       </Card>
-
-      <Card>
+      <Card className="glass-card border-glass-border">
         <CardHeader className="pb-2">
-          <CardTitle className="text-base font-medium">
-            Resultado del escenario simulado
-          </CardTitle>
+          <CardTitle className="text-sm font-display font-bold">Resultado del escenario simulado</CardTitle>
         </CardHeader>
         <CardContent className="space-y-6">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <KPICard
-              title="ANIs sin contacto (actualmente)"
-              value={anisSinContacto.length}
-              testId="kpi-sim-sin-contacto"
-            />
-            <KPICard
-              title={`ANIs que se cortarían con corte > ${maxIntentos} intentos`}
-              value={anisQueSeCortan.length}
-              subtitle={`${pctDelAmbito.toFixed(1)}% de los ANIs del ámbito`}
-              variant="danger"
-              testId="kpi-sim-se-cortan"
-            />
-            <KPICard
-              title="ANIs que seguirían en la base"
-              value={anisQueSiguen}
-              subtitle={`${pctSobreTotal.toFixed(1)}% del total`}
-              trend={{ value: pctSobreTotal - 100, label: "del total" }}
-              variant="success"
-              testId="kpi-sim-siguen"
-            />
-            <KPICard
-              title="Total ANIs en el ámbito"
-              value={filteredAnis.length}
-              testId="kpi-sim-total"
-            />
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+            <KPICard title="ANIs sin contacto" value={anisSinContacto.length} testId="kpi-sim-sin-contacto" />
+            <KPICard title={`Se cortarían (> ${maxIntentos})`} value={anisQueSeCortan.length} subtitle={`${pctDelAmbito.toFixed(1)}%`} variant="danger" testId="kpi-sim-se-cortan" />
+            <KPICard title="Seguirían en base" value={anisQueSiguen} subtitle={`${pctSobreTotal.toFixed(1)}%`} trend={{ value: pctSobreTotal - 100, label: "del total" }} variant="success" testId="kpi-sim-siguen" />
+            <KPICard title="Total ámbito" value={filteredAnis.length} testId="kpi-sim-total" />
           </div>
-
           <div className="h-[300px]">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={chartData} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
-                <XAxis type="number" />
-                <YAxis type="category" dataKey="name" width={120} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: "hsl(var(--popover))",
-                    border: "1px solid hsl(var(--border))",
-                    borderRadius: "0.5rem",
-                  }}
-                  formatter={(value: number) => [
-                    value.toLocaleString("es-AR"),
-                    "ANIs",
-                  ]}
-                />
-                <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+                <CartesianGrid strokeDasharray="3 3" opacity={0.06} />
+                <XAxis type="number" tick={{ fill: "currentColor", fontSize: 10 }} axisLine={false} tickLine={false} />
+                <YAxis type="category" dataKey="name" width={120} tick={{ fill: "currentColor", fontSize: 10 }} axisLine={false} tickLine={false} />
+                <Tooltip contentStyle={chartTooltipStyle} formatter={(value: number) => [value.toLocaleString("es-AR"), "ANIs"]} />
+                <Bar dataKey="value" radius={[0, 6, 6, 0]}>
                   {chartData.map((entry, index) => (
                     <Cell key={`cell-${index}`} fill={entry.fill} />
                   ))}
@@ -200,14 +147,8 @@ export function SimuladorCortesTab({ data }: SimuladorCortesProps) {
               </BarChart>
             </ResponsiveContainer>
           </div>
-
           <p className="text-xs text-muted-foreground text-center">
-            Este simulador solo corta ANIs que{" "}
-            <span className="font-semibold text-destructive">
-              nunca tuvieron ANSWER-AGENT
-            </span>
-            . Sirve para evaluar el impacto de bajar o subir el corte de
-            intentos máximos por ANI.
+            Solo corta ANIs que <span className="font-semibold text-destructive">nunca tuvieron ANSWER-AGENT</span>.
           </p>
         </CardContent>
       </Card>

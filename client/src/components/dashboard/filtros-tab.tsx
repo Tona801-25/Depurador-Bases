@@ -134,101 +134,62 @@ export function FiltrosTab({ data, onExportFiltrado }: FiltrosTabProps) {
     durMax: duracionRange[1],
   };
 
-  return (
+return (
     <div className="space-y-6">
       <div className="text-center mb-6">
-        <h2 className="text-xl font-semibold flex items-center justify-center gap-2">
-          <Filter className="h-5 w-5 text-chart-1" />
+        <h2 className="section-title">
+          <Filter className="h-5 w-5 text-primary" />
           Filtros
         </h2>
       </div>
 
-      <Card>
+      <Card className="glass-card border-glass-border">
         <CardContent className="pt-6 space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="space-y-2">
-              <Label className="text-sm font-medium">Estado</Label>
-              <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2 border rounded-md">
-                {uniqueEstados.map((estado) => (
-                  <Badge
-                    key={estado}
-                    variant={selectedEstados.includes(estado) ? "default" : "outline"}
-                    className={cn(
-                      "cursor-pointer text-xs",
-                      selectedEstados.includes(estado) && "bg-primary"
-                    )}
-                    onClick={() => toggleFilter(estado, selectedEstados, setSelectedEstados)}
-                    data-testid={`filter-estado-${estado}`}
-                  >
-                    {estado}
-                    {selectedEstados.includes(estado) && <X className="h-3 w-3 ml-1" />}
-                  </Badge>
-                ))}
+            {[
+              { label: "Estado", items: uniqueEstados, selected: selectedEstados, setSelected: setSelectedEstados, testPrefix: "estado" },
+              { label: "Subestado", items: uniqueSubestados.slice(0, 20), selected: selectedSubestados, setSelected: setSelectedSubestados, testPrefix: "subestado", extra: uniqueSubestados.length > 20 ? uniqueSubestados.length - 20 : 0 },
+              { label: "Base", items: uniqueBases, selected: selectedBases, setSelected: setSelectedBases, testPrefix: "base" },
+            ].map(({ label, items, selected, setSelected, testPrefix, extra }) => (
+              <div key={label} className="space-y-2">
+                <Label className="text-xs font-display font-semibold uppercase tracking-wider">{label}</Label>
+                <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2.5 border border-glass-border rounded-xl bg-secondary/30">
+                  {items.map((item) => (
+                    <Badge
+                      key={item}
+                      variant={selected.includes(item) ? "default" : "outline"}
+                      className={cn(
+                        "cursor-pointer text-[10px] font-display transition-all",
+                        selected.includes(item) && "bg-primary shadow-sm"
+                      )}
+                      onClick={() => toggleFilter(item, selected, setSelected)}
+                      data-testid={`filter-${testPrefix}-${item}`}
+                    >
+                      {item}
+                      {selected.includes(item) && <X className="h-3 w-3 ml-1" />}
+                    </Badge>
+                  ))}
+                  {extra ? <span className="text-[10px] text-muted-foreground">+{extra} más</span> : null}
+                </div>
               </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label className="text-sm font-medium">Subestado</Label>
-              <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2 border rounded-md">
-                {uniqueSubestados.slice(0, 20).map((subestado) => (
-                  <Badge
-                    key={subestado}
-                    variant={selectedSubestados.includes(subestado) ? "default" : "outline"}
-                    className={cn(
-                      "cursor-pointer text-xs",
-                      selectedSubestados.includes(subestado) && "bg-primary"
-                    )}
-                    onClick={() => toggleFilter(subestado, selectedSubestados, setSelectedSubestados)}
-                    data-testid={`filter-subestado-${subestado}`}
-                  >
-                    {subestado}
-                    {selectedSubestados.includes(subestado) && <X className="h-3 w-3 ml-1" />}
-                  </Badge>
-                ))}
-                {uniqueSubestados.length > 20 && (
-                  <span className="text-xs text-muted-foreground">
-                    +{uniqueSubestados.length - 20} más
-                  </span>
-                )}
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label className="text-sm font-medium">Base</Label>
-              <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2 border rounded-md">
-                {uniqueBases.map((base) => (
-                  <Badge
-                    key={base}
-                    variant={selectedBases.includes(base) ? "default" : "outline"}
-                    className={cn(
-                      "cursor-pointer text-xs",
-                      selectedBases.includes(base) && "bg-primary"
-                    )}
-                    onClick={() => toggleFilter(base, selectedBases, setSelectedBases)}
-                    data-testid={`filter-base-${base}`}
-                  >
-                    {base}
-                    {selectedBases.includes(base) && <X className="h-3 w-3 ml-1" />}
-                  </Badge>
-                ))}
-              </div>
-            </div>
+            ))}
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="space-y-2">
-              <Label className="text-sm font-medium">Buscar ANI / Teléfono (contiene)</Label>
+              <Label className="text-xs font-display font-semibold uppercase tracking-wider">Buscar ANI (contiene)</Label>
               <Input
                 value={aniSearch}
                 onChange={(e) => setAniSearch(e.target.value)}
                 placeholder="Ej: 11234..."
+                className="bg-secondary/50 border-glass-border"
                 data-testid="input-filter-ani"
               />
             </div>
 
             <div className="space-y-2">
-              <Label className="text-sm font-medium">
-                Duración (segundos): {duracionRange[0]} - {duracionRange[1]}
+              <Label className="text-xs font-display font-semibold uppercase tracking-wider">
+                Duración: {duracionRange[0]}s – {duracionRange[1]}s
               </Label>
               <Slider
                 value={duracionRange}
@@ -236,46 +197,29 @@ export function FiltrosTab({ data, onExportFiltrado }: FiltrosTabProps) {
                 max={maxDuracion}
                 step={1}
                 onValueChange={(value) => setDuracionRange(value as [number, number])}
-                className="mt-2"
+                className="mt-3"
                 data-testid="slider-duracion"
               />
             </div>
           </div>
 
           <div className="flex justify-end">
-            <Button variant="outline" size="sm" onClick={clearFilters} data-testid="button-clear-filters">
+            <Button variant="outline" size="sm" onClick={clearFilters} className="rounded-lg font-display text-xs" data-testid="button-clear-filters">
               Limpiar filtros
             </Button>
           </div>
         </CardContent>
       </Card>
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <KPICard
-          title="Total llamados"
-          value={filteredRecords.length}
-          testId="kpi-filtros-total"
-        />
-        <KPICard
-          title="Answer"
-          value={answerCount}
-          subtitle={`${((answerCount / filteredRecords.length) * 100 || 0).toFixed(1)}%`}
-          variant="success"
-          testId="kpi-filtros-answer"
-        />
-        <KPICard
-          title="No Answer"
-          value={noAnswerCount}
-          subtitle={`${((noAnswerCount / filteredRecords.length) * 100 || 0).toFixed(1)}%`}
-          variant="warning"
-          testId="kpi-filtros-noanswer"
-        />
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <KPICard title="Total llamados" value={filteredRecords.length} testId="kpi-filtros-total" />
+        <KPICard title="Answer" value={answerCount} subtitle={`${((answerCount / filteredRecords.length) * 100 || 0).toFixed(1)}%`} variant="success" testId="kpi-filtros-answer" />
+        <KPICard title="No Answer" value={noAnswerCount} subtitle={`${((noAnswerCount / filteredRecords.length) * 100 || 0).toFixed(1)}%`} variant="warning" testId="kpi-filtros-noanswer" />
       </div>
-
-      <Card>
+      
+      <Card className="glass-card border-glass-border">
         <CardHeader className="pb-2">
-          <CardTitle className="text-base font-medium flex items-center gap-2">
-            <span className="text-chart-4">*</span>
+          <CardTitle className="text-sm font-display font-bold flex items-center gap-2">
+            <span className="dot-indicator bg-destructive" />
             Resultados filtrados
           </CardTitle>
           <p className="text-xs text-muted-foreground">
@@ -284,45 +228,21 @@ export function FiltrosTab({ data, onExportFiltrado }: FiltrosTabProps) {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-wrap gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => onExportFiltrado(exportFilters, "csv")}
-              className="gap-2"
-              data-testid="button-export-csv"
-            >
-              <Download className="h-4 w-4" />
-              Descargar CSV
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => onExportFiltrado(exportFilters, "txt")}
-              className="gap-2"
-              data-testid="button-export-txt"
-            >
-              <Download className="h-4 w-4" />
-              Descargar TXT
-            </Button>
-            <Button
-              variant="default"
-              size="sm"
-              onClick={() => onExportFiltrado(exportFilters, "xlsx")}
-              className="gap-2"
-              data-testid="button-export-xlsx"
-            >
-              <Download className="h-4 w-4" />
-              Descargar XLSX
-            </Button>
+            {(["csv", "txt", "xlsx"] as const).map((fmt) => (
+              <Button
+                key={fmt}
+                variant={fmt === "xlsx" ? "default" : "outline"}
+                size="sm"
+                onClick={() => onExportFiltrado(exportFilters, fmt)}
+                className="gap-2 rounded-lg font-display text-xs"
+                data-testid={`button-export-${fmt}`}
+              >
+                <Download className="h-4 w-4" />
+                Descargar {fmt.toUpperCase()}
+              </Button>
+            ))}
           </div>
-
-          <DataTable
-            data={filteredRecords}
-            columns={recordColumns}
-            searchPlaceholder="Buscar en resultados..."
-            pageSize={15}
-            testId="table-filtros"
-          />
+          <DataTable data={filteredRecords} columns={recordColumns} searchPlaceholder="Buscar en resultados..." pageSize={15} testId="table-filtros" />
         </CardContent>
       </Card>
     </div>

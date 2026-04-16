@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import { DataTable, type Column } from "@/components/data-table";
 import type { AnalysisResult } from "@shared/schema";
+import { chartTooltipStyle } from "@/components/dashboard/chartStyles";
 
 interface TurnosPrefijosProps {
   data: AnalysisResult;
@@ -69,38 +70,30 @@ export function TurnosPrefijosTab({ data }: TurnosPrefijosProps) {
     },
   ];
 
-  return (
+return (
     <div className="space-y-6">
       <div className="text-center mb-6">
-        <h2 className="text-xl font-semibold flex items-center justify-center gap-2">
-          <span className="text-chart-2">*</span>
+        <h2 className="section-title">
+          <span className="dot-indicator bg-success" />
           Análisis por turnos y prefijos
         </h2>
       </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Card className="glass-card border-glass-border">
           <CardHeader className="pb-2">
-            <CardTitle className="text-base font-medium flex items-center gap-2">
-              <span className="text-chart-1">*</span>
+            <CardTitle className="text-sm font-display font-bold flex items-center gap-2">
+              <span className="dot-indicator bg-primary" />
               Distribución por turno
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <DataTable
-              data={turnoChartData}
-              columns={turnoColumns}
-              searchable={false}
-              pageSize={5}
-              testId="table-turnos"
-            />
+            <DataTable data={turnoChartData} columns={turnoColumns} searchable={false} pageSize={5} testId="table-turnos" />
           </CardContent>
         </Card>
-
-        <Card>
+        <Card className="glass-card border-glass-border">
           <CardHeader className="pb-2">
-            <CardTitle className="text-base font-medium flex items-center gap-2">
-              <span className="text-chart-2">*</span>
+            <CardTitle className="text-sm font-display font-bold flex items-center gap-2">
+              <span className="dot-indicator bg-success" />
               Contactabilidad por turno
             </CardTitle>
           </CardHeader>
@@ -108,38 +101,23 @@ export function TurnosPrefijosTab({ data }: TurnosPrefijosProps) {
             <div className="h-[200px]">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={turnoChartData}>
-                  <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
-                  <XAxis dataKey="turno" />
-                  <YAxis />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: "hsl(var(--popover))",
-                      border: "1px solid hsl(var(--border))",
-                      borderRadius: "0.5rem",
-                    }}
-                  />
-                  <Legend />
-                  <Bar
-                    dataKey="Answer"
-                    fill="hsl(var(--chart-2))"
-                    radius={[4, 4, 0, 0]}
-                  />
-                  <Bar
-                    dataKey="No Answer"
-                    fill="hsl(var(--chart-1))"
-                    radius={[4, 4, 0, 0]}
-                  />
+                  <CartesianGrid strokeDasharray="3 3" opacity={0.06} />
+                  <XAxis dataKey="turno" tick={{ fill: "currentColor", fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <YAxis tick={{ fill: "currentColor", fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <Tooltip contentStyle={chartTooltipStyle} />
+                  <Legend wrapperStyle={{ fontSize: "11px" }} />
+                  <Bar dataKey="Answer" fill="hsl(var(--success))" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="No Answer" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
           </CardContent>
         </Card>
       </div>
-
-      <Card>
+      <Card className="glass-card border-glass-border">
         <CardHeader className="pb-2">
-          <CardTitle className="text-base font-medium flex items-center gap-2">
-            <span className="text-chart-5">*</span>
+          <CardTitle className="text-sm font-display font-bold flex items-center gap-2">
+            <span className="dot-indicator bg-[hsl(var(--chart-5))]" />
             Análisis por prefijos (atendidos)
           </CardTitle>
           <p className="text-xs text-muted-foreground">
@@ -147,13 +125,7 @@ export function TurnosPrefijosTab({ data }: TurnosPrefijosProps) {
           </p>
         </CardHeader>
         <CardContent>
-          <DataTable
-            data={prefijoAnswerData}
-            columns={prefijoColumns}
-            searchPlaceholder="Buscar prefijo..."
-            pageSize={10}
-            testId="table-prefijos"
-          />
+          <DataTable data={prefijoAnswerData} columns={prefijoColumns} searchPlaceholder="Buscar prefijo..." pageSize={10} testId="table-prefijos" />
         </CardContent>
       </Card>
     </div>

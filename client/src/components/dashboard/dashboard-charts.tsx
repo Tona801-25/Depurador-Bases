@@ -22,16 +22,20 @@ interface DashboardChartsProps {
 }
 
 const ESTADO_COLORS: Record<string, string> = {
-  ANSWER: "hsl(145, 65%, 42%)",
-  "NO ANSWER": "hsl(210, 10%, 55%)",
-  BUSY: "hsl(45, 93%, 47%)",
-  REJECTED: "hsl(0, 72%, 51%)",
-  UNALLOCATED: "hsl(0, 72%, 40%)",
+  ANSWER: "hsl(var(--success))",
+  "NO ANSWER": "hsl(var(--muted-foreground))",
+  BUSY: "hsl(var(--warning))",
+  REJECTED: "hsl(var(--destructive))",
+  UNALLOCATED: "hsl(var(--chart-5))",
 };
 
 export function EstadoDistribucionChart({ data }: DashboardChartsProps) {
   const chartData = useMemo(() => {
-    const total = Object.values(data.estadoDistribucion).reduce((a, b) => a + b, 0);
+    const total = Object.values(data.estadoDistribucion).reduce(
+      (a, b) => a + b,
+      0
+    );
+
     return Object.entries(data.estadoDistribucion).map(([estado, cantidad]) => ({
       name: estado,
       value: cantidad,
@@ -41,14 +45,13 @@ export function EstadoDistribucionChart({ data }: DashboardChartsProps) {
   }, [data]);
 
   return (
-    <Card>
+    <Card className="glass-card border-glass-border">
       <CardHeader className="pb-2">
-        <CardTitle className="text-base font-medium flex items-center gap-2">
-          <span className="text-chart-3">*</span>
+        <CardTitle className="text-sm font-display font-bold flex items-center gap-2">
+          <span className="dot-indicator bg-warning" />
           Distribución de estados de llamada
         </CardTitle>
       </CardHeader>
-
       <CardContent>
         <div className="h-[280px]">
           <ResponsiveContainer width="100%" height="100%">
@@ -72,7 +75,6 @@ export function EstadoDistribucionChart({ data }: DashboardChartsProps) {
 
               <Tooltip
                 contentStyle={chartTooltipStyle}
-                labelStyle={{ color: "hsl(var(--foreground))" }}
                 formatter={(value: number, name: string) => [
                   value.toLocaleString("es-AR"),
                   name,
@@ -82,11 +84,11 @@ export function EstadoDistribucionChart({ data }: DashboardChartsProps) {
               <Legend
                 verticalAlign="bottom"
                 height={48}
-                wrapperStyle={{ fontSize: "11px", color: "currentColor" }}
+                wrapperStyle={{ fontSize: "11px" }}
                 formatter={(value, entry) => {
                   const pct = (entry as any)?.payload?.percentage;
                   return (
-                    <span className="text-sm text-foreground">
+                    <span className="text-xs text-foreground font-display">
                       {value} {pct ? `(${pct}%)` : ""}
                     </span>
                   );
@@ -110,28 +112,24 @@ export function TagDistribucionChart({ data }: DashboardChartsProps) {
   }, [data]);
 
   return (
-    <Card>
+    <Card className="glass-card border-glass-border">
       <CardHeader className="pb-2">
-        <CardTitle className="text-base font-medium flex items-center gap-2">
-          <span className="text-chart-2">*</span>
+        <CardTitle className="text-sm font-display font-bold flex items-center gap-2">
+          <span className="dot-indicator bg-success" />
           ANIs por TAG de depuración
         </CardTitle>
       </CardHeader>
-
       <CardContent>
         <div className="h-[280px]">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={chartData} layout="vertical" margin={{ left: 20 }}>
-              <CartesianGrid strokeDasharray="3 3" opacity={0.08} />
-
+              <CartesianGrid strokeDasharray="3 3" opacity={0.06} />
               <XAxis
                 type="number"
-                tick={{ fill: "currentColor", fontSize: 11 }}
+                tick={{ fill: "currentColor", fontSize: 10 }}
                 axisLine={false}
                 tickLine={false}
-                className="text-muted-foreground"
               />
-
               <YAxis
                 type="category"
                 dataKey="name"
@@ -139,15 +137,15 @@ export function TagDistribucionChart({ data }: DashboardChartsProps) {
                 tick={{ fill: "currentColor", fontSize: 10 }}
                 axisLine={false}
                 tickLine={false}
-                className="text-muted-foreground"
               />
-
               <Tooltip
                 contentStyle={chartTooltipStyle}
-                formatter={(value: number) => [value.toLocaleString("es-AR"), "ANIs"]}
+                formatter={(value: number) => [
+                  value.toLocaleString("es-AR"),
+                  "ANIs",
+                ]}
               />
-
-              <Bar dataKey="cantidad" radius={[0, 4, 4, 0]} barSize={18}>
+              <Bar dataKey="cantidad" radius={[0, 6, 6, 0]} barSize={16}>
                 {chartData.map((entry, index) => (
                   <Cell key={`cell-${index}`} fill={entry.fill} />
                 ))}
@@ -169,56 +167,43 @@ export function CurvaContactacionChart({ data }: DashboardChartsProps) {
   }, [data]);
 
   return (
-    <Card>
+    <Card className="glass-card border-glass-border">
       <CardHeader className="pb-2">
-        <CardTitle className="text-base font-medium flex items-center gap-2">
-          <span className="text-chart-1">*</span>
+        <CardTitle className="text-sm font-display font-bold flex items-center gap-2">
+          <span className="dot-indicator bg-primary" />
           Estrategia de reintentos
         </CardTitle>
-        <p className="text-xs text-muted-foreground">Intento del primer ANSWER-AGENT</p>
+        <p className="text-xs text-muted-foreground">
+          Intento del primer ANSWER-AGENT
+        </p>
       </CardHeader>
-
       <CardContent>
         <div className="h-[280px]">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" opacity={0.08} />
-
+              <CartesianGrid strokeDasharray="3 3" opacity={0.06} />
               <XAxis
                 dataKey="intento"
-                tick={{ fill: "currentColor", fontSize: 11 }}
+                tick={{ fill: "currentColor", fontSize: 10 }}
                 axisLine={false}
                 tickLine={false}
-                className="text-muted-foreground"
-                label={{
-                  value: "Intento del primer ANSWER-AGENT",
-                  position: "insideBottom",
-                  offset: -5,
-                  style: { fontSize: 11, fill: "hsl(var(--muted-foreground))" },
-                }}
               />
-
               <YAxis
-                tick={{ fill: "currentColor", fontSize: 11 }}
+                tick={{ fill: "currentColor", fontSize: 10 }}
                 axisLine={false}
                 tickLine={false}
-                className="text-muted-foreground"
               />
-
               <Tooltip
                 contentStyle={chartTooltipStyle}
-                formatter={(value: number) => [value.toLocaleString("es-AR"), "ANIs"]}
+                formatter={(value: number) => [
+                  value.toLocaleString("es-AR"),
+                  "ANIs",
+                ]}
               />
-
               <Bar
                 dataKey="cantidad"
-                fill="hsl(var(--chart-1))"
-                radius={[4, 4, 0, 0]}
-                label={{
-                  position: "top",
-                  fontSize: 10,
-                  fill: "currentColor",
-                }}
+                fill="hsl(var(--primary))"
+                radius={[6, 6, 0, 0]}
               />
             </BarChart>
           </ResponsiveContainer>
@@ -237,47 +222,29 @@ export function IntentosDistribucionChart({ data }: DashboardChartsProps) {
   }, [data]);
 
   return (
-    <Card>
+    <Card className="glass-card border-glass-border">
       <CardHeader className="pb-2">
-        <CardTitle className="text-base font-medium flex items-center gap-2">
-          <span className="text-chart-4">*</span>
+        <CardTitle className="text-sm font-display font-bold flex items-center gap-2">
+          <span className="dot-indicator bg-destructive" />
           Distribución de intentos totales por ANI
         </CardTitle>
       </CardHeader>
-
       <CardContent>
         <div className="h-[280px]">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" opacity={0.08} />
-
+              <CartesianGrid strokeDasharray="3 3" opacity={0.06} />
               <XAxis
                 dataKey="intentos"
-                tick={{ fill: "currentColor", fontSize: 11 }}
+                tick={{ fill: "currentColor", fontSize: 10 }}
                 axisLine={false}
                 tickLine={false}
-                className="text-muted-foreground"
-                label={{
-                  value: "Intentos totales por ANI",
-                  position: "insideBottom",
-                  offset: -5,
-                  style: { fontSize: 11, fill: "hsl(var(--muted-foreground))" },
-                }}
               />
-
               <YAxis
-                tick={{ fill: "currentColor", fontSize: 11 }}
+                tick={{ fill: "currentColor", fontSize: 10 }}
                 axisLine={false}
                 tickLine={false}
-                className="text-muted-foreground"
-                label={{
-                  value: "Cantidad de ANIs",
-                  angle: -90,
-                  position: "insideLeft",
-                  style: { fontSize: 11, fill: "hsl(var(--muted-foreground))" },
-                }}
               />
-
               <Tooltip
                 contentStyle={chartTooltipStyle}
                 formatter={(value: number, _name: string, props: any) => [
@@ -285,13 +252,15 @@ export function IntentosDistribucionChart({ data }: DashboardChartsProps) {
                   "ANIs",
                 ]}
               />
-
-              <Bar dataKey="cantidad" fill="hsl(var(--chart-1))" radius={[4, 4, 0, 0]} />
+              <Bar
+                dataKey="cantidad"
+                fill="hsl(var(--chart-1))"
+                radius={[6, 6, 0, 0]}
+              />
             </BarChart>
           </ResponsiveContainer>
         </div>
-
-        <p className="text-xs text-muted-foreground text-center mt-2">
+        <p className="text-xs text-muted-foreground text-center mt-3">
           Aquí vemos cuántos ANIs reciben 1, 2, 3... intentos en total.
         </p>
       </CardContent>

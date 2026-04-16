@@ -49,19 +49,19 @@ export function CatalogoPrefijosTab({ prefijos }: CatalogoPrefijosProps) {
   return (
     <div className="space-y-6">
       <div className="text-center mb-6">
-        <h2 className="text-xl font-semibold flex items-center justify-center gap-2">
-          <BookOpen className="h-5 w-5 text-chart-3" />
+        <h2 className="section-title">
+          <BookOpen className="h-5 w-5 text-warning" />
           Catálogo de prefijos interurbanos
         </h2>
-        <p className="text-sm text-muted-foreground mt-1">
+        <p className="section-subtitle">
           Referencia de prefijos telefónicos de Argentina
         </p>
       </div>
 
-      <Card>
+      <Card className="glass-card border-glass-border">
         <CardHeader className="pb-2">
-          <CardTitle className="text-base font-medium flex items-center gap-2">
-            <span className="text-chart-1">*</span>
+          <CardTitle className="text-sm font-display font-bold flex items-center gap-2">
+            <span className="dot-indicator bg-primary" />
             Prefijos registrados
           </CardTitle>
           <p className="text-xs text-muted-foreground">

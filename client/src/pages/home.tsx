@@ -1,10 +1,11 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { Header } from "@/components/header";
 import { FileUpload } from "@/components/file-upload";
 import { KPICard } from "@/components/kpi-card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
 import {
   EstadoDistribucionChart,
   TagDistribucionChart,
@@ -18,9 +19,12 @@ import { CatalogoPrefijosTab } from "@/components/dashboard/catalogo-prefijos";
 import { SimuladorCortesTab } from "@/components/dashboard/simulador-cortes";
 import { PrefijosPorHoraTab } from "@/components/dashboard/prefijos-por-hora-tab";
 import { useMutation } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import type { AnalysisResult, RecordsFilter } from "@shared/schema";
+import type {
+  AnalysisResult,
+  RecordsFilter,
+  BaseInsight,
+} from "@shared/schema";
 import {
   BarChart3,
   Clock,
@@ -29,11 +33,14 @@ import {
   Filter,
   BookOpen,
   Settings,
-  Upload,
   Users,
   Phone,
   Target,
   PhoneOff,
+  CheckCircle2,
+  AlertTriangle,
+  XCircle,
+  Layers3,
 } from "lucide-react";
 
 export default function Home() {
@@ -46,14 +53,17 @@ export default function Home() {
       files.forEach((file) => {
         formData.append("files", file);
       });
+
       const response = await fetch("/api/upload", {
         method: "POST",
         body: formData,
       });
+
       if (!response.ok) {
         const error = await response.json();
         throw new Error(error.message || "Error al procesar los archivos");
       }
+
       return response.json() as Promise<AnalysisResult>;
     },
     onSuccess: (data) => {
@@ -81,12 +91,14 @@ export default function Home() {
 
   const handleExportResumen = useCallback(async () => {
     if (!analysisResult) return;
+
     try {
       const response = await fetch("/api/export/resumen", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ analysisId: analysisResult.id }),
       });
+
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -94,7 +106,7 @@ export default function Home() {
       a.download = "resumen_por_ani.csv";
       a.click();
       window.URL.revokeObjectURL(url);
-    } catch (error) {
+    } catch {
       toast({
         title: "Error al exportar",
         description: "No se pudo generar el archivo",
@@ -106,12 +118,14 @@ export default function Home() {
   const handleExportFiltrado = useCallback(
     async (tags: string[]) => {
       if (!analysisResult) return;
+
       try {
         const response = await fetch("/api/export/filtrado", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ analysisId: analysisResult.id, tags }),
         });
+
         const blob = await response.blob();
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -119,7 +133,7 @@ export default function Home() {
         a.download = "base_filtrada.csv";
         a.click();
         window.URL.revokeObjectURL(url);
-      } catch (error) {
+      } catch {
         toast({
           title: "Error al exportar",
           description: "No se pudo generar el archivo",
@@ -133,12 +147,14 @@ export default function Home() {
   const handleExportRecords = useCallback(
     async (filters: RecordsFilter, format: "csv" | "txt" | "xlsx") => {
       if (!analysisResult) return;
+
       try {
         const response = await fetch("/api/export/records", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ analysisId: analysisResult.id, filters, format }),
         });
+
         const blob = await response.blob();
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -146,7 +162,7 @@ export default function Home() {
         a.download = `registros_filtrados.${format}`;
         a.click();
         window.URL.revokeObjectURL(url);
-      } catch (error) {
+      } catch {
         toast({
           title: "Error al exportar",
           description: "No se pudo generar el archivo",
@@ -157,12 +173,46 @@ export default function Home() {
     [analysisResult, toast]
   );
 
+  const rankedBases = useMemo(() => {
+    if (!analysisResult?.baseInsights) return [];
+    return [...analysisResult.baseInsights].sort(
+      (a: BaseInsight, b: BaseInsight) => b.scoreCalidad - a.scoreCalidad
+    );
+  }, [analysisResult]);
+
+  const resumenBases = useMemo(() => {
+    const total = rankedBases.length;
+    const utilizables = rankedBases.filter((b) => b.recomendacion === "UTILIZAR").length;
+    const revisar = rankedBases.filter((b) => b.recomendacion === "REVISAR").length;
+    const descartar = rankedBases.filter((b) => b.recomendacion === "DESCARTAR").length;
+
+    return {
+      total,
+      utilizables,
+      revisar,
+      descartar,
+      mejorBase: rankedBases[0]?.base ?? "-",
+    };
+  }, [rankedBases]);
+
+  const renderBadge = (recomendacion: string) => {
+    if (recomendacion === "UTILIZAR") {
+      return <Badge className="bg-success/15 text-success border-success/25 hover:bg-success/15">UTILIZAR</Badge>;
+    }
+
+    if (recomendacion === "REVISAR") {
+      return <Badge className="bg-warning/15 text-warning border-warning/25 hover:bg-warning/15">REVISAR</Badge>;
+    }
+
+    return <Badge className="bg-destructive/15 text-destructive border-destructive/25 hover:bg-destructive/15">DESCARTAR</Badge>;
+  };
+
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background text-foreground">
       <Header />
 
-          <main className="mx-auto w-full max-w-[1320px] px-5 py-6">        
-          <section className="mb-8">
+      <main className="mx-auto w-full max-w-[1320px] px-5 py-6">
+        <section className="mb-8">
           <FileUpload
             onFilesSelected={handleFilesSelected}
             isUploading={uploadMutation.isPending}
@@ -171,20 +221,21 @@ export default function Home() {
 
         {uploadMutation.isPending && (
           <div className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-5">
               {[...Array(5)].map((_, i) => (
-                <Card key={i}>
+                <Card key={i} className="glass-card">
                   <CardContent className="p-4">
-                    <Skeleton className="h-4 w-24 mb-2" />
+                    <Skeleton className="mb-2 h-4 w-24" />
                     <Skeleton className="h-8 w-20" />
                   </CardContent>
                 </Card>
               ))}
             </div>
-            <Card>
+
+            <Card className="glass-card">
               <CardContent className="p-8">
                 <div className="flex flex-col items-center justify-center gap-4">
-                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary" />
+                  <div className="h-12 w-12 animate-spin rounded-full border-b-2 border-primary" />
                   <p className="text-muted-foreground">
                     Procesando archivos... esto puede tomar unos segundos.
                   </p>
@@ -196,7 +247,7 @@ export default function Home() {
 
         {analysisResult && !uploadMutation.isPending && (
           <Tabs defaultValue="dashboard" className="space-y-6">
-            <TabsList className="grid w-full grid-cols-3 lg:grid-cols-7 h-auto gap-1 p-1">
+            <TabsList className="grid h-auto w-full grid-cols-3 gap-1 p-1 lg:grid-cols-7">
               <TabsTrigger
                 value="dashboard"
                 className="flex items-center gap-2 py-2"
@@ -205,6 +256,7 @@ export default function Home() {
                 <BarChart3 className="h-4 w-4" />
                 <span className="hidden sm:inline">Tablero visual</span>
               </TabsTrigger>
+
               <TabsTrigger
                 value="turnos"
                 className="flex items-center gap-2 py-2"
@@ -213,6 +265,7 @@ export default function Home() {
                 <TrendingUp className="h-4 w-4" />
                 <span className="hidden sm:inline">Turnos y prefijos</span>
               </TabsTrigger>
+
               <TabsTrigger
                 value="prefijos-hora"
                 className="flex items-center gap-2 py-2"
@@ -221,6 +274,7 @@ export default function Home() {
                 <Clock className="h-4 w-4" />
                 <span className="hidden sm:inline">Prefijos por hora</span>
               </TabsTrigger>
+
               <TabsTrigger
                 value="depuracion"
                 className="flex items-center gap-2 py-2"
@@ -229,6 +283,7 @@ export default function Home() {
                 <Trash2 className="h-4 w-4" />
                 <span className="hidden sm:inline">Depuración sugerida</span>
               </TabsTrigger>
+
               <TabsTrigger
                 value="filtros"
                 className="flex items-center gap-2 py-2"
@@ -237,6 +292,7 @@ export default function Home() {
                 <Filter className="h-4 w-4" />
                 <span className="hidden sm:inline">Filtro detallado</span>
               </TabsTrigger>
+
               <TabsTrigger
                 value="catalogo"
                 className="flex items-center gap-2 py-2"
@@ -245,6 +301,7 @@ export default function Home() {
                 <BookOpen className="h-4 w-4" />
                 <span className="hidden sm:inline">Catálogo de prefijos</span>
               </TabsTrigger>
+
               <TabsTrigger
                 value="simulador"
                 className="flex items-center gap-2 py-2"
@@ -257,51 +314,156 @@ export default function Home() {
 
             <TabsContent value="dashboard" className="space-y-6">
               <div className="pt-1 text-center">
-                <h2 className="text-[1.7rem] font-semibold tracking-tight text-cyan-400">                  
+                <h2 className="gradient-text text-center text-base font-display font-bold">
                   Tablero visual de calidad de base
                 </h2>
               </div>
 
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
-              <KPICard
-                title="ANIs totales"
-                value={analysisResult.totalAnis}
-                icon={Users}
-                testId="kpi-anis-totales"
-              />
-              <KPICard
-                title="ANIs contactados"
-                value={analysisResult.anisContactados}
-                icon={Phone}
-                trend={{
-                  value: (analysisResult.anisContactados / analysisResult.totalAnis) * 100,
-                }}
-                testId="kpi-anis-contactados"
-              />
-              <KPICard
-                title="ANIs a depurar"
-                value={analysisResult.anisADepurar}
-                icon={Target}
-                trend={{
-                  value: (analysisResult.anisADepurar / analysisResult.totalAnis) * 100,
-                }}
-                testId="kpi-anis-depurar"
-              />
-              <KPICard
-                title="% Answer"
-                value={`${analysisResult.pctAnswer.toFixed(1)}%`}
-                icon={Phone}
-                testId="kpi-pct-answer"
-              />
-              <KPICard
-                title="% No Answer"
-                value={`${analysisResult.pctNoAnswer.toFixed(1)}%`}
-                icon={PhoneOff}
-                testId="kpi-pct-noanswer"
-              />
-            </div>
+              {rankedBases.length > 0 && (
+                <>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
+                    <KPICard
+                      title="Bases analizadas"
+                      value={resumenBases.total}
+                      icon={Layers3}
+                    />
+                    <KPICard
+                      title="Bases utilizables"
+                      value={resumenBases.utilizables}
+                      icon={CheckCircle2}
+                      variant="success"
+                    />
+                    <KPICard
+                      title="Bases a revisar"
+                      value={resumenBases.revisar}
+                      icon={AlertTriangle}
+                      variant="warning"
+                    />
+                    <KPICard
+                      title="Bases a descartar"
+                      value={resumenBases.descartar}
+                      icon={XCircle}
+                      variant="danger"
+                    />
+                    <KPICard
+                      title="Mejor base"
+                      value={resumenBases.mejorBase}
+                      icon={TrendingUp}
+                    />
+                  </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  <Card className="glass-card">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm font-display font-bold">
+                        Ranking de calidad de bases
+                      </CardTitle>
+                    </CardHeader>
+
+                    <CardContent className="space-y-3">
+                      {rankedBases.map((base: BaseInsight) => (
+                        <div
+                          key={base.base}
+                          className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 lg:flex-row lg:items-center lg:justify-between"
+                        >
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <p className="truncate text-sm font-semibold text-foreground">
+                                {base.base}
+                              </p>
+                              {renderBadge(base.recomendacion)}
+                            </div>
+
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              Registros: {base.totalRegistros.toLocaleString("es-AR")} · ANIs:{" "}
+                              {base.totalAnis.toLocaleString("es-AR")} · Intentos prom.:{" "}
+                              {base.intentosPromedio.toFixed(2)}
+                            </p>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4 lg:min-w-[500px]">
+                            <div className="rounded-lg border border-border bg-background px-3 py-2">
+                              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                                Contacto
+                              </p>
+                              <p className="mt-1 font-semibold text-success">
+                                {(base.pctContactoEfectivo * 100).toFixed(1)}%
+                              </p>
+                            </div>
+
+                            <div className="rounded-lg border border-border bg-background px-3 py-2">
+                              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                                Buzón
+                              </p>
+                              <p className="mt-1 font-semibold text-warning">
+                                {(base.pctBuzon * 100).toFixed(1)}%
+                              </p>
+                            </div>
+
+                            <div className="rounded-lg border border-border bg-background px-3 py-2">
+                              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                                Inválidos
+                              </p>
+                              <p className="mt-1 font-semibold text-destructive">
+                                {(base.pctInvalidos * 100).toFixed(1)}%
+                              </p>
+                            </div>
+
+                            <div className="rounded-lg border border-border bg-background px-3 py-2">
+                              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                                Score
+                              </p>
+                              <p className="mt-1 font-semibold text-foreground">
+                                {base.scoreCalidad.toFixed(2)}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </CardContent>
+                  </Card>
+                </>
+              )}
+
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
+                <KPICard
+                  title="ANIs totales"
+                  value={analysisResult.totalAnis}
+                  icon={Users}
+                  testId="kpi-anis-totales"
+                />
+                <KPICard
+                  title="ANIs contactados"
+                  value={analysisResult.anisContactados}
+                  icon={Phone}
+                  trend={{
+                    value: (analysisResult.anisContactados / analysisResult.totalAnis) * 100,
+                  }}
+                  testId="kpi-anis-contactados"
+                />
+                <KPICard
+                  title="ANIs a depurar"
+                  value={analysisResult.anisADepurar}
+                  icon={Target}
+                  trend={{
+                    value: (analysisResult.anisADepurar / analysisResult.totalAnis) * 100,
+                  }}
+                  testId="kpi-anis-depurar"
+                />
+                <KPICard
+                  title="% Answer"
+                  value={`${analysisResult.pctAnswer.toFixed(1)}%`}
+                  icon={Phone}
+                  testId="kpi-pct-answer"
+                />
+                <KPICard
+                  title="% No Answer"
+                  value={`${analysisResult.pctNoAnswer.toFixed(1)}%`}
+                  icon={PhoneOff}
+                  testId="kpi-pct-noanswer"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
                 <EstadoDistribucionChart data={analysisResult} />
                 <TagDistribucionChart data={analysisResult} />
               </div>
@@ -314,9 +476,10 @@ export default function Home() {
               <TurnosPrefijosTab data={analysisResult} />
             </TabsContent>
 
-                        <TabsContent value="prefijos-hora">
+            <TabsContent value="prefijos-hora">
               <PrefijosPorHoraTab data={analysisResult} />
             </TabsContent>
+
             <TabsContent value="depuracion">
               <DepuracionTab
                 data={analysisResult}
@@ -343,17 +506,17 @@ export default function Home() {
         )}
 
         {!analysisResult && !uploadMutation.isPending && (
-          <Card>
+          <Card className="glass-card">
             <CardContent className="flex min-h-[280px] flex-col items-center justify-center p-10 text-center">
-              <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-white/5">
-                <BarChart3 className="h-7 w-7 text-slate-500" />
+              <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-muted">
+                <BarChart3 className="h-7 w-7 text-muted-foreground" />
               </div>
 
-              <h3 className="text-3xl font-semibold text-white">
+              <h3 className="text-3xl font-bold text-foreground">
                 Sin datos para mostrar
               </h3>
 
-              <p className="mt-3 max-w-[540px] text-base leading-relaxed text-slate-400">
+              <p className="mt-3 max-w-[540px] text-base leading-relaxed text-muted-foreground">
                 Subí al menos un archivo de Neotel (CSV, TXT, XLS o XLSX) para habilitar las pestañas de análisis.
               </p>
             </CardContent>
