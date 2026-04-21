@@ -25,6 +25,27 @@ const upload = multer({
   }),
 });
 
+function buildBaseFinalRows(rows: any[]) {
+  return rows.map((s) => ({
+    ANI: s.ani || "",
+    BasePrincipal: s.basePrincipal || "",
+    Prefijo: s.prefijo || "",
+    TagTelefono: s.tagTelefono || "",
+    ScoreRecontactabilidad: s.scoreRecontactabilidad ?? 0,
+    Prioridad: s.prioridad || "",
+    AccionSugerida: s.accionSugerida || "",
+    Saturado: s.saturado ? "SI" : "NO",
+    MejorFranja: s.mejorFranja || "",
+    DiasDesdeUltimoIntento: s.diasDesdeUltimoIntento ?? "",
+    IntentosTotales: s.intentosTotales || 0,
+    IntentosUltimas24h: s.intentosUltimas24h ?? 0,
+    IntentosUltimas48h: s.intentosUltimas48h ?? 0,
+    UltimoEstado: s.ultimoEstadoNormalizado || "",
+    UltimoSubestado: s.ultimoSubestadoNormalizado || "",
+    MotivoDepuracion: s.motivoDepuracion || "",
+  }));
+}
+
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   app.get("/api/health", (_req, res) => res.json({ ok: true }));
   app.get("/health", (_req, res) => res.json({ ok: true }));
@@ -185,6 +206,99 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const csv = generateCSV(data);
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", "attachment; filename=resumen_por_ani.csv");
+    res.send(csv);
+  });
+
+  app.post("/api/export/base-final", async (req, res) => {
+  const {
+    analysisId,
+    tags,
+    prioridad,
+    accion,
+    soloSaturados,
+    scoreMinimo,
+    busqueda,
+  } = req.body as {
+    analysisId: string;
+    tags?: string[];
+    prioridad?: string;
+    accion?: string;
+    soloSaturados?: boolean;
+    scoreMinimo?: number | null;
+    busqueda?: string;
+  };
+
+  const analysis = await storage.getAnalysis(analysisId);
+  if (!analysis) return res.status(404).json({ message: "Análisis no encontrado" });
+
+  let rows = [...analysis.aniSummaries];
+
+  if (Array.isArray(tags)) {
+    const selectedTags = new Set(tags);
+    rows = rows.filter((item) => selectedTags.has(item.tagTelefono));
+  }
+
+  if (prioridad && prioridad !== "TODAS") {
+    rows = rows.filter((item) => (item.prioridad || "").toUpperCase() === prioridad);
+  }
+
+  if (accion && accion !== "TODAS") {
+    rows = rows.filter((item) => (item.accionSugerida || "").toUpperCase() === accion);
+  }
+
+  if (soloSaturados) {
+    rows = rows.filter((item) => item.saturado === true);
+  }
+
+  if (typeof scoreMinimo === "number" && Number.isFinite(scoreMinimo)) {
+    rows = rows.filter((item) => (item.scoreRecontactabilidad ?? 0) >= scoreMinimo);
+  }
+
+const textoBusqueda = (busqueda ?? "").trim().toLowerCase();
+
+if (textoBusqueda) {
+  rows = rows.filter((item) =>
+    [
+      item.ani,
+      item.basePrincipal,
+      item.prefijo,
+      item.mejorFranja,
+      item.prioridad,
+      item.accionSugerida,
+      item.motivoDepuracion,
+      item.ultimoEstadoNormalizado,
+      item.ultimoSubestadoNormalizado,
+    ]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(textoBusqueda))
+  );
+}
+
+  const csv = generateCSV(buildBaseFinalRows(rows));
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", "attachment; filename=base_final_depurada.csv");
+  res.send(csv);
+});
+
+  app.post("/api/export/accion", async (req, res) => {
+    const { analysisId, accion } = req.body as {
+      analysisId: string;
+      accion: string;
+    };
+
+    const analysis = await storage.getAnalysis(analysisId);
+    if (!analysis) return res.status(404).json({ message: "Análisis no encontrado" });
+
+    const rows = analysis.aniSummaries.filter(
+      (item) => (item.accionSugerida || "").toUpperCase() === (accion || "").toUpperCase()
+    );
+
+    const csv = generateCSV(buildBaseFinalRows(rows));
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=base_por_accion_${(accion || "sin_accion").toLowerCase()}.csv`
+    );
     res.send(csv);
   });
 

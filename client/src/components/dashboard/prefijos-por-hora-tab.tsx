@@ -55,7 +55,6 @@ function parseTicketDateClient(dateStr?: string): Date | null {
 
   export function PrefijosPorHoraTab({ data }: PrefijosPorHoraTabProps) {
 
-  console.log("prefijoPorHora:", data.prefijoPorHora);
   console.log("rawRecords sample:", data.rawRecords?.[0]); 
 
 const tableData = useMemo(() => {
