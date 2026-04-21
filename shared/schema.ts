@@ -27,9 +27,31 @@ export const aniSummarySchema = z.object({
   intentosBusy: z.number(),
   intentosUnallocated: z.number(),
   intentosRejected: z.number(),
+
   primerLlamado: z.string().optional(),
   ultimoLlamado: z.string().optional(),
+
   tagTelefono: z.string(),
+
+  // Nuevos campos "pro"
+  basePrincipal: z.string().optional(),
+  prefijo: z.string().optional(),
+  mejorFranja: z.string().optional(),
+  ultimoEstadoNormalizado: z.string().optional(),
+  ultimoSubestadoNormalizado: z.string().optional(),
+
+  diasDesdeUltimoIntento: z.number().optional(),
+  intentosUltimas24h: z.number().optional(),
+  intentosUltimas48h: z.number().optional(),
+
+  saturado: z.boolean().optional(),
+  tuvoContactoPrevio: z.boolean().optional(),
+  contactoReciente: z.boolean().optional(),
+
+  scoreRecontactabilidad: z.number().optional(),
+  accionSugerida: z.string().optional(),
+  prioridad: z.string().optional(),
+  motivoDepuracion: z.string().optional(),
 });
 
 export type ANISummary = z.infer<typeof aniSummarySchema>;
@@ -78,6 +100,34 @@ export const franjaDistribucionItemSchema = z.object({
 });
 
 export type FranjaDistribucionItem = z.infer<typeof franjaDistribucionItemSchema>;
+
+export const resumenEjecutivoSchema = z.object({
+  diagnosticoGeneral: z.string(),
+  focoPrincipal: z.string(),
+  mejorBase: z.string(),
+  peorBase: z.string(),
+  mejorFranja: z.string(),
+  peorFranja: z.string(),
+  porcentajeADepurar: z.number(),
+  porcentajeAltaPrioridad: z.number(),
+  porcentajeSaturados: z.number(),
+  accionDominante: z.string(),
+});
+
+export type ResumenEjecutivo = z.infer<typeof resumenEjecutivoSchema>;
+
+export const recomendacionOperativaSchema = z.object({
+  tipo: z.enum(["BASE", "FRANJA"]),
+  objetivo: z.string(),
+  prioridad: z.string(),
+  recomendacion: z.string(),
+  motivo: z.string(),
+  score: z.number().optional(),
+  contactoPct: z.number().optional(),
+  volumen: z.number().optional(),
+});
+
+export type RecomendacionOperativa = z.infer<typeof recomendacionOperativaSchema>;
 
 export const analysisResultSchema = z.object({
   id: z.string(),
@@ -145,11 +195,13 @@ export const analysisResultSchema = z.object({
     })
   ),
 
-  baseInsights: z.array(baseInsightSchema).optional(),
-  depuracionInsights: z.array(depuracionInsightSchema).optional(),
-  franjaDistribucion: z
-    .record(z.string(), franjaDistribucionItemSchema)
-    .optional(),
+      baseInsights: z.array(baseInsightSchema).optional(),
+    depuracionInsights: z.array(depuracionInsightSchema).optional(),
+    franjaDistribucion: z
+      .record(z.string(), franjaDistribucionItemSchema)
+      .optional(),
+    resumenEjecutivo: resumenEjecutivoSchema.optional(),
+    recomendacionesOperativas: z.array(recomendacionOperativaSchema).optional(),
 });
 
 export type AnalysisResult = z.infer<typeof analysisResultSchema>;

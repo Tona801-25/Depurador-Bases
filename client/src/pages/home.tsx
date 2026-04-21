@@ -143,6 +143,77 @@ export default function Home() {
     },
     [analysisResult, toast]
   );
+  
+    const handleExportBaseFinal = useCallback(
+    async (filters: {
+      tags: string[];
+      prioridad?: string;
+      accion?: string;
+      soloSaturados?: boolean;
+      scoreMinimo?: number | null;
+      busqueda?: string;
+    }) => {
+      if (!analysisResult) return;
+
+      try {
+        const response = await fetch("/api/export/base-final", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            analysisId: analysisResult.id,
+            ...filters,
+          }),
+        });
+
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "base_final_depurada.csv";
+        a.click();
+        window.URL.revokeObjectURL(url);
+      } catch {
+        toast({
+          title: "Error al exportar",
+          description: "No se pudo generar la base final depurada",
+          variant: "destructive",
+        });
+      }
+    },
+    [analysisResult, toast]
+  );
+
+  const handleExportPorAccion = useCallback(
+    async (accion: string) => {
+      if (!analysisResult || !accion || accion === "TODAS") return;
+
+      try {
+        const response = await fetch("/api/export/accion", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            analysisId: analysisResult.id,
+            accion,
+          }),
+        });
+
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `base_por_accion_${accion.toLowerCase()}.csv`;
+        a.click();
+        window.URL.revokeObjectURL(url);
+      } catch {
+        toast({
+          title: "Error al exportar",
+          description: "No se pudo exportar por acción sugerida",
+          variant: "destructive",
+        });
+      }
+    },
+    [analysisResult, toast]
+  );
 
   const handleExportRecords = useCallback(
     async (filters: RecordsFilter, format: "csv" | "txt" | "xlsx") => {
@@ -281,7 +352,7 @@ export default function Home() {
                 data-testid="tab-depuracion"
               >
                 <Trash2 className="h-4 w-4" />
-                <span className="hidden sm:inline">Depuración sugerida</span>
+                <span className="hidden sm:inline">Motor de depuración</span>
               </TabsTrigger>
 
               <TabsTrigger
@@ -480,13 +551,13 @@ export default function Home() {
               <PrefijosPorHoraTab data={analysisResult} />
             </TabsContent>
 
-            <TabsContent value="depuracion">
-              <DepuracionTab
-                data={analysisResult}
-                onExportResumen={handleExportResumen}
-                onExportFiltrado={handleExportFiltrado}
-              />
-            </TabsContent>
+            <DepuracionTab
+              data={analysisResult}
+              onExportResumen={handleExportResumen}
+              onExportFiltrado={handleExportFiltrado}
+              onExportBaseFinal={handleExportBaseFinal}
+              onExportPorAccion={handleExportPorAccion}
+            />
 
             <TabsContent value="filtros">
               <FiltrosTab

@@ -150,6 +150,62 @@ export function computeAnalysisMeta(analysis: AnalysisResult): AnalysisMeta {
   };
 }
 
+type DepuracionConfig = {
+  thresholds: {
+    unallocatedInvalido: number;
+    answeringMachineSoloBuzon: number;
+    noAnswerNoAtiende: number;
+    rejectedRechaza: number;
+    intentosAltos: number;
+    intentosMuyAltos: number;
+  };
+  recencia: {
+    contactoRecienteDias: number;
+    enfriamientoHoras: number;
+  };
+  saturacion: {
+    maxIntentos24h: number;
+    maxIntentos48h: number;
+  };
+};
+
+type ANIContext = {
+  basePrincipal: string;
+  prefijo: string;
+  mejorFranja: string;
+  ultimoEstadoNormalizado: string;
+  ultimoSubestadoNormalizado: string;
+  diasDesdeUltimoIntento: number | null;
+  intentosUltimas24h: number;
+  intentosUltimas48h: number;
+  saturado: boolean;
+  tuvoContactoPrevio: boolean;
+  contactoReciente: boolean;
+  scoreRecontactabilidad: number;
+  accionSugerida: string;
+  prioridad: string;
+  motivoDepuracion: string;
+};
+
+const DEFAULT_DEPURACION_CONFIG: DepuracionConfig = {
+  thresholds: {
+    unallocatedInvalido: 3,
+    answeringMachineSoloBuzon: 5,
+    noAnswerNoAtiende: 6,
+    rejectedRechaza: 3,
+    intentosAltos: 6,
+    intentosMuyAltos: 9,
+  },
+  recencia: {
+    contactoRecienteDias: 7,
+    enfriamientoHoras: 24,
+  },
+  saturacion: {
+    maxIntentos24h: 3,
+    maxIntentos48h: 5,
+  },
+};
+
 function findColumn(columns: string[], possibles: string[]): string | null {
   const normalizedColumns = columns.map(normalizeColumn);
   const columnMap = new Map(columns.map((c, i) => [normalizedColumns[i], c]));
@@ -164,23 +220,43 @@ function findColumn(columns: string[], possibles: string[]): string | null {
   return null;
 }
 
-function assignTag(summary: ANISummary): TagType {
-  if (summary.intentosUnallocated >= 3) return "INVALIDO";
-  if (summary.intentosAnswerAgent >= 1) return "CONTACTADO";
-  if (summary.intentosAnsweringMachine >= 5 && summary.intentosAnswerAgent === 0) {
+function assignTag(
+  summary: ANISummary,
+  context: ANIContext,
+  config: DepuracionConfig
+): TagType {
+  if (summary.intentosUnallocated >= config.thresholds.unallocatedInvalido) {
+    return "INVALIDO";
+  }
+
+  if (context.contactoReciente) {
+    return "CONTACTADO";
+  }
+
+  if (
+    summary.intentosRejected >= config.thresholds.rejectedRechaza &&
+    summary.intentosAnswerAgent === 0
+  ) {
+    return "RECHAZA";
+  }
+
+  if (
+    summary.intentosAnsweringMachine >= config.thresholds.answeringMachineSoloBuzon &&
+    summary.intentosAnswerAgent === 0
+  ) {
     return "SOLO_BUZON";
   }
 
   if (
-    summary.intentosNoAnswer >= 6 &&
+    summary.intentosNoAnswer >= config.thresholds.noAnswerNoAtiende &&
     summary.intentosAnswerAgent === 0 &&
     summary.intentosAnsweringMachine === 0
   ) {
     return "NO_ATIENDE";
   }
 
-  if (summary.intentosRejected >= 3 && summary.intentosAnswerAgent === 0) {
-    return "RECHAZA";
+  if (context.saturado && context.scoreRecontactabilidad < 45) {
+    return "NO_ATIENDE";
   }
 
   return "SEGUIR_INTENTANDO";
@@ -299,6 +375,207 @@ function getTurno(dateStr?: string): string {
   return d.getHours() < 14 ? "Mañana" : "Tarde";
 }
 
+function hoursBetween(from: Date, to: Date): number {
+  return Math.abs(to.getTime() - from.getTime()) / (1000 * 60 * 60);
+}
+
+function daysBetween(from: Date, to: Date): number {
+  return Math.abs(to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24);
+}
+
+function getEstadoNormalizado(record?: CallRecord): string {
+  return normalizeEstado(record?.estado);
+}
+
+function getSubestadoNormalizado(record?: CallRecord): string {
+  return normalizeSubestado(record?.subestado);
+}
+
+function getBasePrincipal(calls: CallRecord[]): string {
+  const count: Record<string, number> = {};
+
+  for (const call of calls) {
+    const key = (call.base || "SIN_BASE").trim() || "SIN_BASE";
+    count[key] = (count[key] || 0) + 1;
+  }
+
+  return Object.entries(count).sort((a, b) => b[1] - a[1])[0]?.[0] || "SIN_BASE";
+}
+
+function getMejorFranja(calls: CallRecord[]): string {
+  const franjaStats: Record<string, { total: number; contacto: number }> = {};
+
+  for (const call of calls) {
+    const franja = getRangoHorario(call.fecha);
+
+    if (!franjaStats[franja]) {
+      franjaStats[franja] = { total: 0, contacto: 0 };
+    }
+
+    franjaStats[franja].total++;
+
+    if (isAnswerAgent(call)) {
+      franjaStats[franja].contacto++;
+    }
+  }
+
+  const ranked = Object.entries(franjaStats)
+    .map(([franja, stats]) => ({
+      franja,
+      total: stats.total,
+      contacto: stats.contacto,
+      ratio: stats.total > 0 ? stats.contacto / stats.total : 0,
+    }))
+    .sort((a, b) => {
+      if (b.ratio !== a.ratio) return b.ratio - a.ratio;
+      return b.contacto - a.contacto;
+    });
+
+  return ranked[0]?.franja || "Sin hora";
+}
+
+function buildANIContext(
+  calls: CallRecord[],
+  summary: ANISummary,
+  config: DepuracionConfig
+): ANIContext {
+  const now = new Date();
+
+  const datedCalls = calls
+    .map((call) => ({
+      call,
+      date: parseTicketDate(call.fecha),
+    }))
+    .filter((item): item is { call: CallRecord; date: Date } => !!item.date)
+    .sort((a, b) => a.date.getTime() - b.date.getTime());
+
+  const last = datedCalls[datedCalls.length - 1];
+  const diasDesdeUltimoIntento = last ? daysBetween(last.date, now) : null;
+
+  const intentosUltimas24h = datedCalls.filter(
+    ({ date }) => hoursBetween(date, now) <= 24
+  ).length;
+
+  const intentosUltimas48h = datedCalls.filter(
+    ({ date }) => hoursBetween(date, now) <= 48
+  ).length;
+
+  const saturado =
+    intentosUltimas24h >= config.saturacion.maxIntentos24h ||
+    intentosUltimas48h >= config.saturacion.maxIntentos48h;
+
+  const tuvoContactoPrevio = summary.intentosAnswerAgent > 0;
+
+  const contactoReciente =
+    tuvoContactoPrevio &&
+    diasDesdeUltimoIntento !== null &&
+    diasDesdeUltimoIntento <= config.recencia.contactoRecienteDias;
+
+  let score = 100;
+
+  score -= summary.intentosUnallocated * 25;
+  score -= summary.intentosRejected * 18;
+  score -= summary.intentosAnsweringMachine * 10;
+  score -= summary.intentosNoAnswer * 6;
+  score -= summary.intentosBusy * 4;
+
+  if (summary.intentosTotales >= config.thresholds.intentosAltos) score -= 10;
+  if (summary.intentosTotales >= config.thresholds.intentosMuyAltos) score -= 15;
+  if (saturado) score -= 20;
+  if (contactoReciente) score -= 50;
+
+  if (
+    diasDesdeUltimoIntento !== null &&
+    diasDesdeUltimoIntento >= 2 &&
+    !tuvoContactoPrevio
+  ) {
+    score += 8;
+  }
+
+  if (
+    diasDesdeUltimoIntento !== null &&
+    diasDesdeUltimoIntento >= 5 &&
+    !saturado &&
+    !contactoReciente
+  ) {
+    score += 10;
+  }
+
+  score = Math.max(0, Math.min(100, score));
+
+  let accionSugerida = "REINTENTAR";
+  let prioridad = "MEDIA";
+  let motivoDepuracion = "ANI con margen operativo";
+
+  if (summary.intentosUnallocated >= config.thresholds.unallocatedInvalido) {
+    accionSugerida = "ELIMINAR";
+    prioridad = "ALTA";
+    motivoDepuracion = "Múltiples intentos unallocated";
+  } else if (contactoReciente) {
+    accionSugerida = "NO_REINTENTAR_AUN";
+    prioridad = "BAJA";
+    motivoDepuracion = "Tuvo contacto efectivo reciente";
+  } else if (
+    summary.intentosRejected >= config.thresholds.rejectedRechaza &&
+    summary.intentosAnswerAgent === 0
+  ) {
+    accionSugerida = "EXCLUIR";
+    prioridad = "ALTA";
+    motivoDepuracion = "Rechazo reiterado sin contacto efectivo";
+  } else if (
+    summary.intentosAnsweringMachine >= config.thresholds.answeringMachineSoloBuzon &&
+    summary.intentosAnswerAgent === 0
+  ) {
+    accionSugerida = "CAMBIAR_ESTRATEGIA";
+    prioridad = "MEDIA";
+    motivoDepuracion = "Predominio de contestador";
+  } else if (
+    summary.intentosNoAnswer >= config.thresholds.noAnswerNoAtiende &&
+    summary.intentosAnswerAgent === 0 &&
+    summary.intentosAnsweringMachine === 0
+  ) {
+    accionSugerida = saturado ? "PAUSAR_24H" : "LIMITAR_REINTENTOS";
+    prioridad = "ALTA";
+    motivoDepuracion = saturado
+      ? "Exceso de no answer con saturación reciente"
+      : "Exceso de no answer sin contacto";
+  } else if (saturado) {
+    accionSugerida = "PAUSAR_24H";
+    prioridad = "MEDIA";
+    motivoDepuracion = "Alta densidad de intentos en poco tiempo";
+  } else if (score >= 70) {
+    accionSugerida = "REINTENTAR_EN_MEJOR_FRANJA";
+    prioridad = "ALTA";
+    motivoDepuracion = "Buen potencial de recontacto";
+  } else if (score >= 45) {
+    accionSugerida = "REINTENTAR_CON_CONTROL";
+    prioridad = "MEDIA";
+    motivoDepuracion = "Potencial moderado de recontacto";
+  } else {
+    accionSugerida = "REVISAR_O_PAUSAR";
+    prioridad = "BAJA";
+    motivoDepuracion = "Bajo potencial de recontacto";
+  }
+
+  return {
+    basePrincipal: getBasePrincipal(calls),
+    prefijo: extractPrefijo(summary.ani),
+    mejorFranja: getMejorFranja(calls),
+    ultimoEstadoNormalizado: getEstadoNormalizado(last?.call),
+    ultimoSubestadoNormalizado: getSubestadoNormalizado(last?.call),
+    diasDesdeUltimoIntento,
+    intentosUltimas24h,
+    intentosUltimas48h,
+    saturado,
+    tuvoContactoPrevio,
+    contactoReciente,
+    scoreRecontactabilidad: score,
+    accionSugerida,
+    prioridad,
+    motivoDepuracion,
+  };
+}
+
 function buildBaseInsights(records: CallRecord[], aniSummaries: ANISummary[]) {
   const baseMap = new Map<string, CallRecord[]>();
 
@@ -361,52 +638,13 @@ function buildBaseInsights(records: CallRecord[], aniSummaries: ANISummary[]) {
 }
 
 function buildDepuracionInsights(aniSummaries: ANISummary[]) {
-  return aniSummaries.map((s) => {
-    let prioridad = "MEDIA";
-    let accion = "REINTENTAR";
-    let motivo = "Aún tiene margen operativo";
-
-    switch (s.tagTelefono) {
-      case "CONTACTADO":
-        prioridad = "BAJA";
-        accion = "NO_REINTENTAR";
-        motivo = "Ya tuvo contacto efectivo";
-        break;
-      case "INVALIDO":
-        prioridad = "ALTA";
-        accion = "ELIMINAR";
-        motivo = "Múltiples intentos unallocated";
-        break;
-      case "SOLO_BUZON":
-        prioridad = "MEDIA";
-        accion = "CAMBIAR_ESTRATEGIA";
-        motivo = "Predominio de contestador";
-        break;
-      case "NO_ATIENDE":
-        prioridad = "ALTA";
-        accion = "LIMITAR_REINTENTOS";
-        motivo = "Exceso de no answer sin contacto";
-        break;
-      case "RECHAZA":
-        prioridad = "ALTA";
-        accion = "EXCLUIR";
-        motivo = "Rechazo reiterado";
-        break;
-      case "SEGUIR_INTENTANDO":
-        prioridad = "MEDIA";
-        accion = "REINTENTAR";
-        motivo = "No agotó criterios de corte";
-        break;
-    }
-
-    return {
-      ani: s.ani,
-      tag: s.tagTelefono,
-      prioridad,
-      accion,
-      motivo,
-    };
-  });
+  return aniSummaries.map((s) => ({
+    ani: s.ani,
+    tag: s.tagTelefono,
+    prioridad: s.prioridad || "MEDIA",
+    accion: s.accionSugerida || "REINTENTAR",
+    motivo: s.motivoDepuracion || "Sin motivo específico",
+  }));
 }
 
 function buildFranjaDistribucion(records: CallRecord[]) {
@@ -436,6 +674,196 @@ function buildFranjaDistribucion(records: CallRecord[]) {
   });
 
   return franjaDistribucion;
+}
+
+function safePct(value: number, total: number): number {
+  if (!total) return 0;
+  return (value / total) * 100;
+}
+
+function buildResumenEjecutivo(
+  aniSummaries: ANISummary[],
+  baseInsights: ReturnType<typeof buildBaseInsights>,
+  franjaDistribucion: Record<
+    string,
+    { total: number; contactoEfectivo: number; noContacto: number }
+  >
+) {
+  const totalAnis = aniSummaries.length || 1;
+
+  const aDepurar = aniSummaries.filter((s) =>
+    ["INVALIDO", "SOLO_BUZON", "NO_ATIENDE", "RECHAZA"].includes(s.tagTelefono)
+  ).length;
+
+  const altaPrioridad = aniSummaries.filter((s) => s.prioridad === "ALTA").length;
+  const saturados = aniSummaries.filter((s) => s.saturado === true).length;
+
+  const accionMap: Record<string, number> = {};
+  aniSummaries.forEach((s) => {
+    const accion = s.accionSugerida || "SIN_ACCION";
+    accionMap[accion] = (accionMap[accion] || 0) + 1;
+  });
+
+  const accionDominante =
+    Object.entries(accionMap).sort((a, b) => b[1] - a[1])[0]?.[0] || "-";
+
+  const bestBase = [...baseInsights].sort((a, b) => b.scoreCalidad - a.scoreCalidad)[0];
+  const worstBase = [...baseInsights].sort((a, b) => a.scoreCalidad - b.scoreCalidad)[0];
+
+  const franjaRanked = Object.entries(franjaDistribucion)
+    .map(([franja, stats]) => ({
+      franja,
+      total: stats.total,
+      contactoPct: safePct(stats.contactoEfectivo, stats.total),
+    }))
+    .sort((a, b) => b.contactoPct - a.contactoPct);
+
+  const bestFranja = franjaRanked[0]?.franja || "-";
+  const worstFranja = franjaRanked[franjaRanked.length - 1]?.franja || "-";
+
+  const porcentajeADepurar = safePct(aDepurar, totalAnis);
+  const porcentajeAltaPrioridad = safePct(altaPrioridad, totalAnis);
+  const porcentajeSaturados = safePct(saturados, totalAnis);
+
+  let diagnosticoGeneral = "Base equilibrada, con margen operativo razonable.";
+  let focoPrincipal = "Optimizar reintentos según score y mejor franja.";
+
+  if (porcentajeADepurar >= 35) {
+    diagnosticoGeneral =
+      "La base presenta un nivel alto de desgaste y depuración pendiente.";
+    focoPrincipal = "Reducir intentos improductivos y excluir ANI de bajo valor.";
+  } else if (porcentajeSaturados >= 20) {
+    diagnosticoGeneral =
+      "La base muestra presión operativa alta por saturación reciente.";
+    focoPrincipal = "Enfriar ANI saturados y redistribuir llamados por franja.";
+  } else if (porcentajeAltaPrioridad >= 25) {
+    diagnosticoGeneral =
+      "Existe una porción relevante de ANI con alta prioridad de tratamiento.";
+    focoPrincipal = "Atacar primero los ANI con mejor score y acción sugerida clara.";
+  }
+
+  return {
+    diagnosticoGeneral,
+    focoPrincipal,
+    mejorBase: bestBase?.base || "-",
+    peorBase: worstBase?.base || "-",
+    mejorFranja: bestFranja,
+    peorFranja: worstFranja,
+    porcentajeADepurar,
+    porcentajeAltaPrioridad,
+    porcentajeSaturados,
+    accionDominante,
+  };
+}
+
+function buildRecomendacionesOperativas(
+  aniSummaries: ANISummary[],
+  baseInsights: ReturnType<typeof buildBaseInsights>,
+  franjaDistribucion: Record<
+    string,
+    { total: number; contactoEfectivo: number; noContacto: number }
+  >
+) {
+  const recomendaciones: Array<{
+    tipo: "BASE" | "FRANJA";
+    objetivo: string;
+    prioridad: string;
+    recomendacion: string;
+    motivo: string;
+    score?: number;
+    contactoPct?: number;
+    volumen?: number;
+  }> = [];
+
+  const basesOrdenadas = [...baseInsights].sort((a, b) => b.scoreCalidad - a.scoreCalidad);
+
+  const mejorBase = basesOrdenadas[0];
+  const peorBase = [...baseInsights].sort((a, b) => a.scoreCalidad - b.scoreCalidad)[0];
+
+  if (mejorBase) {
+    recomendaciones.push({
+      tipo: "BASE",
+      objetivo: mejorBase.base,
+      prioridad: "ALTA",
+      recomendacion: "PRIORIZAR_BASE",
+      motivo: "Mejor score de calidad y mejor potencial de contacto.",
+      score: Number((mejorBase.scoreCalidad * 100).toFixed(1)),
+      contactoPct: Number((mejorBase.pctContactoEfectivo * 100).toFixed(1)),
+      volumen: mejorBase.totalAnis,
+    });
+  }
+
+  if (peorBase) {
+    recomendaciones.push({
+      tipo: "BASE",
+      objetivo: peorBase.base,
+      prioridad: peorBase.scoreCalidad < 0.45 ? "ALTA" : "MEDIA",
+      recomendacion: peorBase.scoreCalidad < 0.45 ? "PAUSAR_O_DEPURAR" : "REVISAR_BASE",
+      motivo:
+        peorBase.scoreCalidad < 0.45
+          ? "Bajo score de calidad y alta probabilidad de improductividad."
+          : "Conviene revisar estrategia antes de seguir invirtiendo intentos.",
+      score: Number((peorBase.scoreCalidad * 100).toFixed(1)),
+      contactoPct: Number((peorBase.pctContactoEfectivo * 100).toFixed(1)),
+      volumen: peorBase.totalAnis,
+    });
+  }
+
+  const franjas = Object.entries(franjaDistribucion)
+    .map(([franja, stats]) => ({
+      franja,
+      total: stats.total,
+      contactoPct: safePct(stats.contactoEfectivo, stats.total),
+    }))
+    .sort((a, b) => b.contactoPct - a.contactoPct);
+
+  const mejorFranja = franjas[0];
+  const peorFranja = franjas[franjas.length - 1];
+
+  if (mejorFranja) {
+    recomendaciones.push({
+      tipo: "FRANJA",
+      objetivo: mejorFranja.franja,
+      prioridad: "ALTA",
+      recomendacion: "CONCENTRAR_REINTENTOS",
+      motivo: "Franja con mejor tasa histórica de contacto efectivo.",
+      contactoPct: Number(mejorFranja.contactoPct.toFixed(1)),
+      volumen: mejorFranja.total,
+    });
+  }
+
+  if (peorFranja) {
+    recomendaciones.push({
+      tipo: "FRANJA",
+      objetivo: peorFranja.franja,
+      prioridad: "MEDIA",
+      recomendacion: "REDUCIR_INTENSIDAD",
+      motivo: "Franja con menor rendimiento relativo de contacto.",
+      contactoPct: Number(peorFranja.contactoPct.toFixed(1)),
+      volumen: peorFranja.total,
+    });
+  }
+
+  const saturados = aniSummaries.filter((s) => s.saturado === true).length;
+  const pctSaturados = safePct(saturados, aniSummaries.length || 1);
+
+  if (pctSaturados >= 20) {
+    recomendaciones.push({
+      tipo: "BASE",
+      objetivo: "OPERACION_GENERAL",
+      prioridad: "ALTA",
+      recomendacion: "ENFRIAR_INTENSIDAD",
+      motivo: "La saturación reciente supera el umbral recomendado.",
+      contactoPct: Number((100 - pctSaturados).toFixed(1)),
+      volumen: saturados,
+    });
+  }
+
+  const prioridadOrden: Record<string, number> = { ALTA: 1, MEDIA: 2, BAJA: 3 };
+
+  return recomendaciones.sort(
+    (a, b) => (prioridadOrden[a.prioridad] || 99) - (prioridadOrden[b.prioridad] || 99)
+  );
 }
 
 export function processCallRecords(rawData: Record<string, any>[]): AnalysisResult {
@@ -513,48 +941,79 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
   });
 
   const aniSummaries: ANISummary[] = [];
+const depuracionConfig = DEFAULT_DEPURACION_CONFIG;
 
-  aniGroups.forEach((calls, ani) => {
-    const sortedCalls = [...calls].sort((a, b) => {
-      const da = parseTicketDate(a.fecha);
-      const db = parseTicketDate(b.fecha);
-      if (!da || !db) return 0;
-      return da.getTime() - db.getTime();
-    });
-
-    let intentosAnswerAgent = 0;
-    let intentosAnsweringMachine = 0;
-    let intentosNoAnswer = 0;
-    let intentosBusy = 0;
-    let intentosUnallocated = 0;
-    let intentosRejected = 0;
-
-    sortedCalls.forEach((call) => {
-      if (isAnswerAgent(call)) intentosAnswerAgent++;
-      else if (isAnswerMachine(call)) intentosAnsweringMachine++;
-      else if (isNoAnswer(call)) intentosNoAnswer++;
-      else if (isBusy(call)) intentosBusy++;
-      else if (isUnallocated(call)) intentosUnallocated++;
-      else if (isRejected(call)) intentosRejected++;
-    });
-
-    const summary: ANISummary = {
-      ani,
-      intentosTotales: sortedCalls.length,
-      intentosAnswerAgent,
-      intentosAnsweringMachine,
-      intentosNoAnswer,
-      intentosBusy,
-      intentosUnallocated,
-      intentosRejected,
-      primerLlamado: sortedCalls[0]?.fecha,
-      ultimoLlamado: sortedCalls[sortedCalls.length - 1]?.fecha,
-      tagTelefono: "",
-    };
-
-    summary.tagTelefono = assignTag(summary);
-    aniSummaries.push(summary);
+aniGroups.forEach((calls, ani) => {
+  const sortedCalls = [...calls].sort((a, b) => {
+    const da = parseTicketDate(a.fecha);
+    const db = parseTicketDate(b.fecha);
+    if (!da || !db) return 0;
+    return da.getTime() - db.getTime();
   });
+
+  let intentosAnswerAgent = 0;
+  let intentosAnsweringMachine = 0;
+  let intentosNoAnswer = 0;
+  let intentosBusy = 0;
+  let intentosUnallocated = 0;
+  let intentosRejected = 0;
+
+  sortedCalls.forEach((call) => {
+    if (isAnswerAgent(call)) intentosAnswerAgent++;
+    else if (isAnswerMachine(call)) intentosAnsweringMachine++;
+    else if (isNoAnswer(call)) intentosNoAnswer++;
+    else if (isBusy(call)) intentosBusy++;
+    else if (isUnallocated(call)) intentosUnallocated++;
+    else if (isRejected(call)) intentosRejected++;
+  });
+
+  const summaryBase: ANISummary = {
+    ani,
+    intentosTotales: sortedCalls.length,
+    intentosAnswerAgent,
+    intentosAnsweringMachine,
+    intentosNoAnswer,
+    intentosBusy,
+    intentosUnallocated,
+    intentosRejected,
+    primerLlamado: sortedCalls[0]?.fecha,
+    ultimoLlamado: sortedCalls[sortedCalls.length - 1]?.fecha,
+    tagTelefono: "",
+  };
+
+  const context = buildANIContext(sortedCalls, summaryBase, depuracionConfig);
+  const tagTelefono = assignTag(summaryBase, context, depuracionConfig);
+
+  const summary: ANISummary = {
+    ...summaryBase,
+    tagTelefono,
+
+    basePrincipal: context.basePrincipal,
+    prefijo: context.prefijo,
+    mejorFranja: context.mejorFranja,
+    ultimoEstadoNormalizado: context.ultimoEstadoNormalizado,
+    ultimoSubestadoNormalizado: context.ultimoSubestadoNormalizado,
+
+    diasDesdeUltimoIntento:
+      context.diasDesdeUltimoIntento !== null
+        ? Number(context.diasDesdeUltimoIntento.toFixed(2))
+        : undefined,
+
+    intentosUltimas24h: context.intentosUltimas24h,
+    intentosUltimas48h: context.intentosUltimas48h,
+
+    saturado: context.saturado,
+    tuvoContactoPrevio: context.tuvoContactoPrevio,
+    contactoReciente: context.contactoReciente,
+
+    scoreRecontactabilidad: context.scoreRecontactabilidad,
+    accionSugerida: context.accionSugerida,
+    prioridad: context.prioridad,
+    motivoDepuracion: context.motivoDepuracion,
+  };
+
+  aniSummaries.push(summary);
+});
 
   const estadoDistribucion: Record<string, number> = {};
   records.forEach((record) => {
@@ -677,6 +1136,16 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
   const baseInsights = buildBaseInsights(records, aniSummaries);
   const depuracionInsights = buildDepuracionInsights(aniSummaries);
   const franjaDistribucion = buildFranjaDistribucion(records);
+  const resumenEjecutivo = buildResumenEjecutivo(
+    aniSummaries,
+    baseInsights,
+    franjaDistribucion
+  );
+  const recomendacionesOperativas = buildRecomendacionesOperativas(
+    aniSummaries,
+    baseInsights,
+    franjaDistribucion
+  );
 
   return {
     id: randomUUID(),
@@ -701,6 +1170,8 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     baseInsights,
     depuracionInsights,
     franjaDistribucion,
+    resumenEjecutivo,
+    recomendacionesOperativas,
   };
 }
 
