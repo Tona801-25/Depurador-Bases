@@ -1,4 +1,4 @@
-import { useState, useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Table,
   TableBody,
@@ -15,6 +15,8 @@ import {
   Search,
   ChevronLeft,
   ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -31,7 +33,7 @@ interface DataTableProps<T> {
   columns: Column<T>[];
   searchable?: boolean;
   searchPlaceholder?: string;
-  searchKeys?: (keyof T)[];
+  searchKeys?: (keyof T | string)[];
   pageSize?: number;
   className?: string;
   testId?: string;
@@ -53,14 +55,14 @@ export function DataTable<T extends Record<string, any>>({
   const [currentPage, setCurrentPage] = useState(1);
 
   const filteredData = useMemo(() => {
-    if (!search) return data;
+    if (!search.trim()) return data;
 
     const lowerSearch = search.toLowerCase();
-    const keys = searchKeys || (columns.map((c) => c.key) as (keyof T)[]);
+    const keys = searchKeys || columns.map((c) => c.key);
 
     return data.filter((item) =>
       keys.some((key) => {
-        const value = item[key];
+        const value = item[key as keyof T];
         if (value == null) return false;
         return String(value).toLowerCase().includes(lowerSearch);
       })
@@ -74,18 +76,28 @@ export function DataTable<T extends Record<string, any>>({
       const aVal = a[sortKey as keyof T];
       const bVal = b[sortKey as keyof T];
 
-      if (aVal == null || bVal == null) return 0;
+      if (aVal == null && bVal == null) return 0;
+      if (aVal == null) return 1;
+      if (bVal == null) return -1;
 
       if (typeof aVal === "number" && typeof bVal === "number") {
         return sortDirection === "asc" ? aVal - bVal : bVal - aVal;
       }
 
-      const comparison = String(aVal).localeCompare(String(bVal));
+      const comparison = String(aVal).localeCompare(String(bVal), "es", {
+        numeric: true,
+        sensitivity: "base",
+      });
+
       return sortDirection === "asc" ? comparison : -comparison;
     });
   }, [filteredData, sortKey, sortDirection]);
 
-  const totalPages = Math.ceil(sortedData.length / pageSize);
+  const totalPages = Math.max(1, Math.ceil(sortedData.length / pageSize));
+
+  useEffect(() => {
+    setCurrentPage((prev) => Math.min(prev, totalPages));
+  }, [totalPages]);
 
   const paginatedData = useMemo(() => {
     const start = (currentPage - 1) * pageSize;
@@ -94,12 +106,22 @@ export function DataTable<T extends Record<string, any>>({
 
   const handleSort = (key: string) => {
     if (sortKey === key) {
-      setSortDirection(sortDirection === "asc" ? "desc" : "asc");
+      setSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
     } else {
       setSortKey(key);
       setSortDirection("asc");
     }
+
+    setCurrentPage(1);
   };
+
+  const handleSearchChange = (value: string) => {
+    setSearch(value);
+    setCurrentPage(1);
+  };
+
+  const startItem = sortedData.length === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const endItem = Math.min(currentPage * pageSize, sortedData.length);
 
   return (
     <div className={cn("space-y-4", className)} data-testid={testId}>
@@ -108,10 +130,7 @@ export function DataTable<T extends Record<string, any>>({
           <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={search}
-            onChange={(e) => {
-              setSearch(e.target.value);
-              setCurrentPage(1);
-            }}
+            onChange={(e) => handleSearchChange(e.target.value)}
             placeholder={searchPlaceholder}
             className="border-border bg-background pl-10 transition-colors focus:border-primary/50"
             data-testid="input-table-search"
@@ -141,7 +160,7 @@ export function DataTable<T extends Record<string, any>>({
                   >
                     <div className="flex items-center gap-1">
                       {column.header}
-                      {column.sortable && sortKey === column.key && (
+                      {column.sortable && sortKey === String(column.key) && (
                         sortDirection === "asc" ? (
                           <ChevronUp className="h-3.5 w-3.5 text-primary" />
                         ) : (
@@ -192,12 +211,21 @@ export function DataTable<T extends Record<string, any>>({
       {totalPages > 1 && (
         <div className="flex items-center justify-between gap-2 text-sm">
           <p className="text-xs text-muted-foreground">
-            Mostrando {(currentPage - 1) * pageSize + 1} –{" "}
-            {Math.min(currentPage * pageSize, sortedData.length)} de{" "}
-            {sortedData.length}
+            Mostrando {startItem} – {endItem} de {sortedData.length}
           </p>
 
           <div className="flex items-center gap-1">
+            <Button
+              variant="outline"
+              size="icon"
+              className="h-8 w-8 border-border"
+              onClick={() => setCurrentPage(1)}
+              disabled={currentPage === 1}
+              data-testid="button-first-page"
+            >
+              <ChevronsLeft className="h-4 w-4" />
+            </Button>
+
             <Button
               variant="outline"
               size="icon"
@@ -222,6 +250,17 @@ export function DataTable<T extends Record<string, any>>({
               data-testid="button-next-page"
             >
               <ChevronRight className="h-4 w-4" />
+            </Button>
+
+            <Button
+              variant="outline"
+              size="icon"
+              className="h-8 w-8 border-border"
+              onClick={() => setCurrentPage(totalPages)}
+              disabled={currentPage === totalPages}
+              data-testid="button-last-page"
+            >
+              <ChevronsRight className="h-4 w-4" />
             </Button>
           </div>
         </div>
