@@ -7,8 +7,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import {
+  DashboardTabs,
   EstadoDistribucionChart,
+  EstadoBarrasChart,
   TagDistribucionChart,
+  PrefijosTopChart,
+  PrefijosAnswerChart,
+  HorariosPerformanceChart,
   CurvaContactacionChart,
   IntentosDistribucionChart,
 } from "@/components/dashboard/dashboard-charts";
