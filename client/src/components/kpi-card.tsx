@@ -31,6 +31,20 @@ export function KPICard({
   className,
   testId,
 }: KPICardProps) {
+  const numericValue =
+    typeof value === "number"
+      ? value
+      : Number(String(value).replace(",", "."));
+
+  const isZeroValue =
+    Number.isFinite(numericValue) && numericValue === 0;
+
+  const isLongTextValue =
+    typeof value === "string" && value.length > 14;
+
+  const visualVariant =
+    variant === "danger" && isZeroValue ? "default" : variant;
+
   const getTrendDirection = () => {
     if (!trend) return 0;
 
@@ -47,74 +61,121 @@ export function KPICard({
   const getTrendIcon = () => {
     const direction = getTrendDirection();
 
-    if (direction > 0) return <TrendingUp className="h-3 w-3" />;
-    if (direction < 0) return <TrendingDown className="h-3 w-3" />;
-    return <Minus className="h-3 w-3" />;
+    if (direction > 0) return <TrendingUp className="h-3.5 w-3.5" />;
+    if (direction < 0) return <TrendingDown className="h-3.5 w-3.5" />;
+    return <Minus className="h-3.5 w-3.5" />;
+  };
+
+  const getVariantStyles = () => {
+    switch (visualVariant) {
+      case "success":
+        return {
+          card: "border-success/25 bg-success/5 shadow-success/5",
+          accent: "from-success/30 via-success/10 to-transparent",
+          icon: "border-success/25 bg-success/10 text-success",
+          value: "text-success",
+          trend: "text-success",
+        };
+
+      case "warning":
+        return {
+          card: "border-warning/25 bg-warning/5 shadow-warning/5",
+          accent: "from-warning/30 via-warning/10 to-transparent",
+          icon: "border-warning/25 bg-warning/10 text-warning",
+          value: "text-warning",
+          trend: "text-warning",
+        };
+
+      case "danger":
+        return {
+          card: "border-destructive/25 bg-destructive/5 shadow-destructive/5",
+          accent: "from-destructive/30 via-destructive/10 to-transparent",
+          icon: "border-destructive/25 bg-destructive/10 text-destructive",
+          value: "text-destructive",
+          trend: "text-destructive",
+        };
+
+      default:
+        return {
+          card: "border-border bg-card/80 shadow-black/5",
+          accent: "from-border via-border/40 to-transparent",
+          icon: "border-border bg-muted/50 text-muted-foreground",
+          value: "text-foreground",
+          trend: "text-muted-foreground",
+        };
+    }
   };
 
   const getTrendColor = () => {
     const direction = getTrendDirection();
 
-    if (direction > 0) return "text-success";
-    if (direction < 0) return "text-destructive";
-    return "text-muted-foreground";
+    if (direction === 0) return "text-muted-foreground";
+
+    if (visualVariant === "danger") {
+      return direction > 0 ? "text-destructive" : "text-success";
+    }
+
+    return getVariantStyles().trend;
   };
 
-  const getAccentColor = () => {
-    switch (variant) {
-      case "success":
-        return "border-l-success";
-      case "warning":
-        return "border-l-warning";
-      case "danger":
-        return "border-l-destructive";
-      default:
-        return "border-l-primary";
-    }
-  };
-
-  const getValueColor = () => {
-    switch (variant) {
-      case "success":
-        return "text-success";
-      case "warning":
-        return "text-warning";
-      case "danger":
-        return "text-destructive";
-      default:
-        return "text-foreground";
-    }
-  };
+  const styles = getVariantStyles();
 
   return (
     <div
       className={cn(
-        "glass-card p-4 border-l-[3px] animate-slide-up",
-        getAccentColor(),
+        "group relative overflow-hidden rounded-2xl border p-4 shadow-sm transition-all duration-200",
+        "hover:-translate-y-0.5 hover:shadow-md",
+        "bg-gradient-to-br from-card via-card to-muted/20",
+        styles.card,
         className
       )}
       data-testid={testId}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1 space-y-1.5">
-          <p className="stat-label">{title}</p>
+      <div
+        className={cn(
+          "pointer-events-none absolute inset-x-0 top-0 h-1 bg-gradient-to-r",
+          styles.accent
+        )}
+      />
 
-          <div className="flex flex-wrap items-baseline gap-2">
-            <p className={cn("stat-value", getValueColor())}>
-              {typeof value === "number" ? value.toLocaleString("es-AR") : value}
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+            {title}
+          </p>
+
+          <div className="mt-3 flex flex-wrap items-end gap-x-2 gap-y-1">
+            <p
+              className={cn(
+                "font-extrabold tracking-tight",
+                isLongTextValue
+                  ? "break-words text-2xl leading-tight"
+                  : "text-2xl leading-none md:text-3xl",
+                styles.value
+              )}
+            >
+              {typeof value === "number"
+                ? value.toLocaleString("es-AR")
+                : value}
             </p>
 
             {subtitle && (
-              <span className="text-sm font-medium text-muted-foreground">
+              <span className="pb-0.5 text-xs font-medium text-muted-foreground">
                 {subtitle}
               </span>
             )}
           </div>
 
+          {variant === "danger" && isZeroValue && (
+            <p className="mt-2 text-xs font-medium text-muted-foreground">
+              Sin bases para descartar
+            </p>
+          )}
+
           {trend && (
             <div
               className={cn(
-                "flex items-center gap-1 text-xs font-medium",
+                "mt-3 inline-flex items-center gap-1.5 rounded-full border border-border bg-background/60 px-2.5 py-1 text-xs font-semibold",
                 getTrendColor()
               )}
             >
@@ -126,14 +187,21 @@ export function KPICard({
               </span>
 
               {trend.label && (
-                <span className="text-muted-foreground">{trend.label}</span>
+                <span className="font-medium text-muted-foreground">
+                  {trend.label}
+                </span>
               )}
             </div>
           )}
         </div>
 
         {Icon && (
-          <div className="shrink-0 rounded-lg border border-border bg-muted p-2 text-primary">
+          <div
+            className={cn(
+              "shrink-0 rounded-xl border p-2.5 shadow-sm transition-transform duration-200 group-hover:scale-105",
+              styles.icon
+            )}
+          >
             <Icon className="h-5 w-5" />
           </div>
         )}

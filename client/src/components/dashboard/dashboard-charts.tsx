@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   PieChart,
   Pie,
@@ -15,6 +16,15 @@ import {
   LineChart,
   Line,
 } from "recharts";
+import {
+  BarChart3,
+  Clock,
+  Filter,
+  BookOpen,
+  Scissors,
+  Layers,
+  Eye,
+} from "lucide-react";
 import type { AnalysisResult } from "@shared/schema";
 import { getTagColor } from "@/components/tag-badge";
 import { chartTooltipStyle } from "@/components/dashboard/chartStyles";
@@ -22,6 +32,21 @@ import { chartTooltipStyle } from "@/components/dashboard/chartStyles";
 interface DashboardChartsProps {
   data: AnalysisResult;
 }
+
+interface DashboardTabsProps {
+  activeTab: string;
+  onTabChange: (value: string) => void;
+}
+
+const dashboardTabs = [
+  { value: "visual", label: "Tablero visual", icon: Eye },
+  { value: "turnos", label: "Turnos y prefijos", icon: Clock },
+  { value: "prefijos-hora", label: "Prefijos por hora", icon: BarChart3 },
+  { value: "depuracion", label: "Depuración sugerida", icon: Layers },
+  { value: "filtro", label: "Filtro detallado", icon: Filter },
+  { value: "catalogo", label: "Catálogo de prefijos", icon: BookOpen },
+  { value: "simulador", label: "Simulador de cortes", icon: Scissors },
+];
 
 const ESTADO_COLORS: Record<string, string> = {
   ANSWER: "hsl(var(--success))",
@@ -35,9 +60,55 @@ function formatNumber(value: number) {
   return value.toLocaleString("es-AR");
 }
 
+export function DashboardTabs({ activeTab, onTabChange }: DashboardTabsProps) {
+  return (
+    <Tabs value={activeTab} onValueChange={onTabChange} className="w-full">
+      <TabsList className="h-auto w-full flex-wrap gap-1.5 rounded-2xl border border-border/70 bg-secondary/40 p-1.5 shadow-inner backdrop-blur-md">
+        {dashboardTabs.map((tab) => {
+          const Icon = tab.icon;
+          const isActive = activeTab === tab.value;
+
+          return (
+            <TabsTrigger
+              key={tab.value}
+              value={tab.value}
+              className="
+                relative flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-xs font-medium
+                transition-all duration-300
+                hover:bg-primary/10 hover:text-foreground
+                data-[state=active]:scale-[1.02]
+                data-[state=active]:bg-gradient-to-br
+                data-[state=active]:from-primary
+                data-[state=active]:to-primary/80
+                data-[state=active]:text-primary-foreground
+                data-[state=active]:shadow-[0_4px_20px_-4px_hsl(var(--primary)/0.5)]
+              "
+            >
+              <Icon
+                className={`h-3.5 w-3.5 transition-transform duration-300 ${
+                  isActive ? "scale-110" : ""
+                }`}
+              />
+
+              {tab.label}
+
+              {isActive && (
+                <span className="absolute -bottom-1 left-1/2 h-1 w-1 -translate-x-1/2 animate-pulse rounded-full bg-primary-foreground" />
+              )}
+            </TabsTrigger>
+          );
+        })}
+      </TabsList>
+    </Tabs>
+  );
+}
+
 export function EstadoDistribucionChart({ data }: DashboardChartsProps) {
   const chartData = useMemo(() => {
-    const total = Object.values(data.estadoDistribucion).reduce((a, b) => a + b, 0);
+    const total = Object.values(data.estadoDistribucion).reduce(
+      (a, b) => a + b,
+      0
+    );
 
     return Object.entries(data.estadoDistribucion)
       .map(([estado, cantidad]) => ({
@@ -83,7 +154,9 @@ export function EstadoDistribucionChart({ data }: DashboardChartsProps) {
               <Tooltip
                 contentStyle={chartTooltipStyle}
                 formatter={(value: number, name: string, props: any) => [
-                  `${formatNumber(value)} (${props?.payload?.percentage?.toFixed(1)}%)`,
+                  `${formatNumber(value)} (${props?.payload?.percentage?.toFixed(
+                    1
+                  )}%)`,
                   name,
                 ]}
               />
@@ -135,7 +208,10 @@ export function EstadoBarrasChart({ data }: DashboardChartsProps) {
       <CardContent>
         <div className="h-[320px]">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 40 }}>
+            <BarChart
+              data={chartData}
+              margin={{ top: 10, right: 10, left: 0, bottom: 40 }}
+            >
               <CartesianGrid strokeDasharray="3 3" opacity={0.08} />
               <XAxis
                 dataKey="estado"
@@ -194,7 +270,11 @@ export function TagDistribucionChart({ data }: DashboardChartsProps) {
       <CardContent>
         <div className="h-[320px]">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData} layout="vertical" margin={{ left: 25, right: 10 }}>
+            <BarChart
+              data={chartData}
+              layout="vertical"
+              margin={{ left: 25, right: 10 }}
+            >
               <CartesianGrid strokeDasharray="3 3" opacity={0.08} />
               <XAxis
                 type="number"
@@ -254,7 +334,10 @@ export function PrefijosTopChart({ data }: DashboardChartsProps) {
       <CardContent>
         <div className="h-[340px]">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 20 }}>
+            <BarChart
+              data={chartData}
+              margin={{ top: 10, right: 10, left: 0, bottom: 20 }}
+            >
               <CartesianGrid strokeDasharray="3 3" opacity={0.08} />
               <XAxis
                 dataKey="prefijo"
@@ -270,11 +353,17 @@ export function PrefijosTopChart({ data }: DashboardChartsProps) {
               <Tooltip
                 contentStyle={chartTooltipStyle}
                 formatter={(value: number, _name: string, props: any) => [
-                  `${formatNumber(value)} (${props?.payload?.pct?.toFixed(1)}%)`,
+                  `${formatNumber(value)} (${props?.payload?.pct?.toFixed(
+                    1
+                  )}%)`,
                   "Registros",
                 ]}
               />
-              <Bar dataKey="total" fill="hsl(var(--primary))" radius={[8, 8, 0, 0]} />
+              <Bar
+                dataKey="total"
+                fill="hsl(var(--primary))"
+                radius={[8, 8, 0, 0]}
+              />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -310,7 +399,10 @@ export function PrefijosAnswerChart({ data }: DashboardChartsProps) {
       <CardContent>
         <div className="h-[340px]">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 20 }}>
+            <BarChart
+              data={chartData}
+              margin={{ top: 10, right: 10, left: 0, bottom: 20 }}
+            >
               <CartesianGrid strokeDasharray="3 3" opacity={0.08} />
               <XAxis
                 dataKey="prefijo"
@@ -326,11 +418,17 @@ export function PrefijosAnswerChart({ data }: DashboardChartsProps) {
               <Tooltip
                 contentStyle={chartTooltipStyle}
                 formatter={(value: number, _name: string, props: any) => [
-                  `${formatNumber(value)} (${props?.payload?.pct?.toFixed(1)}%)`,
+                  `${formatNumber(value)} (${props?.payload?.pct?.toFixed(
+                    1
+                  )}%)`,
                   "ANSWER",
                 ]}
               />
-              <Bar dataKey="total" fill="hsl(var(--success))" radius={[8, 8, 0, 0]} />
+              <Bar
+                dataKey="total"
+                fill="hsl(var(--success))"
+                radius={[8, 8, 0, 0]}
+              />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -365,7 +463,10 @@ export function HorariosPerformanceChart({ data }: DashboardChartsProps) {
       <CardContent>
         <div className="h-[360px]">
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 40 }}>
+            <BarChart
+              data={chartData}
+              margin={{ top: 10, right: 10, left: 0, bottom: 40 }}
+            >
               <CartesianGrid strokeDasharray="3 3" opacity={0.08} />
               <XAxis
                 dataKey="rango"
@@ -384,14 +485,31 @@ export function HorariosPerformanceChart({ data }: DashboardChartsProps) {
               <Tooltip
                 contentStyle={chartTooltipStyle}
                 formatter={(value: number, name: string) => [
-                  name === "pctAnswer" ? `${value.toFixed(1)}%` : formatNumber(value),
+                  name === "pctAnswer"
+                    ? `${value.toFixed(1)}%`
+                    : formatNumber(value),
                   name,
                 ]}
               />
               <Legend wrapperStyle={{ fontSize: "11px" }} />
-              <Bar dataKey="total" name="Total" fill="hsl(var(--chart-1))" radius={[6, 6, 0, 0]} />
-              <Bar dataKey="answer" name="ANSWER" fill="hsl(var(--success))" radius={[6, 6, 0, 0]} />
-              <Bar dataKey="noAnswer" name="NO ANSWER" fill="hsl(var(--muted-foreground))" radius={[6, 6, 0, 0]} />
+              <Bar
+                dataKey="total"
+                name="Total"
+                fill="hsl(var(--chart-1))"
+                radius={[6, 6, 0, 0]}
+              />
+              <Bar
+                dataKey="answer"
+                name="ANSWER"
+                fill="hsl(var(--success))"
+                radius={[6, 6, 0, 0]}
+              />
+              <Bar
+                dataKey="noAnswer"
+                name="NO ANSWER"
+                fill="hsl(var(--muted-foreground))"
+                radius={[6, 6, 0, 0]}
+              />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -495,11 +613,17 @@ export function IntentosDistribucionChart({ data }: DashboardChartsProps) {
               <Tooltip
                 contentStyle={chartTooltipStyle}
                 formatter={(value: number, _name: string, props: any) => [
-                  `${formatNumber(value)} (${props?.payload?.porcentaje?.toFixed?.(1) ?? "0"}%)`,
+                  `${formatNumber(value)} (${
+                    props?.payload?.porcentaje?.toFixed?.(1) ?? "0"
+                  }%)`,
                   "ANIs",
                 ]}
               />
-              <Bar dataKey="cantidad" fill="hsl(var(--destructive))" radius={[8, 8, 0, 0]} />
+              <Bar
+                dataKey="cantidad"
+                fill="hsl(var(--destructive))"
+                radius={[8, 8, 0, 0]}
+              />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -511,3 +635,5 @@ export function IntentosDistribucionChart({ data }: DashboardChartsProps) {
     </Card>
   );
 }
+
+export default DashboardTabs;
