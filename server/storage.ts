@@ -370,9 +370,14 @@ function getRangoHorario(dateStr?: string): string {
 
 function getTurno(dateStr?: string): string {
   const d = parseTicketDate(dateStr);
-  if (!d) return "Mañana";
 
-  return d.getHours() < 14 ? "Mañana" : "Tarde";
+  if (!d) return "Sin hora";
+
+  const hour = d.getHours();
+
+  if (hour >= 15) return "Tarde";
+
+  return "Mañana";
 }
 
 function hoursBetween(from: Date, to: Date): number {

@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable, type Column } from "@/components/data-table";
 import type { AnalysisResult } from "@shared/schema";
+import HourlyAreaChart from "@/components/dashboard/hourlyAreaChart";
 
 interface PrefijosPorHoraTabProps {
   data: AnalysisResult;
@@ -184,6 +185,8 @@ const tableData = useMemo(() => {
         </p>
       </div>
 
+      <HourlyAreaChart data={data} />
+
       <Card className="glass-card border-glass-border">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-display font-bold">Resumen por hora</CardTitle>
@@ -201,4 +204,3 @@ const tableData = useMemo(() => {
     </div>
   );
 }
-

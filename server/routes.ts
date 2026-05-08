@@ -81,13 +81,33 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           });
 
           records = result.data as Record<string, any>[];
-        } else if (fileName.endsWith(".xlsx") || fileName.endsWith(".xls")) {
-          const buf = fs.readFileSync(file.path);
-          const workbook = XLSX.read(buf, { type: "buffer" });
-          const sheetName = workbook.SheetNames[0];
-          const worksheet = workbook.Sheets[sheetName];
-          records = XLSX.utils.sheet_to_json(worksheet);
-        } else {
+} else if (fileName.endsWith(".xlsx") || fileName.endsWith(".xls")) {
+  const buf = fs.readFileSync(file.path);
+  const workbook = XLSX.read(buf, {
+    type: "buffer",
+    cellDates: true,
+  });
+
+  records = workbook.SheetNames.flatMap((sheetName) => {
+    const worksheet = workbook.Sheets[sheetName];
+    if (!worksheet) return [];
+    const sheetRows = XLSX.utils.sheet_to_json<Record<string, any>>(worksheet, {
+      defval: "",
+      raw: false,
+    });
+    const cleanRows = sheetRows.filter((row) =>
+      Object.values(row).some((value) => String(value ?? "").trim() !== "")
+    );
+    console.log(
+      `Hoja "${sheetName}" leída: ${cleanRows.length.toLocaleString("es-AR")} registros`
+    );
+    return cleanRows;
+  });
+
+  console.log(
+    `Archivo "${file.originalname}" procesado completo: ${workbook.SheetNames.length} hoja(s), ${records.length.toLocaleString("es-AR")} registros totales`
+  );
+} else {
           console.warn(`Formato no soportado: ${fileName}`);
           continue;
         }
