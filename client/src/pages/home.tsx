@@ -427,7 +427,7 @@ export default function Home() {
                       {rankedBases.slice(0, 5).map((base: BaseInsight) => (
                         <div
                           key={base.base}
-                          className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 lg:flex-row lg:items-center lg:justify-between"
+                          className="soft-cyan-hover flex flex-col gap-3 rounded-xl border border-border bg-card p-4 lg:flex-row lg:items-center lg:justify-between"
                         >
                           <div className="min-w-0">
                             <div className="flex items-center gap-2">
@@ -445,28 +445,28 @@ export default function Home() {
                           </div>
 
                           <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4 lg:min-w-[500px]">
-                            <div className="rounded-lg border border-border bg-background px-3 py-2">
+                            <div className="soft-cyan-hover rounded-lg border border-border bg-background px-3 py-2">
                               <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Contacto</p>
                               <p className="mt-1 font-semibold text-success">
                                 {(base.pctContactoEfectivo * 100).toFixed(1)}%
                               </p>
                             </div>
 
-                            <div className="rounded-lg border border-border bg-background px-3 py-2">
+                            <div className="soft-cyan-hover rounded-lg border border-border bg-background px-3 py-2">
                               <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Buzón</p>
                               <p className="mt-1 font-semibold text-warning">
                                 {(base.pctBuzon * 100).toFixed(1)}%
                               </p>
                             </div>
 
-                            <div className="rounded-lg border border-border bg-background px-3 py-2">
+                            <div className="soft-cyan-hover rounded-lg border border-border bg-background px-3 py-2">
                               <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Inválidos</p>
                               <p className="mt-1 font-semibold text-destructive">
                                 {(base.pctInvalidos * 100).toFixed(1)}%
                               </p>
                             </div>
 
-                            <div className="rounded-lg border border-border bg-background px-3 py-2">
+                            <div className="soft-cyan-hover rounded-lg border border-border bg-background px-3 py-2">
                               <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Score</p>
                               <p className="mt-1 font-semibold text-foreground">
                                 {base.scoreCalidad.toFixed(2)}

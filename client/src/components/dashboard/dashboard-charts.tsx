@@ -15,6 +15,7 @@ import {
   CartesianGrid,
   LineChart,
   Line,
+  LabelList,
 } from "recharts";
 import {
   BarChart3,
@@ -27,7 +28,10 @@ import {
 } from "lucide-react";
 import type { AnalysisResult } from "@shared/schema";
 import { getTagColor } from "@/components/tag-badge";
-import { chartTooltipStyle } from "@/components/dashboard/chartStyles";
+import {
+  chartTooltipStyle,
+  chartTooltipCursor,
+} from "@/components/dashboard/chartStyles";
 
 interface DashboardChartsProps {
   data: AnalysisResult;
@@ -120,65 +124,71 @@ export function EstadoDistribucionChart({ data }: DashboardChartsProps) {
       .sort((a, b) => b.value - a.value);
   }, [data]);
 
+  const renderLegend = (props: any) => (
+    <ul className="mt-2 flex flex-wrap justify-center gap-x-4 gap-y-1 text-[11px]">
+      {props.payload.map((entry: any, i: number) => {
+        const payload = entry.payload;
+
+        return (
+          <li key={i} className="flex items-center gap-1.5 text-foreground/80">
+            <span
+              className="h-2 w-2 rounded-full"
+              style={{ background: entry.color }}
+            />
+
+            <span className="font-medium tabular-nums">
+              {entry.value}
+              {typeof payload?.percentage === "number"
+                ? ` (${payload.percentage.toFixed(1)}%)`
+                : ""}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+
   return (
-    <Card className="glass-card border-glass-border">
-      <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-2 text-sm font-display font-bold">
-          <span className="dot-indicator bg-success" />
-          Estados de llamada
-        </CardTitle>
-        <p className="text-xs text-muted-foreground">
-          Distribución general del resultado de las llamadas.
-        </p>
-      </CardHeader>
+    <div className="glass-card p-5 animate-slide-up hover-elevate">
+      <h3 className="mb-4 flex items-center gap-2 text-sm font-display font-semibold">
+        <span className="dot-indicator bg-primary animate-pulse-glow" />
+        Distribución de estados de llamada
+      </h3>
 
-      <CardContent>
-        <div className="h-[320px]">
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
-              <Pie
-                data={chartData}
-                cx="50%"
-                cy="46%"
-                innerRadius={65}
-                outerRadius={105}
-                paddingAngle={3}
-                dataKey="value"
-                stroke="none"
-              >
-                {chartData.map((entry, index) => (
-                  <Cell key={index} fill={entry.color} />
-                ))}
-              </Pie>
+      <ResponsiveContainer width="100%" height={260}>
+        <PieChart>
+          <Pie
+            data={chartData}
+            cx="50%"
+            cy="50%"
+            innerRadius={62}
+            outerRadius={92}
+            paddingAngle={3}
+            dataKey="value"
+            stroke="hsl(var(--card))"
+            strokeWidth={2}
+            animationDuration={900}
+            animationBegin={100}
+          >
+            {chartData.map((entry, i) => (
+              <Cell key={i} fill={entry.color} />
+            ))}
+          </Pie>
 
-              <Tooltip
-                contentStyle={chartTooltipStyle}
-                formatter={(value: number, name: string, props: any) => [
-                  `${formatNumber(value)} (${props?.payload?.percentage?.toFixed(
-                    1
-                  )}%)`,
-                  name,
-                ]}
-              />
+          <Tooltip
+            contentStyle={chartTooltipStyle}
+            formatter={(value: number, _name: string, props: any) => [
+              `${formatNumber(value)} llamadas - ${props?.payload?.percentage?.toFixed(
+                1
+              )}%`,
+              "",
+            ]}
+          />
 
-              <Legend
-                verticalAlign="bottom"
-                height={64}
-                wrapperStyle={{ fontSize: "11px" }}
-                formatter={(value, entry) => {
-                  const pct = (entry as any)?.payload?.percentage;
-                  return (
-                    <span className="text-xs font-display text-foreground">
-                      {value} {pct ? `(${pct.toFixed(1)}%)` : ""}
-                    </span>
-                  );
-                }}
-              />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
-      </CardContent>
-    </Card>
+          <Legend verticalAlign="bottom" content={renderLegend} />
+        </PieChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 
@@ -194,53 +204,93 @@ export function EstadoBarrasChart({ data }: DashboardChartsProps) {
   }, [data]);
 
   return (
-    <Card className="glass-card border-glass-border">
-      <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-2 text-sm font-display font-bold">
-          <span className="dot-indicator bg-primary" />
-          Volumen por estado
-        </CardTitle>
-        <p className="text-xs text-muted-foreground">
-          Permite detectar rápidamente dónde se concentra el mayor consumo.
-        </p>
-      </CardHeader>
+    <div className="glass-card p-5 animate-slide-up hover-elevate">
+      <h3 className="mb-1 flex items-center gap-2 text-sm font-display font-semibold">
+        <span className="dot-indicator bg-primary animate-pulse-glow" />
+        Volumen por estado
+      </h3>
 
-      <CardContent>
-        <div className="h-[320px]">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart
-              data={chartData}
-              margin={{ top: 10, right: 10, left: 0, bottom: 40 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" opacity={0.08} />
-              <XAxis
-                dataKey="estado"
-                angle={-25}
-                textAnchor="end"
-                height={70}
-                tick={{ fill: "currentColor", fontSize: 10 }}
-                axisLine={false}
-                tickLine={false}
+      <p className="mb-4 text-xs text-muted-foreground">
+        Permite detectar rápidamente dónde se concentra el mayor consumo.
+      </p>
+
+      <ResponsiveContainer width="100%" height={260}>
+        <BarChart
+          data={chartData}
+          margin={{ top: 24, right: 8, left: 0, bottom: 28 }}
+        >
+          <defs>
+            <linearGradient id="estadoBarrasGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop
+                offset="0%"
+                stopColor="hsl(var(--primary))"
+                stopOpacity={1}
               />
-              <YAxis
-                tick={{ fill: "currentColor", fontSize: 10 }}
-                axisLine={false}
-                tickLine={false}
+              <stop
+                offset="100%"
+                stopColor="hsl(var(--primary))"
+                stopOpacity={0.45}
               />
-              <Tooltip
-                contentStyle={chartTooltipStyle}
-                formatter={(value: number) => [formatNumber(value), "Llamadas"]}
+            </linearGradient>
+          </defs>
+
+          <XAxis
+            dataKey="estado"
+            angle={-18}
+            textAnchor="end"
+            height={52}
+            tick={{
+              fill: "currentColor",
+              fontSize: 10,
+              fontWeight: 600,
+            }}
+            axisLine={false}
+            tickLine={false}
+            className="text-muted-foreground"
+          />
+
+          <YAxis
+            tick={{ fill: "currentColor", fontSize: 11 }}
+            axisLine={false}
+            tickLine={false}
+            className="text-muted-foreground"
+          />
+
+          <Tooltip
+            contentStyle={chartTooltipStyle}
+            cursor={chartTooltipCursor}
+            formatter={(value: number) => [
+              value.toLocaleString("es-AR"),
+              "Llamadas",
+            ]}
+          />
+
+          <Bar
+            dataKey="cantidad"
+            radius={[6, 6, 0, 0]}
+            barSize={42}
+            animationDuration={900}
+          >
+            {chartData.map((entry, index) => (
+              <Cell
+                key={index}
+                fill={entry.fill}
+                fillOpacity={0.88}
               />
-              <Bar dataKey="cantidad" radius={[8, 8, 0, 0]}>
-                {chartData.map((entry, index) => (
-                  <Cell key={index} fill={entry.fill} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </CardContent>
-    </Card>
+            ))}
+
+            <LabelList
+              dataKey="cantidad"
+              position="top"
+              className="fill-foreground"
+              fontSize={11}
+              fontWeight={600}
+              formatter={(value: number) => value.toLocaleString("es-AR")}
+            />
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 
@@ -249,61 +299,69 @@ export function TagDistribucionChart({ data }: DashboardChartsProps) {
     return Object.entries(data.tagDistribucion)
       .map(([tag, cantidad]) => ({
         name: tag.replace(/_/g, " "),
-        cantidad,
-        fill: getTagColor(tag as any),
+        value: cantidad,
+        color: getTagColor(tag as any),
       }))
-      .sort((a, b) => b.cantidad - a.cantidad);
+      .sort((a, b) => b.value - a.value);
   }, [data]);
 
   return (
-    <Card className="glass-card border-glass-border">
-      <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-2 text-sm font-display font-bold">
-          <span className="dot-indicator bg-warning" />
-          ANIs por TAG de depuración
-        </CardTitle>
-        <p className="text-xs text-muted-foreground">
-          Clasificación operativa para decidir qué seguir llamando y qué depurar.
-        </p>
-      </CardHeader>
+    <div className="glass-card p-5 animate-slide-up hover-elevate">
+      <h3 className="mb-4 flex items-center gap-2 text-sm font-display font-semibold">
+        <span className="dot-indicator bg-success animate-pulse-glow" />
+        ANIs por TAG de depuración
+      </h3>
 
-      <CardContent>
-        <div className="h-[320px]">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart
-              data={chartData}
-              layout="vertical"
-              margin={{ left: 25, right: 10 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" opacity={0.08} />
-              <XAxis
-                type="number"
-                tick={{ fill: "currentColor", fontSize: 10 }}
-                axisLine={false}
-                tickLine={false}
+      <ResponsiveContainer width="100%" height={260}>
+        <BarChart data={chartData} layout="vertical" margin={{ left: 20 }}>
+          <XAxis
+            type="number"
+            tick={{ fill: "currentColor", fontSize: 11 }}
+            axisLine={false}
+            tickLine={false}
+            className="text-muted-foreground"
+          />
+
+          <YAxis
+            type="category"
+            dataKey="name"
+            tick={{
+              fill: "currentColor",
+              fontSize: 10,
+              fontWeight: 600,
+            }}
+            axisLine={false}
+            tickLine={false}
+            width={120}
+            className="text-muted-foreground"
+          />
+
+          <Tooltip
+            contentStyle={chartTooltipStyle}
+            cursor={chartTooltipCursor}
+            formatter={(value: number) => [
+              value.toLocaleString("es-AR"),
+              "ANIs",
+            ]}
+          />
+
+          <Bar
+            dataKey="value"
+            radius={[0, 6, 6, 0]}
+            barSize={20}
+            animationDuration={900}
+          >
+            {chartData.map((entry, i) => (
+              <Cell
+                key={i}
+                fill={entry.color}
+                fillOpacity={0.85}
               />
-              <YAxis
-                type="category"
-                dataKey="name"
-                width={130}
-                tick={{ fill: "currentColor", fontSize: 10 }}
-                axisLine={false}
-                tickLine={false}
-              />
-              <Tooltip
-                contentStyle={chartTooltipStyle}
-                formatter={(value: number) => [formatNumber(value), "ANIs"]}
-              />
-              <Bar dataKey="cantidad" radius={[0, 8, 8, 0]} barSize={18}>
-                {chartData.map((entry, index) => (
-                  <Cell key={index} fill={entry.fill} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </CardContent>
-    </Card>
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 
@@ -521,118 +579,175 @@ export function HorariosPerformanceChart({ data }: DashboardChartsProps) {
 export function CurvaContactacionChart({ data }: DashboardChartsProps) {
   const chartData = useMemo(() => {
     return data.curvaContactacion.map((item) => ({
-      intento: item.intento,
-      cantidad: item.cantidad,
+      intento: String(item.intento),
+      valor: item.cantidad,
     }));
   }, [data]);
 
   return (
-    <Card className="glass-card border-glass-border">
-      <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-2 text-sm font-display font-bold">
-          <span className="dot-indicator bg-primary" />
-          Curva de contactación
-        </CardTitle>
-        <p className="text-xs text-muted-foreground">
-          Indica en qué intento aparece el primer ANSWER-AGENT.
-        </p>
-      </CardHeader>
+    <div className="glass-card p-5 animate-slide-up hover-elevate">
+      <h3 className="mb-1 flex items-center gap-2 text-sm font-display font-semibold">
+        <span className="dot-indicator bg-warning animate-pulse-glow" />
+        Estrategia de reintentos
+      </h3>
 
-      <CardContent>
-        <div className="h-[320px]">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" opacity={0.08} />
-              <XAxis
-                dataKey="intento"
-                tick={{ fill: "currentColor", fontSize: 10 }}
-                axisLine={false}
-                tickLine={false}
+      <p className="mb-4 text-xs text-muted-foreground">
+        Intento del primer ANSWER-AGENT
+      </p>
+
+      <ResponsiveContainer width="100%" height={260}>
+        <BarChart data={chartData} margin={{ top: 24 }}>
+          <defs>
+            <linearGradient id="retryGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop
+                offset="0%"
+                stopColor="hsl(var(--primary))"
+                stopOpacity={1}
               />
-              <YAxis
-                tick={{ fill: "currentColor", fontSize: 10 }}
-                axisLine={false}
-                tickLine={false}
+              <stop
+                offset="100%"
+                stopColor="hsl(var(--primary))"
+                stopOpacity={0.45}
               />
-              <Tooltip
-                contentStyle={chartTooltipStyle}
-                formatter={(value: number) => [formatNumber(value), "ANIs"]}
-              />
-              <Line
-                type="monotone"
-                dataKey="cantidad"
-                stroke="hsl(var(--primary))"
-                strokeWidth={3}
-                dot={{ r: 4 }}
-                activeDot={{ r: 6 }}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </CardContent>
-    </Card>
+            </linearGradient>
+          </defs>
+
+          <XAxis
+            dataKey="intento"
+            tick={{
+              fill: "currentColor",
+              fontSize: 11,
+              fontWeight: 600,
+            }}
+            axisLine={false}
+            tickLine={false}
+            className="text-muted-foreground"
+          />
+
+          <YAxis
+            tick={{ fill: "currentColor", fontSize: 11 }}
+            axisLine={false}
+            tickLine={false}
+            className="text-muted-foreground"
+          />
+
+          <Tooltip
+            contentStyle={chartTooltipStyle}
+            cursor={chartTooltipCursor}
+            formatter={(value: number) => [
+              value.toLocaleString("es-AR"),
+              "ANIs",
+            ]}
+          />
+
+          <Bar
+            dataKey="valor"
+            radius={[6, 6, 0, 0]}
+            barSize={42}
+            fill="url(#retryGrad)"
+            animationDuration={900}
+          >
+            <LabelList
+              dataKey="valor"
+              position="top"
+              className="fill-foreground"
+              fontSize={11}
+              fontWeight={600}
+              formatter={(value: number) => value.toLocaleString("es-AR")}
+            />
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 
 export function IntentosDistribucionChart({ data }: DashboardChartsProps) {
   const chartData = useMemo(() => {
     return data.intentosDistribucion.map((item) => ({
-      ...item,
-      label: `${formatNumber(item.cantidad)} (${item.porcentaje.toFixed(1)}%)`,
+      intentos: String(item.intentos),
+      cantidad: item.cantidad,
+      porcentaje: item.porcentaje,
     }));
   }, [data]);
 
   return (
-    <Card className="glass-card border-glass-border">
-      <CardHeader className="pb-2">
-        <CardTitle className="flex items-center gap-2 text-sm font-display font-bold">
-          <span className="dot-indicator bg-destructive" />
-          Intentos totales por ANI
-        </CardTitle>
-        <p className="text-xs text-muted-foreground">
-          Ayuda a detectar saturación y exceso de reintentos.
-        </p>
-      </CardHeader>
+    <div className="glass-card p-5 animate-slide-up hover-elevate">
+      <h3 className="mb-1 flex items-center gap-2 text-sm font-display font-semibold">
+        <span className="dot-indicator bg-destructive animate-pulse-glow" />
+        Intentos totales por ANI
+      </h3>
 
-      <CardContent>
-        <div className="h-[320px]">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" opacity={0.08} />
-              <XAxis
-                dataKey="intentos"
-                tick={{ fill: "currentColor", fontSize: 10 }}
-                axisLine={false}
-                tickLine={false}
-              />
-              <YAxis
-                tick={{ fill: "currentColor", fontSize: 10 }}
-                axisLine={false}
-                tickLine={false}
-              />
-              <Tooltip
-                contentStyle={chartTooltipStyle}
-                formatter={(value: number, _name: string, props: any) => [
-                  `${formatNumber(value)} (${
-                    props?.payload?.porcentaje?.toFixed?.(1) ?? "0"
-                  }%)`,
-                  "ANIs",
-                ]}
-              />
-              <Bar
-                dataKey="cantidad"
-                fill="hsl(var(--destructive))"
-                radius={[8, 8, 0, 0]}
-              />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
+      <p className="mb-4 text-xs text-muted-foreground">
+        Cuántos ANIs recibieron 1, 2, 3 o más intentos.
+      </p>
 
-        <p className="mt-3 text-center text-xs text-muted-foreground">
-          Cuántos ANIs recibieron 1, 2, 3 o más intentos.
-        </p>
-      </CardContent>
-    </Card>
+      <ResponsiveContainer width="100%" height={260}>
+        <BarChart data={chartData} margin={{ top: 24, right: 8, left: 0 }}>
+          <defs>
+            <linearGradient id="intentosGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop
+                offset="0%"
+                stopColor="hsl(var(--destructive))"
+                stopOpacity={1}
+              />
+              <stop
+                offset="100%"
+                stopColor="hsl(var(--destructive))"
+                stopOpacity={0.45}
+              />
+            </linearGradient>
+          </defs>
+
+          <XAxis
+            dataKey="intentos"
+            tick={{
+              fill: "currentColor",
+              fontSize: 11,
+              fontWeight: 600,
+            }}
+            axisLine={false}
+            tickLine={false}
+            className="text-muted-foreground"
+          />
+
+          <YAxis
+            tick={{ fill: "currentColor", fontSize: 11 }}
+            axisLine={false}
+            tickLine={false}
+            className="text-muted-foreground"
+          />
+
+          <Tooltip
+            contentStyle={chartTooltipStyle}
+            cursor={chartTooltipCursor}
+            formatter={(value: number, _name: string, props: any) => [
+              `${formatNumber(value)} ANIs - ${
+                props?.payload?.porcentaje?.toFixed?.(1) ?? "0"
+              }%`,
+              "Cantidad",
+            ]}
+          />
+
+          <Bar
+            dataKey="cantidad"
+            radius={[6, 6, 0, 0]}
+            barSize={42}
+            fill="url(#intentosGrad)"
+            animationDuration={900}
+          >
+            <LabelList
+              dataKey="cantidad"
+              position="top"
+              className="fill-foreground"
+              fontSize={11}
+              fontWeight={600}
+              formatter={(value: number) => value.toLocaleString("es-AR")}
+            />
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 

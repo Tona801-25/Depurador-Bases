@@ -121,16 +121,15 @@ export function KPICard({
   const styles = getVariantStyles();
 
   return (
-    <div
-      className={cn(
-        "group relative overflow-hidden rounded-2xl border p-4 shadow-sm transition-all duration-200",
-        "hover:-translate-y-0.5 hover:shadow-md",
-        "bg-gradient-to-br from-card via-card to-muted/20",
-        styles.card,
-        className
-      )}
-      data-testid={testId}
-    >
+      <div
+        className={cn(
+          "soft-cyan-hover group relative overflow-hidden rounded-2xl border p-4 shadow-sm transition-all duration-200",
+          "bg-gradient-to-br from-card via-card to-muted/20",
+          styles.card,
+          className
+        )}
+        data-testid={testId}
+      >
       <div
         className={cn(
           "pointer-events-none absolute inset-x-0 top-0 h-1 bg-gradient-to-r",

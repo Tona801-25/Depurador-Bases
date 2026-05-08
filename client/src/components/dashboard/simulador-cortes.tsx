@@ -22,7 +22,7 @@ import {
 } from "recharts";
 import { Settings } from "lucide-react";
 import type { AnalysisResult } from "@shared/schema";
-import { chartTooltipStyle } from "@/components/dashboard/chartStyles";
+import { chartTooltipStyle, chartTooltipCursor, } from "@/components/dashboard/chartStyles";
 
 interface SimuladorCortesProps {
   data: AnalysisResult;
@@ -138,8 +138,8 @@ return (
                 <CartesianGrid strokeDasharray="3 3" opacity={0.06} />
                 <XAxis type="number" tick={{ fill: "currentColor", fontSize: 10 }} axisLine={false} tickLine={false} />
                 <YAxis type="category" dataKey="name" width={120} tick={{ fill: "currentColor", fontSize: 10 }} axisLine={false} tickLine={false} />
-                <Tooltip contentStyle={chartTooltipStyle} formatter={(value: number) => [value.toLocaleString("es-AR"), "ANIs"]} />
-                <Bar dataKey="value" radius={[0, 6, 6, 0]}>
+                  <Tooltip contentStyle={chartTooltipStyle} cursor={chartTooltipCursor} formatter={(value: number) => [ value.toLocaleString("es-AR"), "ANIs",  ]} />
+                  <Bar dataKey="value" radius={[0, 6, 6, 0]}>
                   {chartData.map((entry, index) => (
                     <Cell key={`cell-${index}`} fill={entry.fill} />
                   ))}
