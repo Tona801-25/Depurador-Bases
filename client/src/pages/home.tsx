@@ -23,6 +23,7 @@ import { FiltrosTab } from "@/components/dashboard/filtros-tab";
 import { CatalogoPrefijosTab } from "@/components/dashboard/catalogo-prefijos";
 import { SimuladorCortesTab } from "@/components/dashboard/simulador-cortes";
 import { PrefijosPorHoraTab } from "@/components/dashboard/prefijos-por-hora-tab";
+import EffectivenessRadial from "@/components/dashboard/effectivenessRadial";
 import { useMutation } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import type { AnalysisResult, RecordsFilter, BaseInsight } from "@shared/schema";
@@ -415,6 +416,8 @@ export default function Home() {
                     <KPICard title="Bases a descartar" value={resumenBases.descartar} icon={XCircle} variant="danger" />
                     <KPICard title="Mejor base" value={resumenBases.mejorBase} icon={TrendingUp} />
                   </div>
+
+                  <EffectivenessRadial data={analysisResult} />
 
                   <Card className="glass-card">
                     <CardHeader className="pb-2">

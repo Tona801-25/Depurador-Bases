@@ -110,7 +110,7 @@ export function DashboardTabs({ activeTab, onTabChange }: DashboardTabsProps) {
 export function EstadoDistribucionChart({ data }: DashboardChartsProps) {
   const chartData = useMemo(() => {
     const total = Object.values(data.estadoDistribucion).reduce(
-      (a, b) => a + b,
+      (acc, value) => acc + value,
       0
     );
 
@@ -124,29 +124,7 @@ export function EstadoDistribucionChart({ data }: DashboardChartsProps) {
       .sort((a, b) => b.value - a.value);
   }, [data]);
 
-  const renderLegend = (props: any) => (
-    <ul className="mt-2 flex flex-wrap justify-center gap-x-4 gap-y-1 text-[11px]">
-      {props.payload.map((entry: any, i: number) => {
-        const payload = entry.payload;
-
-        return (
-          <li key={i} className="flex items-center gap-1.5 text-foreground/80">
-            <span
-              className="h-2 w-2 rounded-full"
-              style={{ background: entry.color }}
-            />
-
-            <span className="font-medium tabular-nums">
-              {entry.value}
-              {typeof payload?.percentage === "number"
-                ? ` (${payload.percentage.toFixed(1)}%)`
-                : ""}
-            </span>
-          </li>
-        );
-      })}
-    </ul>
-  );
+  const totalLlamadas = chartData.reduce((acc, item) => acc + item.value, 0);
 
   return (
     <div className="glass-card p-5 animate-slide-up hover-elevate">
@@ -155,39 +133,76 @@ export function EstadoDistribucionChart({ data }: DashboardChartsProps) {
         Distribución de estados de llamada
       </h3>
 
-      <ResponsiveContainer width="100%" height={260}>
-        <PieChart>
-          <Pie
-            data={chartData}
-            cx="50%"
-            cy="50%"
-            innerRadius={62}
-            outerRadius={92}
-            paddingAngle={3}
-            dataKey="value"
-            stroke="hsl(var(--card))"
-            strokeWidth={2}
-            animationDuration={900}
-            animationBegin={100}
+      <div className="relative">
+        <ResponsiveContainer width="100%" height={260}>
+          <PieChart>
+            <Pie
+              data={chartData}
+              cx="50%"
+              cy="50%"
+              innerRadius={72}
+              outerRadius={108}
+              paddingAngle={3}
+              dataKey="value"
+              stroke="hsl(var(--card))"
+              strokeWidth={2}
+              animationDuration={900}
+            >
+              {chartData.map((entry, index) => (
+                <Cell key={index} fill={entry.color} />
+              ))}
+            </Pie>
+
+            <Tooltip
+              contentStyle={chartTooltipStyle}
+              formatter={(value: number, _name: string, props: any) => [
+                `${formatNumber(value)} llamadas - ${props?.payload?.percentage?.toFixed(
+                  1
+                )}%`,
+                props?.payload?.name ?? "",
+              ]}
+            />
+          </PieChart>
+        </ResponsiveContainer>
+
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+          <span className="text-xs font-display font-semibold uppercase tracking-wide text-muted-foreground">
+            Total
+          </span>
+
+          <span className="text-[18px] font-display font-extrabold tabular-nums text-foreground">
+            {formatNumber(totalLlamadas)}
+          </span>
+
+          <span className="mt-1 text-[10px] text-muted-foreground">
+            llamadas
+          </span>
+        </div>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        {chartData.map((item) => (
+          <div
+            key={item.name}
+            className="soft-cyan-hover flex items-center justify-between rounded-lg border border-border bg-secondary/50 px-3 py-2"
           >
-            {chartData.map((entry, i) => (
-              <Cell key={i} fill={entry.color} />
-            ))}
-          </Pie>
+            <div className="flex min-w-0 items-center gap-2">
+              <span
+                className="h-2 w-2 shrink-0 rounded-full"
+                style={{ background: item.color }}
+              />
 
-          <Tooltip
-            contentStyle={chartTooltipStyle}
-            formatter={(value: number, _name: string, props: any) => [
-              `${formatNumber(value)} llamadas - ${props?.payload?.percentage?.toFixed(
-                1
-              )}%`,
-              "",
-            ]}
-          />
+              <span className="truncate text-[11px] font-medium text-muted-foreground">
+                {item.name}
+              </span>
+            </div>
 
-          <Legend verticalAlign="bottom" content={renderLegend} />
-        </PieChart>
-      </ResponsiveContainer>
+            <span className="text-xs font-bold tabular-nums text-foreground">
+              {item.percentage.toFixed(1)}%
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

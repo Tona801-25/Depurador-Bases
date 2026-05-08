@@ -5,6 +5,7 @@ import {
   Minus,
   type LucideIcon,
 } from "lucide-react";
+import Sparkline from "@/components/dashboard/sparkline";
 
 interface KPICardProps {
   title: string;
@@ -19,6 +20,12 @@ interface KPICardProps {
   variant?: "default" | "success" | "warning" | "danger";
   className?: string;
   testId?: string;
+  /** índice opcional para animación stagger (0-5) */
+  index?: number;
+
+  /** Mini gráfico decorativo opcional */
+  sparklineData?: number[];
+  sparklineColor?: string;
 }
 
 export function KPICard({
@@ -30,21 +37,10 @@ export function KPICard({
   variant = "default",
   className,
   testId,
+  index = 0,
+  sparklineData,
+  sparklineColor,
 }: KPICardProps) {
-  const numericValue =
-    typeof value === "number"
-      ? value
-      : Number(String(value).replace(",", "."));
-
-  const isZeroValue =
-    Number.isFinite(numericValue) && numericValue === 0;
-
-  const isLongTextValue =
-    typeof value === "string" && value.length > 14;
-
-  const visualVariant =
-    variant === "danger" && isZeroValue ? "default" : variant;
-
   const getTrendDirection = () => {
     if (!trend) return 0;
 
@@ -58,146 +54,117 @@ export function KPICard({
     return 0;
   };
 
-  const getTrendIcon = () => {
-    const direction = getTrendDirection();
+  const trendDirection = getTrendDirection();
 
-    if (direction > 0) return <TrendingUp className="h-3.5 w-3.5" />;
-    if (direction < 0) return <TrendingDown className="h-3.5 w-3.5" />;
-    return <Minus className="h-3.5 w-3.5" />;
-  };
+  const TrendIcon =
+    trendDirection > 0
+      ? TrendingUp
+      : trendDirection < 0
+        ? TrendingDown
+        : Minus;
 
-  const getVariantStyles = () => {
-    switch (visualVariant) {
-      case "success":
-        return {
-          card: "border-success/25 bg-success/5 shadow-success/5",
-          accent: "from-success/30 via-success/10 to-transparent",
-          icon: "border-success/25 bg-success/10 text-success",
-          value: "text-success",
-          trend: "text-success",
-        };
+  const styles = {
+    default: {
+      card: "border-border/70",
+      icon: "bg-primary/10 text-primary",
+      glow: "from-primary/10",
+      sparkline: "hsl(var(--primary))",
+    },
+    success: {
+      card: "border-success/25",
+      icon: "bg-success/10 text-success",
+      glow: "from-success/10",
+      sparkline: "hsl(var(--success))",
+    },
+    warning: {
+      card: "border-warning/25",
+      icon: "bg-warning/10 text-warning",
+      glow: "from-warning/10",
+      sparkline: "hsl(var(--warning))",
+    },
+    danger: {
+      card: "border-destructive/25",
+      icon: "bg-destructive/10 text-destructive",
+      glow: "from-destructive/10",
+      sparkline: "hsl(var(--destructive))",
+    },
+  }[variant];
 
-      case "warning":
-        return {
-          card: "border-warning/25 bg-warning/5 shadow-warning/5",
-          accent: "from-warning/30 via-warning/10 to-transparent",
-          icon: "border-warning/25 bg-warning/10 text-warning",
-          value: "text-warning",
-          trend: "text-warning",
-        };
-
-      case "danger":
-        return {
-          card: "border-destructive/25 bg-destructive/5 shadow-destructive/5",
-          accent: "from-destructive/30 via-destructive/10 to-transparent",
-          icon: "border-destructive/25 bg-destructive/10 text-destructive",
-          value: "text-destructive",
-          trend: "text-destructive",
-        };
-
-      default:
-        return {
-          card: "border-border bg-card/80 shadow-black/5",
-          accent: "from-border via-border/40 to-transparent",
-          icon: "border-border bg-muted/50 text-muted-foreground",
-          value: "text-foreground",
-          trend: "text-muted-foreground",
-        };
-    }
-  };
-
-  const getTrendColor = () => {
-    const direction = getTrendDirection();
-
-    if (direction === 0) return "text-muted-foreground";
-
-    if (visualVariant === "danger") {
-      return direction > 0 ? "text-destructive" : "text-success";
-    }
-
-    return getVariantStyles().trend;
-  };
-
-  const styles = getVariantStyles();
+  const shouldShowSparkline =
+    Array.isArray(sparklineData) && sparklineData.length > 1;
 
   return (
+    <div
+      className={cn(
+        "soft-cyan-hover group relative overflow-hidden rounded-2xl border p-4 shadow-sm",
+        "bg-gradient-to-br from-card via-card to-muted/20",
+        "transition-all duration-200",
+        styles.card,
+        className
+      )}
+      style={{ animationDelay: `${index * 70}ms` }}
+      data-testid={testId}
+    >
       <div
         className={cn(
-          "soft-cyan-hover group relative overflow-hidden rounded-2xl border p-4 shadow-sm transition-all duration-200",
-          "bg-gradient-to-br from-card via-card to-muted/20",
-          styles.card,
-          className
-        )}
-        data-testid={testId}
-      >
-      <div
-        className={cn(
-          "pointer-events-none absolute inset-x-0 top-0 h-1 bg-gradient-to-r",
-          styles.accent
+          "pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full bg-gradient-radial blur-2xl",
+          styles.glow
         )}
       />
 
-      <div className="flex items-start justify-between gap-4">
+      {shouldShowSparkline && (
+        <div className="pointer-events-none absolute bottom-0 left-0 right-0 opacity-35 transition-opacity duration-300 group-hover:opacity-55">
+          <Sparkline
+            data={sparklineData}
+            color={sparklineColor || styles.sparkline}
+            gradientId={`sparkline-${String(title)
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/gi, "-")}-${index}`}
+            height={42}
+          />
+        </div>
+      )}
+
+      <div className="relative z-10 flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <p className="truncate text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+          <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
             {title}
           </p>
 
-          <div className="mt-3 flex flex-wrap items-end gap-x-2 gap-y-1">
-            <p
-              className={cn(
-                "font-extrabold tracking-tight",
-                isLongTextValue
-                  ? "break-words text-2xl leading-tight"
-                  : "text-2xl leading-none md:text-3xl",
-                styles.value
-              )}
-            >
-              {typeof value === "number"
-                ? value.toLocaleString("es-AR")
-                : value}
-            </p>
+          <div className="flex items-baseline gap-2">
+            <h3 className="truncate text-2xl font-display font-extrabold tabular-nums text-foreground">
+              {value}
+            </h3>
 
-            {subtitle && (
-              <span className="pb-0.5 text-xs font-medium text-muted-foreground">
-                {subtitle}
+            {trend && (
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium tabular-nums",
+                  trendDirection > 0 &&
+                    "bg-success/10 text-success",
+                  trendDirection < 0 &&
+                    "bg-destructive/10 text-destructive",
+                  trendDirection === 0 &&
+                    "bg-muted text-muted-foreground"
+                )}
+              >
+                <TrendIcon className="h-3 w-3" />
+                {Math.abs(trend.value)}%
               </span>
             )}
           </div>
 
-          {variant === "danger" && isZeroValue && (
-            <p className="mt-2 text-xs font-medium text-muted-foreground">
-              Sin bases para descartar
+          {(subtitle || trend?.label) && (
+            <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">
+              {subtitle || trend?.label}
             </p>
-          )}
-
-          {trend && (
-            <div
-              className={cn(
-                "mt-3 inline-flex items-center gap-1.5 rounded-full border border-border bg-background/60 px-2.5 py-1 text-xs font-semibold",
-                getTrendColor()
-              )}
-            >
-              {getTrendIcon()}
-
-              <span>
-                {getTrendDirection() > 0 ? "+" : ""}
-                {trend.value.toFixed(1)}%
-              </span>
-
-              {trend.label && (
-                <span className="font-medium text-muted-foreground">
-                  {trend.label}
-                </span>
-              )}
-            </div>
           )}
         </div>
 
         {Icon && (
           <div
             className={cn(
-              "shrink-0 rounded-xl border p-2.5 shadow-sm transition-transform duration-200 group-hover:scale-105",
+              "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/5 shadow-sm",
               styles.icon
             )}
           >
