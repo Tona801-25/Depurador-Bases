@@ -12,7 +12,10 @@ import {
 } from "recharts";
 import { DataTable, type Column } from "@/components/data-table";
 import type { AnalysisResult } from "@shared/schema";
-import { chartTooltipStyle } from "@/components/dashboard/chartStyles";
+import {   
+  chartTooltipStyle,
+  chartTooltipCursor, 
+} from "@/components/dashboard/chartStyles";
 
 interface TurnosPrefijosProps {
   data: AnalysisResult;
@@ -104,7 +107,10 @@ return (
                   <CartesianGrid strokeDasharray="3 3" opacity={0.06} />
                   <XAxis dataKey="turno" tick={{ fill: "currentColor", fontSize: 10 }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fill: "currentColor", fontSize: 10 }} axisLine={false} tickLine={false} />
-                  <Tooltip contentStyle={chartTooltipStyle} />
+                    <Tooltip
+                      contentStyle={chartTooltipStyle}
+                      cursor={chartTooltipCursor}
+                    />
                   <Legend wrapperStyle={{ fontSize: "11px" }} />
                   <Bar dataKey="Answer" fill="hsl(var(--success))" radius={[4, 4, 0, 0]} />
                   <Bar dataKey="No Answer" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
