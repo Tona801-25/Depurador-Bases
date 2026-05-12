@@ -77,7 +77,14 @@ export const baseInsightSchema = z.object({
   pctInvalidos: z.number(),
   pctADepurar: z.number(),
   intentosPromedio: z.number(),
+
   scoreCalidad: z.number(),
+  scoreCalidadOriginal: z.number().optional(),
+
+  confiabilidadMuestra: z.string().optional(),
+  penalizacionMuestra: z.number().optional(),
+  advertenciaMuestra: z.string().optional(),
+
   recomendacion: z.string(),
 });
 

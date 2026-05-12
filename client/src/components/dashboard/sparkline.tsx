@@ -1,7 +1,7 @@
 import { Area, AreaChart, ResponsiveContainer } from "recharts";
 
 interface SparklineProps {
-  data: number[];
+  data?: number[];
   color?: string;
   gradientId?: string;
   height?: number;
@@ -9,18 +9,18 @@ interface SparklineProps {
 }
 
 const Sparkline = ({
-  data,
+  data = [],
   color = "hsl(var(--primary))",
   gradientId = "sparkline-gradient",
   height = 36,
   className,
 }: SparklineProps) => {
+  if (!Array.isArray(data) || data.length === 0) return null;
+
   const chartData = data.map((value, index) => ({
     index,
     value,
   }));
-
-  if (!data.length) return null;
 
   return (
     <div className={className}>

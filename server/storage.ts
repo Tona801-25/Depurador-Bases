@@ -187,6 +187,17 @@ type ANIContext = {
   motivoDepuracion: string;
 };
 
+const ANALYSIS_CONFIG = {
+  horaInicioTarde: 14,
+
+  muestra: {
+    bajaMaxAnis: 20,
+    mediaMaxAnis: 100,
+    penalizacionBaja: 0.2,
+    penalizacionMedia: 0.08,
+  },
+};
+
 const DEFAULT_DEPURACION_CONFIG: DepuracionConfig = {
   thresholds: {
     unallocatedInvalido: 3,
@@ -375,7 +386,7 @@ function getTurno(dateStr?: string): string {
 
   const hour = d.getHours();
 
-  if (hour >= 15) return "Tarde";
+  if (hour >= ANALYSIS_CONFIG.horaInicioTarde) return "Tarde";
 
   return "Mañana";
 }
@@ -386,6 +397,42 @@ function hoursBetween(from: Date, to: Date): number {
 
 function daysBetween(from: Date, to: Date): number {
   return Math.abs(to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24);
+}
+
+function getAnalysisReferenceDate(records: CallRecord[]): Date {
+  const dates = records
+    .map((record) => parseTicketDate(record.fecha))
+    .filter((date): date is Date => !!date)
+    .sort((a, b) => b.getTime() - a.getTime());
+
+  return dates[0] || new Date();
+}
+
+function getMuestraInfo(totalAnis: number) {
+  if (totalAnis <= ANALYSIS_CONFIG.muestra.bajaMaxAnis) {
+    return {
+      confiabilidadMuestra: "BAJA",
+      penalizacionMuestra: ANALYSIS_CONFIG.muestra.penalizacionBaja,
+      advertenciaMuestra:
+        "Muestra baja: validar antes de tomar decisiones operativas fuertes.",
+    };
+  }
+
+  if (totalAnis <= ANALYSIS_CONFIG.muestra.mediaMaxAnis) {
+    return {
+      confiabilidadMuestra: "MEDIA",
+      penalizacionMuestra: ANALYSIS_CONFIG.muestra.penalizacionMedia,
+      advertenciaMuestra:
+        "Muestra media: útil para lectura inicial, pero conviene validar con más volumen.",
+    };
+  }
+
+  return {
+    confiabilidadMuestra: "ALTA",
+    penalizacionMuestra: 0,
+    advertenciaMuestra:
+      "Muestra confiable: volumen suficiente para priorización operativa.",
+  };
 }
 
 function getEstadoNormalizado(record?: CallRecord): string {
@@ -442,9 +489,10 @@ function getMejorFranja(calls: CallRecord[]): string {
 function buildANIContext(
   calls: CallRecord[],
   summary: ANISummary,
-  config: DepuracionConfig
+  config: DepuracionConfig,
+  referenceDate: Date
 ): ANIContext {
-  const now = new Date();
+  const now = referenceDate;
 
   const datedCalls = calls
     .map((call) => ({
@@ -585,7 +633,7 @@ function buildBaseInsights(records: CallRecord[], aniSummaries: ANISummary[]) {
   const baseMap = new Map<string, CallRecord[]>();
 
   records.forEach((record) => {
-    const base = (record.base || "SIN_BASE").trim();
+    const base = (record.base || "SIN_BASE").trim() || "SIN_BASE";
     const current = baseMap.get(base) || [];
     current.push(record);
     baseMap.set(base, current);
@@ -594,36 +642,60 @@ function buildBaseInsights(records: CallRecord[], aniSummaries: ANISummary[]) {
   return Array.from(baseMap.entries())
     .map(([base, baseRecords]) => {
       const anisBase = new Set(baseRecords.map((r) => r.ani).filter(Boolean));
-      const totalAnis = anisBase.size || 1;
+      const totalAnis = anisBase.size;
+      const totalAnisParaCalculo = Math.max(totalAnis, 1);
 
       const summariesBase = aniSummaries.filter((s) => anisBase.has(s.ani));
 
-      const contactados = summariesBase.filter((s) => s.intentosAnswerAgent > 0).length;
-      const conBuzon = summariesBase.filter((s) => s.intentosAnsweringMachine > 0).length;
-      const invalidos = summariesBase.filter((s) => s.tagTelefono === "INVALIDO").length;
-      const aDepurar = summariesBase.filter((s) =>
-        ["INVALIDO", "SOLO_BUZON", "NO_ATIENDE", "RECHAZA"].includes(s.tagTelefono)
+      const contactados = summariesBase.filter(
+        (s) => s.intentosAnswerAgent > 0
       ).length;
 
-      const pctContactoEfectivo = contactados / totalAnis;
-      const pctBuzon = conBuzon / totalAnis;
-      const pctInvalidos = invalidos / totalAnis;
-      const pctADepurar = aDepurar / totalAnis;
+      const conBuzon = summariesBase.filter(
+        (s) => s.intentosAnsweringMachine > 0
+      ).length;
+
+      const invalidos = summariesBase.filter(
+        (s) => s.tagTelefono === "INVALIDO"
+      ).length;
+
+      const aDepurar = summariesBase.filter((s) =>
+        ["INVALIDO", "SOLO_BUZON", "NO_ATIENDE", "RECHAZA"].includes(
+          s.tagTelefono
+        )
+      ).length;
+
+      const pctContactoEfectivo = contactados / totalAnisParaCalculo;
+      const pctBuzon = conBuzon / totalAnisParaCalculo;
+      const pctInvalidos = invalidos / totalAnisParaCalculo;
+      const pctADepurar = aDepurar / totalAnisParaCalculo;
 
       const intentosPromedio =
         summariesBase.length > 0
-          ? summariesBase.reduce((acc, s) => acc + s.intentosTotales, 0) / summariesBase.length
+          ? summariesBase.reduce((acc, s) => acc + s.intentosTotales, 0) /
+            summariesBase.length
           : 0;
 
-      const scoreCalidad =
+      const muestraInfo = getMuestraInfo(totalAnis);
+
+      const scoreCalidadOriginal =
         pctContactoEfectivo * 0.5 +
         (1 - pctADepurar) * 0.25 +
         (1 - pctInvalidos) * 0.15 +
         Math.max(0, 1 - intentosPromedio / 10) * 0.1;
 
+      const scoreCalidad = Math.max(
+        0,
+        Math.min(1, scoreCalidadOriginal - muestraInfo.penalizacionMuestra)
+      );
+
       let recomendacion = "REVISAR";
-      if (scoreCalidad >= 0.75) recomendacion = "UTILIZAR";
-      else if (scoreCalidad < 0.45) recomendacion = "DESCARTAR";
+
+      if (scoreCalidad >= 0.75 && muestraInfo.confiabilidadMuestra !== "BAJA") {
+        recomendacion = "UTILIZAR";
+      } else if (scoreCalidad < 0.45) {
+        recomendacion = "DESCARTAR";
+      }
 
       return {
         base,
@@ -635,7 +707,13 @@ function buildBaseInsights(records: CallRecord[], aniSummaries: ANISummary[]) {
         pctInvalidos,
         pctADepurar,
         intentosPromedio,
+
         scoreCalidad,
+        scoreCalidadOriginal,
+        confiabilidadMuestra: muestraInfo.confiabilidadMuestra,
+        penalizacionMuestra: muestraInfo.penalizacionMuestra,
+        advertenciaMuestra: muestraInfo.advertenciaMuestra,
+
         recomendacion,
       };
     })
@@ -677,6 +755,10 @@ function buildFranjaDistribucion(records: CallRecord[]) {
       franjaDistribucion[rango].noContacto++;
     }
   });
+
+  const analysisReferenceDate = getAnalysisReferenceDate(records);
+
+  const rangoDistribucion: Record<string, { total: number; answer: number; noAnswer: number }> = {};
 
   return franjaDistribucion;
 }
@@ -945,8 +1027,9 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
     aniGroups.set(record.ani, existing);
   });
 
-  const aniSummaries: ANISummary[] = [];
+const aniSummaries: ANISummary[] = [];
 const depuracionConfig = DEFAULT_DEPURACION_CONFIG;
+const analysisReferenceDate = getAnalysisReferenceDate(records);
 
 aniGroups.forEach((calls, ani) => {
   const sortedCalls = [...calls].sort((a, b) => {
@@ -986,7 +1069,13 @@ aniGroups.forEach((calls, ani) => {
     tagTelefono: "",
   };
 
-  const context = buildANIContext(sortedCalls, summaryBase, depuracionConfig);
+  const context = buildANIContext(
+  sortedCalls,
+  summaryBase,
+  depuracionConfig,
+  analysisReferenceDate
+  );
+  
   const tagTelefono = assignTag(summaryBase, context, depuracionConfig);
 
   const summary: ANISummary = {
