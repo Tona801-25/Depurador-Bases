@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DataTable, type Column } from "@/components/data-table";
 import type { AnalysisResult } from "@shared/schema";
 import HourlyAreaChart from "@/components/dashboard/hourlyAreaChart";
+import PrefijoHeatmap from "@/components/dashboard/prefijosHeatmap";
 
 interface PrefijosPorHoraTabProps {
   data: AnalysisResult;
@@ -188,6 +189,9 @@ const tableData = useMemo(() => {
       <HourlyAreaChart data={data} />
 
       <Card className="glass-card border-glass-border">
+
+      <PrefijoHeatmap data={data} />
+      
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-display font-bold">Resumen por hora</CardTitle>
         </CardHeader>

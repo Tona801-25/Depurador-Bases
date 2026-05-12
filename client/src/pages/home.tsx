@@ -45,6 +45,7 @@ import {
   Layers3,
   PieChart,
 } from "lucide-react";
+import FilterChips from "@/components/dashboard/filterChips";
 
 export default function Home() {
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
@@ -291,6 +292,46 @@ export default function Home() {
     };
   }, [rankedBases]);
 
+  const kpiSparklineData = useMemo(() => {
+  const empty = {
+    total: [] as number[],
+    contactados: [] as number[],
+    depurar: [] as number[],
+    pctAnswer: [] as number[],
+    pctNoAnswer: [] as number[],
+  };
+
+  if (!analysisResult?.rangoDistribucion) return empty;
+
+  const rangos = Object.values(analysisResult.rangoDistribucion);
+
+  if (rangos.length <= 1) return empty;
+
+  const total = rangos.map((rango) => rango.total);
+  const contactados = rangos.map((rango) => rango.answer);
+  const noAnswer = rangos.map((rango) => rango.noAnswer);
+
+  const depurar = rangos.map((rango) => Math.max(rango.noAnswer, 0));
+
+  const pctAnswer = rangos.map((rango) =>
+    rango.total > 0 ? Number(((rango.answer / rango.total) * 100).toFixed(1)) : 0
+  );
+
+  const pctNoAnswer = rangos.map((rango) =>
+    rango.total > 0
+      ? Number(((rango.noAnswer / rango.total) * 100).toFixed(1))
+      : 0
+  );
+
+  return {
+    total,
+    contactados,
+    depurar,
+    pctAnswer,
+    pctNoAnswer,
+  };
+}, [analysisResult]);
+
   const renderBadge = (recomendacion: string) => {
     if (recomendacion === "UTILIZAR") {
       return (
@@ -409,13 +450,53 @@ export default function Home() {
 
               {rankedBases.length > 0 && (
                 <>
-                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
-                    <KPICard title="Bases analizadas" value={resumenBases.total} icon={Layers3} />
-                    <KPICard title="Bases utilizables" value={resumenBases.utilizables} icon={CheckCircle2} variant="success" />
-                    <KPICard title="Bases a revisar" value={resumenBases.revisar} icon={AlertTriangle} variant="warning" />
-                    <KPICard title="Bases a descartar" value={resumenBases.descartar} icon={XCircle} variant="danger" />
-                    <KPICard title="Mejor base" value={resumenBases.mejorBase} icon={TrendingUp} />
-                  </div>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
+                  <KPICard
+                    title="ANIs totales"
+                    value={analysisResult.totalAnis.toLocaleString("es-AR")}
+                    icon={Users}
+                    sparklineData={kpiSparklineData.total}
+                    sparklineColor="hsl(var(--primary))"
+                  />
+
+                  <KPICard
+                    title="ANIs con contacto efectivo"
+                    value={analysisResult.anisContactados.toLocaleString("es-AR")}
+                    icon={Phone}
+                    variant="success"
+                    sparklineData={kpiSparklineData.contactados}
+                    sparklineColor="hsl(var(--success))"
+                  />
+
+                  <KPICard
+                    title="ANIs con baja recontactabilidad"
+                    value={analysisResult.anisADepurar.toLocaleString("es-AR")}
+                    icon={Target}
+                    variant="warning"
+                    sparklineData={kpiSparklineData.depurar}
+                    sparklineColor="hsl(var(--warning))"
+                  />
+
+                  <KPICard
+                    title="% Contacto efectivo"
+                    value={`${analysisResult.pctAnswer.toFixed(1)}%`}
+                    icon={Phone}
+                    variant="success"
+                    sparklineData={kpiSparklineData.pctAnswer}
+                    sparklineColor="hsl(var(--success))"
+                  />
+
+                  <KPICard
+                    title="% No contacto"
+                    value={`${analysisResult.pctNoAnswer.toFixed(1)}%`}
+                    icon={PhoneOff}
+                    variant="danger"
+                    sparklineData={kpiSparklineData.pctNoAnswer}
+                    sparklineColor="hsl(var(--destructive))"
+                  />
+                </div>
+
+                  <FilterChips data={analysisResult} />
 
                   <EffectivenessRadial data={analysisResult} />
 
@@ -438,6 +519,12 @@ export default function Home() {
                                 {base.base}
                               </p>
                               {renderBadge(base.recomendacion)}
+
+                            {base.confiabilidadMuestra && (
+                              <span className="rounded-full border border-border bg-secondary/60 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                                Muestra {base.confiabilidadMuestra.toLowerCase()}
+                              </span>
+                            )}
                             </div>
 
                             <p className="mt-1 text-xs text-muted-foreground">
@@ -447,9 +534,15 @@ export default function Home() {
                             </p>
                           </div>
 
+                          {base.advertenciaMuestra && base.confiabilidadMuestra !== "ALTA" && (
+                            <p className="mt-1 text-[11px] text-warning">
+                              {base.advertenciaMuestra}
+                            </p>
+                          )}
+
                           <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4 lg:min-w-[500px]">
                             <div className="soft-cyan-hover rounded-lg border border-border bg-background px-3 py-2">
-                              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Contacto</p>
+                              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Contacto efectivo</p>
                               <p className="mt-1 font-semibold text-success">
                                 {(base.pctContactoEfectivo * 100).toFixed(1)}%
                               </p>
@@ -470,7 +563,7 @@ export default function Home() {
                             </div>
 
                             <div className="soft-cyan-hover rounded-lg border border-border bg-background px-3 py-2">
-                              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Score</p>
+                              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Score ajustado</p>
                               <p className="mt-1 font-semibold text-foreground">
                                 {base.scoreCalidad.toFixed(2)}
                               </p>
@@ -482,14 +575,6 @@ export default function Home() {
                   </Card>
                 </>
               )}
-
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
-                <KPICard title="ANIs totales" value={analysisResult.totalAnis} icon={Users} />
-                <KPICard title="ANIs contactados" value={analysisResult.anisContactados} icon={Phone} />
-                <KPICard title="ANIs a depurar" value={analysisResult.anisADepurar} icon={Target} />
-                <KPICard title="% Answer" value={`${analysisResult.pctAnswer.toFixed(1)}%`} icon={Phone} />
-                <KPICard title="% No Answer" value={`${analysisResult.pctNoAnswer.toFixed(1)}%`} icon={PhoneOff} />
-              </div>
             </TabsContent>
 
             <TabsContent value="graficos" className="space-y-6">
