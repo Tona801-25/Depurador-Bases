@@ -8,10 +8,11 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+
 import type { AnalysisResult } from "@shared/schema";
 import {
-  chartTooltipStyle,
   chartTooltipCursor,
+  chartTooltipStyle,
 } from "@/components/dashboard/chartStyles";
 
 interface HourlyAreaChartProps {
@@ -24,8 +25,9 @@ function parseDateValue(value?: unknown): Date | null {
   if (typeof value === "number") {
     if (value > 20000) {
       const ms = (value - 25569) * 86400 * 1000;
-      const d = new Date(ms);
-      return Number.isNaN(d.getTime()) ? null : d;
+      const date = new Date(ms);
+
+      return Number.isNaN(date.getTime()) ? null : date;
     }
 
     return null;
@@ -40,14 +42,15 @@ function parseDateValue(value?: unknown): Date | null {
 
     if (Number.isFinite(serial) && serial > 20000) {
       const ms = (serial - 25569) * 86400 * 1000;
-      const d = new Date(ms);
-      return Number.isNaN(d.getTime()) ? null : d;
+      const date = new Date(ms);
+
+      return Number.isNaN(date.getTime()) ? null : date;
     }
   }
 
-  const isoDate = new Date(text);
+  const direct = new Date(text);
 
-  if (!Number.isNaN(isoDate.getTime())) return isoDate;
+  if (!Number.isNaN(direct.getTime())) return direct;
 
   const [datePart, timePart] = text.split(" ");
 
@@ -73,6 +76,7 @@ function parseDateValue(value?: unknown): Date | null {
 
   if (timePart) {
     const timeParts = timePart.split(":").map(Number);
+
     hour = timeParts[0] ?? 0;
     minute = timeParts[1] ?? 0;
     second = timeParts[2] ?? 0;
@@ -82,33 +86,21 @@ function parseDateValue(value?: unknown): Date | null {
     return null;
   }
 
-  const d = new Date(year, month - 1, day, hour, minute, second);
+  const date = new Date(year, month - 1, day, hour, minute, second);
 
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
-function normalizeEstado(value?: string) {
-  return String(value || "")
-    .toUpperCase()
-    .trim();
-}
-
-function normalizeSubestado(value?: string) {
-  return String(value || "")
-    .toUpperCase()
-    .trim();
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function isContactoEfectivo(record: AnalysisResult["rawRecords"][number]) {
-  const estado = normalizeEstado(record.estado);
-  const subestado = normalizeSubestado(record.subestado);
+  const estado = String(record.estado || "").toUpperCase().trim();
+  const subestado = String(record.subestado || "").toUpperCase().trim();
 
   return estado === "ANSWER" && subestado.includes("AGENT");
 }
 
 const HourlyAreaChart = ({ data }: HourlyAreaChartProps) => {
   const chartData = useMemo(() => {
-    const hourlyMap = new Map<
+    const hourMap = new Map<
       number,
       {
         hora: string;
@@ -124,25 +116,25 @@ const HourlyAreaChart = ({ data }: HourlyAreaChartProps) => {
 
       const hour = date.getHours();
 
-      if (!hourlyMap.has(hour)) {
-        hourlyMap.set(hour, {
+      const current =
+        hourMap.get(hour) ??
+        {
           hora: String(hour).padStart(2, "0"),
           llamadas: 0,
           contactos: 0,
-        });
-      }
-
-      const current = hourlyMap.get(hour)!;
+        };
 
       current.llamadas += 1;
 
       if (isContactoEfectivo(record)) {
         current.contactos += 1;
       }
+
+      hourMap.set(hour, current);
     }
 
-    return Array.from(hourlyMap.values()).sort(
-      (a, b) => Number(a.hora) - Number(b.hora)
+    return Array.from(hourMap.values()).sort((a, b) =>
+      a.hora.localeCompare(b.hora)
     );
   }, [data.rawRecords]);
 
@@ -155,7 +147,7 @@ const HourlyAreaChart = ({ data }: HourlyAreaChartProps) => {
         </h3>
 
         <p className="py-8 text-center text-sm text-muted-foreground">
-          No hay datos horarios disponibles para mostrar.
+          No hay datos horarios suficientes para construir la curva.
         </p>
       </div>
     );
@@ -178,7 +170,7 @@ const HourlyAreaChart = ({ data }: HourlyAreaChartProps) => {
           margin={{ top: 10, right: 10, left: -10, bottom: 0 }}
         >
           <defs>
-            <linearGradient id="gradLlamadas" x1="0" y1="0" x2="0" y2="1">
+            <linearGradient id="grad-llamadas" x1="0" y1="0" x2="0" y2="1">
               <stop
                 offset="0%"
                 stopColor="hsl(var(--primary))"
@@ -191,7 +183,7 @@ const HourlyAreaChart = ({ data }: HourlyAreaChartProps) => {
               />
             </linearGradient>
 
-            <linearGradient id="gradContactos" x1="0" y1="0" x2="0" y2="1">
+            <linearGradient id="grad-contactos" x1="0" y1="0" x2="0" y2="1">
               <stop
                 offset="0%"
                 stopColor="hsl(var(--success))"
@@ -227,9 +219,8 @@ const HourlyAreaChart = ({ data }: HourlyAreaChartProps) => {
             cursor={chartTooltipCursor}
             formatter={(value: number, name: string) => [
               value.toLocaleString("es-AR"),
-              name === "llamadas" ? "Llamadas" : "Contactos efectivos",
+              name === "llamadas" ? "Llamadas" : "Contactos",
             ]}
-            labelFormatter={(label) => `Hora ${label}:00`}
           />
 
           <Area
@@ -237,7 +228,7 @@ const HourlyAreaChart = ({ data }: HourlyAreaChartProps) => {
             dataKey="llamadas"
             stroke="hsl(var(--primary))"
             strokeWidth={2}
-            fill="url(#gradLlamadas)"
+            fill="url(#grad-llamadas)"
             animationDuration={900}
           />
 
@@ -246,7 +237,7 @@ const HourlyAreaChart = ({ data }: HourlyAreaChartProps) => {
             dataKey="contactos"
             stroke="hsl(var(--success))"
             strokeWidth={2}
-            fill="url(#gradContactos)"
+            fill="url(#grad-contactos)"
             animationDuration={1100}
           />
         </AreaChart>

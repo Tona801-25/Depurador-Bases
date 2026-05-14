@@ -1,102 +1,106 @@
-import { Treemap, ResponsiveContainer, Tooltip } from "recharts";
-import { chartTooltipStyle } from "./chartStyles";
+import { useMemo } from "react";
+import type { AnalysisResult } from "@shared/schema";
 
-const data = [
-  { name: "11", size: 28400, fill: "hsl(185, 80%, 50%)" },
-  { name: "351", size: 14200, fill: "hsl(185, 70%, 45%)" },
-  { name: "341", size: 11800, fill: "hsl(152, 60%, 45%)" },
-  { name: "261", size: 9200, fill: "hsl(38, 92%, 50%)" },
-  { name: "221", size: 7800, fill: "hsl(185, 60%, 40%)" },
-  { name: "381", size: 5400, fill: "hsl(270, 60%, 55%)" },
-  { name: "299", size: 3600, fill: "hsl(0, 72%, 51%)" },
-  { name: "362", size: 2900, fill: "hsl(185, 55%, 35%)" },
-  { name: "Otros", size: 4800, fill: "hsl(var(--muted-foreground))" },
-];
-
-const fmt = (n: number) => n.toLocaleString("es-AR");
-
-interface CustomNodeProps {
-  x?: number;
-  y?: number;
-  width?: number;
-  height?: number;
-  name?: string;
-  size?: number;
-  fill?: string;
+interface PrefijosTreemapProps {
+  data: AnalysisResult;
 }
 
-const CustomNode = (props: CustomNodeProps) => {
-  const { x = 0, y = 0, width = 0, height = 0, name = "", size = 0, fill = "" } = props;
-  const showLabel = width > 50 && height > 30;
-  const showValue = width > 80 && height > 50;
+interface TreemapItem {
+  prefijo: string;
+  total: number;
+  pct: number;
+  color: string;
+}
+
+const COLORS = [
+  "hsl(var(--primary))",
+  "hsl(var(--success))",
+  "hsl(var(--warning))",
+  "hsl(var(--chart-5))",
+  "hsl(var(--destructive))",
+  "hsl(185 60% 42%)",
+  "hsl(215 18% 58%)",
+];
+
+const PrefijosTreemap = ({ data }: PrefijosTreemapProps) => {
+  const items = useMemo<TreemapItem[]>(() => {
+    const prefijos = [...(data.prefijoDistribucion ?? [])]
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 8);
+
+    const total = prefijos.reduce((acc, item) => acc + item.total, 0);
+
+    if (total === 0) return [];
+
+    return prefijos.map((item, index) => ({
+      prefijo: item.prefijo,
+      total: item.total,
+      pct: (item.total / total) * 100,
+      color: COLORS[index % COLORS.length],
+    }));
+  }, [data.prefijoDistribucion]);
+
+  if (items.length === 0) {
+    return (
+      <div className="glass-card p-5 animate-slide-up hover-elevate">
+        <h3 className="mb-1 flex items-center gap-2 text-sm font-display font-semibold">
+          <span className="h-2 w-2 rounded-full bg-primary animate-pulse-glow" />
+          Treemap de prefijos
+        </h3>
+
+        <p className="py-8 text-center text-sm text-muted-foreground">
+          No hay datos de prefijos suficientes para construir el treemap.
+        </p>
+      </div>
+    );
+  }
 
   return (
-    <g>
-      <rect
-        x={x}
-        y={y}
-        width={width}
-        height={height}
-        style={{
-          fill,
-          stroke: "hsl(var(--background))",
-          strokeWidth: 2,
-          cursor: "pointer",
-          transition: "opacity 0.2s",
-        }}
-      />
-      {showLabel && (
-        <text
-          x={x + 8}
-          y={y + 18}
-          fill="hsl(var(--background))"
-          fontSize={12}
-          fontWeight={700}
-          fontFamily="Plus Jakarta Sans"
-        >
-          {name}
-        </text>
-      )}
-      {showValue && (
-        <text
-          x={x + 8}
-          y={y + 34}
-          fill="hsl(var(--background))"
-          fontSize={10}
-          opacity={0.85}
-          fontFamily="Inter"
-        >
-          {fmt(size)}
-        </text>
-      )}
-    </g>
+    <div className="glass-card p-5 animate-slide-up hover-elevate">
+      <h3 className="mb-1 flex items-center gap-2 text-sm font-display font-semibold">
+        <span className="h-2 w-2 rounded-full bg-primary animate-pulse-glow" />
+        Treemap de prefijos
+      </h3>
+
+      <p className="mb-4 text-xs text-muted-foreground">
+        Volumen relativo de ANIs por prefijo.
+      </p>
+
+      <div className="flex h-[300px] overflow-hidden rounded-xl border border-glass-border bg-background/30">
+        {items.map((item) => (
+          <div
+            key={item.prefijo}
+            className="group relative flex min-w-[70px] flex-col justify-between border-r border-background/50 p-3 transition-all hover:brightness-110"
+            style={{
+              flex: item.pct,
+              backgroundColor: item.color,
+            }}
+          >
+            <div>
+              <p className="text-sm font-display font-extrabold text-background">
+                {item.prefijo}
+              </p>
+
+              <p className="text-xs font-bold text-background/80">
+                {item.total.toLocaleString("es-AR")}
+              </p>
+            </div>
+
+            <p className="text-xs font-semibold text-background/80">
+              {item.pct.toFixed(1)}%
+            </p>
+
+            <span className="pointer-events-none absolute left-3 top-12 z-20 rounded-lg border border-background/20 bg-card px-2 py-1 text-xs text-card-foreground opacity-0 shadow-xl transition group-hover:opacity-100">
+              Prefijo {item.prefijo}
+              <br />
+              {item.total.toLocaleString("es-AR")} ANIs ·{" "}
+              {item.pct.toFixed(1)}%
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 };
-
-const PrefijosTreemap = () => (
-  <div className="glass-card p-5 animate-slide-up">
-    <h3 className="text-sm font-display font-semibold mb-1 flex items-center gap-2">
-      <span className="h-2 w-2 rounded-full bg-primary animate-pulse-glow" />
-      Treemap de prefijos
-    </h3>
-    <p className="text-xs text-muted-foreground mb-4">
-      Volumen relativo de ANIs por prefijo
-    </p>
-    <ResponsiveContainer width="100%" height={320}>
-      <Treemap
-        data={data}
-        dataKey="size"
-        stroke="hsl(var(--background))"
-        animationDuration={800}
-        content={<CustomNode />}
-      >
-        <Tooltip
-          contentStyle={chartTooltipStyle}
-          formatter={(v: number) => [fmt(v), "ANIs"]}
-        />
-      </Treemap>
-    </ResponsiveContainer>
-  </div>
-);
 
 export default PrefijosTreemap;

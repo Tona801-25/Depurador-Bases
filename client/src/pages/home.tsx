@@ -46,6 +46,11 @@ import {
   PieChart,
 } from "lucide-react";
 import FilterChips from "@/components/dashboard/filterChips";
+import ExportMenu from "@/components/dashboard/exportMenu";
+import HourlyAreaChart from "@/components/dashboard/hourlyAreaChart";
+import PrefijosTreemap from "@/components/dashboard/prefijosTreemap";
+import MiniMapaArgentina from "@/components/dashboard/miniMapArgentina";
+import InfoTooltip from "@/components/infoTooltip";
 
 export default function Home() {
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
@@ -360,7 +365,7 @@ export default function Home() {
     <div className="min-h-screen bg-background text-foreground">
       <Header />
 
-      <main className="mx-auto w-full max-w-[1320px] px-5 py-6">
+      <main className="mx-auto w-full max-w-[1320px] px-5 py-6" data-export-root>
         <section className="mb-8">
           <FileUpload
             onFilesSelected={handleFilesSelected}
@@ -439,141 +444,191 @@ export default function Home() {
             </TabsList>
 
             <TabsContent value="resumen" className="space-y-6">
-              <div className="pt-1 text-center">
-                <h2 className="gradient-text text-center text-base font-display font-bold">
-                  Resumen ejecutivo de calidad de base
-                </h2>
-                <p className="mt-2 text-sm text-muted-foreground">
-                  Vista inicial para entender rápidamente el estado general de la base.
-                </p>
-              </div>
+              <div className="flex flex-col gap-3 pt-1 sm:flex-row sm:items-start sm:justify-between">
+                <div className="text-center sm:text-left">
+                  <h2 className="gradient-text text-base font-display font-bold">
+                    Resumen ejecutivo de calidad de base
+                  </h2>
 
-              {rankedBases.length > 0 && (
-                <>
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
-                  <KPICard
-                    title="ANIs totales"
-                    value={analysisResult.totalAnis.toLocaleString("es-AR")}
-                    icon={Users}
-                    sparklineData={kpiSparklineData.total}
-                    sparklineColor="hsl(var(--primary))"
-                  />
-
-                  <KPICard
-                    title="ANIs con contacto efectivo"
-                    value={analysisResult.anisContactados.toLocaleString("es-AR")}
-                    icon={Phone}
-                    variant="success"
-                    sparklineData={kpiSparklineData.contactados}
-                    sparklineColor="hsl(var(--success))"
-                  />
-
-                  <KPICard
-                    title="ANIs con baja recontactabilidad"
-                    value={analysisResult.anisADepurar.toLocaleString("es-AR")}
-                    icon={Target}
-                    variant="warning"
-                    sparklineData={kpiSparklineData.depurar}
-                    sparklineColor="hsl(var(--warning))"
-                  />
-
-                  <KPICard
-                    title="% Contacto efectivo"
-                    value={`${analysisResult.pctAnswer.toFixed(1)}%`}
-                    icon={Phone}
-                    variant="success"
-                    sparklineData={kpiSparklineData.pctAnswer}
-                    sparklineColor="hsl(var(--success))"
-                  />
-
-                  <KPICard
-                    title="% No contacto"
-                    value={`${analysisResult.pctNoAnswer.toFixed(1)}%`}
-                    icon={PhoneOff}
-                    variant="danger"
-                    sparklineData={kpiSparklineData.pctNoAnswer}
-                    sparklineColor="hsl(var(--destructive))"
-                  />
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    Vista inicial para entender rápidamente el estado general de la base.
+                  </p>
                 </div>
 
-                  <FilterChips data={analysisResult} />
+                <div className="flex justify-center sm:justify-end">
+                  <ExportMenu data={analysisResult} />
+                </div>
+              </div>
 
-                  <EffectivenessRadial data={analysisResult} />
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
+                <KPICard
+                  title="Bases analizadas"
+                  value={resumenBases.total}
+                  icon={Layers3}
+                  infoSide="bottom"
+                  info="Cantidad de bases distintas detectadas dentro del archivo cargado. Permite comparar calidad entre bases, campañas, segmentos o lotes de origen."
+                />
 
-                  <Card className="glass-card">
-                    <CardHeader className="pb-2">
-                      <CardTitle className="text-sm font-display font-bold">
-                        Ranking de calidad de bases
-                      </CardTitle>
-                    </CardHeader>
+                <KPICard
+                  title="Bases utilizables"
+                  value={resumenBases.utilizables}
+                  icon={CheckCircle2}
+                  variant="success"
+                  infoSide="bottom"
+                  info="Bases con indicadores suficientes para seguir gestionando. Generalmente combinan buen volumen, contacto efectivo aceptable y bajo nivel de señales negativas."
+                />
 
-                    <CardContent className="space-y-3">
-                      {rankedBases.slice(0, 5).map((base: BaseInsight) => (
-                        <div
-                          key={base.base}
-                          className="soft-cyan-hover flex flex-col gap-3 rounded-xl border border-border bg-card p-4 lg:flex-row lg:items-center lg:justify-between"
-                        >
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <p className="truncate text-sm font-semibold text-foreground">
-                                {base.base}
-                              </p>
-                              {renderBadge(base.recomendacion)}
+                <KPICard
+                  title="Bases a revisar"
+                  value={resumenBases.revisar}
+                  icon={AlertTriangle}
+                  variant="warning"
+                  infoSide="bottom"
+                  info="Bases que no deberían descartarse automáticamente, pero requieren análisis antes de seguir insistiendo. Pueden tener baja contactabilidad, mucho buzón, pocos registros o muestra poco confiable."
+                />
+
+                <KPICard
+                  title="Bases a descartar"
+                  value={resumenBases.descartar}
+                  icon={XCircle}
+                  variant="danger"
+                  infoSide="bottom"
+                  info="Bases con señales fuertes de baja calidad o bajo potencial operativo. Ayuda a evitar consumo innecesario de intentos, tiempo y recursos del discador."
+                />
+
+                <KPICard
+                  title="Mejor base"
+                  value={resumenBases.mejorBase}
+                  icon={TrendingUp}
+                  infoSide="bottom"
+                  info="Base con mejor score de calidad según los criterios del depurador. El score combina variables como contacto efectivo, buzón, inválidos, intentos promedio y confiabilidad de muestra."
+                />
+              </div>
+
+              <EffectivenessRadial data={analysisResult} />
+
+              <FilterChips data={analysisResult} />
+
+              {rankedBases.length > 0 && (
+                <Card className="glass-card">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="flex items-center gap-2 text-sm font-display font-bold">
+                      Ranking de calidad de bases
+                      <InfoTooltip
+                        side="right"
+                        text="Ordena las bases según su calidad operativa. El ranking considera contacto efectivo, volumen de ANIs, buzón, inválidos, intentos promedio y confiabilidad de la muestra. Sirve para decidir qué base priorizar, revisar o descartar."
+                      />
+                    </CardTitle>
+                  </CardHeader>
+
+                  <CardContent className="space-y-3">
+                    {rankedBases.slice(0, 5).map((base: BaseInsight) => (
+                      <div
+                        key={base.base}
+                        className="soft-cyan-hover flex flex-col gap-3 rounded-xl border border-border bg-card p-4 lg:flex-row lg:items-center lg:justify-between"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="truncate text-sm font-semibold text-foreground">
+                              {base.base}
+                            </p>
+
+                            {renderBadge(base.recomendacion)}
 
                             {base.confiabilidadMuestra && (
                               <span className="rounded-full border border-border bg-secondary/60 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
                                 Muestra {base.confiabilidadMuestra.toLowerCase()}
                               </span>
                             )}
+                          </div>
+
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            Registros: {base.totalRegistros.toLocaleString("es-AR")} · ANIs:{" "}
+                            {base.totalAnis.toLocaleString("es-AR")} · Intentos prom.:{" "}
+                            {base.intentosPromedio.toFixed(2)}
+                          </p>
+
+                          {base.advertenciaMuestra &&
+                            base.confiabilidadMuestra !== "ALTA" && (
+                              <p className="mt-1 text-[11px] text-warning">
+                                {base.advertenciaMuestra}
+                              </p>
+                            )}
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4 lg:min-w-[500px]">
+                          <div className="soft-cyan-hover rounded-lg border border-border bg-background px-3 py-2">
+                            <div className="flex items-center gap-1.5">
+                              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                                Contacto efectivo
+                              </p>
+
+                              <InfoTooltip
+                                side="top"
+                                text="Porcentaje de ANIs de esa base que lograron contacto efectivo. A mayor valor, mejor potencial operativo tiene la base."
+                              />
                             </div>
 
-                            <p className="mt-1 text-xs text-muted-foreground">
-                              Registros: {base.totalRegistros.toLocaleString("es-AR")} ·
-                              ANIs: {base.totalAnis.toLocaleString("es-AR")} ·
-                              Intentos prom.: {base.intentosPromedio.toFixed(2)}
+                            <p className="mt-1 font-semibold text-success">
+                              {(base.pctContactoEfectivo * 100).toFixed(1)}%
                             </p>
                           </div>
 
-                          {base.advertenciaMuestra && base.confiabilidadMuestra !== "ALTA" && (
-                            <p className="mt-1 text-[11px] text-warning">
-                              {base.advertenciaMuestra}
+                          <div className="soft-cyan-hover rounded-lg border border-border bg-background px-3 py-2">
+                            <div className="flex items-center gap-1.5">
+                              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                                Buzón
+                              </p>
+
+                              <InfoTooltip
+                                side="top"
+                                text="Porcentaje de ANIs que derivaron en buzón o contestador. Un valor alto puede indicar baja disponibilidad, mala calidad de datos o necesidad de ajustar horarios y reintentos."
+                              />
+                            </div>
+
+                            <p className="mt-1 font-semibold text-warning">
+                              {(base.pctBuzon * 100).toFixed(1)}%
                             </p>
-                          )}
+                          </div>
 
-                          <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4 lg:min-w-[500px]">
-                            <div className="soft-cyan-hover rounded-lg border border-border bg-background px-3 py-2">
-                              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Contacto efectivo</p>
-                              <p className="mt-1 font-semibold text-success">
-                                {(base.pctContactoEfectivo * 100).toFixed(1)}%
+                          <div className="soft-cyan-hover rounded-lg border border-border bg-background px-3 py-2">
+                            <div className="flex items-center gap-1.5">
+                              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                                Inválidos
                               </p>
+
+                              <InfoTooltip
+                                side="top"
+                                text="Porcentaje de registros con señales inválidas, rechazadas o no gestionables. Si este valor es alto, conviene depurar la base antes de seguir marcando."
+                              />
                             </div>
 
-                            <div className="soft-cyan-hover rounded-lg border border-border bg-background px-3 py-2">
-                              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Buzón</p>
-                              <p className="mt-1 font-semibold text-warning">
-                                {(base.pctBuzon * 100).toFixed(1)}%
+                            <p className="mt-1 font-semibold text-destructive">
+                              {(base.pctInvalidos * 100).toFixed(1)}%
+                            </p>
+                          </div>
+
+                          <div className="soft-cyan-hover rounded-lg border border-border bg-background px-3 py-2">
+                            <div className="flex items-center gap-1.5">
+                              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                                Score ajustado
                               </p>
+
+                              <InfoTooltip
+                                side="top"
+                                text="Indicador resumen de calidad de la base. Combina métricas positivas y negativas para facilitar la decisión operativa. Cuanto más alto, mejor calidad relativa."
+                              />
                             </div>
 
-                            <div className="soft-cyan-hover rounded-lg border border-border bg-background px-3 py-2">
-                              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Inválidos</p>
-                              <p className="mt-1 font-semibold text-destructive">
-                                {(base.pctInvalidos * 100).toFixed(1)}%
-                              </p>
-                            </div>
-
-                            <div className="soft-cyan-hover rounded-lg border border-border bg-background px-3 py-2">
-                              <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Score ajustado</p>
-                              <p className="mt-1 font-semibold text-foreground">
-                                {base.scoreCalidad.toFixed(2)}
-                              </p>
-                            </div>
+                            <p className="mt-1 font-semibold text-foreground">
+                              {base.scoreCalidad.toFixed(2)}
+                            </p>
                           </div>
                         </div>
-                      ))}
-                    </CardContent>
-                  </Card>
-                </>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
               )}
             </TabsContent>
 
@@ -582,8 +637,9 @@ export default function Home() {
                 <h2 className="gradient-text text-center text-base font-display font-bold">
                   Gráficos y comportamiento de la base
                 </h2>
+
                 <p className="mt-2 text-sm text-muted-foreground">
-                  Análisis visual de estados, TAGs, contactación e intentos.
+                  Análisis visual de estados, TAGs, contactación, intentos, prefijos y cobertura regional.
                 </p>
               </div>
 
@@ -593,7 +649,14 @@ export default function Home() {
               </div>
 
               <CurvaContactacionChart data={analysisResult} />
+
               <IntentosDistribucionChart data={analysisResult} />
+
+              <HourlyAreaChart data={analysisResult} />
+
+              <PrefijosTreemap data={analysisResult} />
+
+              <MiniMapaArgentina data={analysisResult} />
             </TabsContent>
 
             <TabsContent value="turnos" className="space-y-6">
@@ -602,6 +665,16 @@ export default function Home() {
 
             <TabsContent value="prefijos-hora" className="space-y-6">
               <PrefijosPorHoraTab data={analysisResult} />
+            </TabsContent>
+
+            <TabsContent value="depuracion" className="space-y-6">
+              <DepuracionTab
+                data={analysisResult}
+                onExportResumen={handleExportResumen}
+                onExportFiltrado={handleExportFiltrado}
+                onExportBaseFinal={handleExportBaseFinal}
+                onExportPorAccion={handleExportPorAccion}
+              />
             </TabsContent>
 
             <TabsContent value="depuracion" className="space-y-6">

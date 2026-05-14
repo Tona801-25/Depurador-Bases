@@ -6,7 +6,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import Sparkline from "@/components/dashboard/sparkline";
-
+import InfoTooltip from "@/components/infoTooltip";
 interface KPICardProps {
   title: string;
   value: string | number;
@@ -20,10 +20,9 @@ interface KPICardProps {
   variant?: "default" | "success" | "warning" | "danger";
   className?: string;
   testId?: string;
-  /** índice opcional para animación stagger (0-5) */
   index?: number;
-
-  /** Mini gráfico decorativo opcional */
+  info?: string;
+  infoSide?: "top" | "right" | "bottom" | "left";
   sparklineData?: number[];
   sparklineColor?: string;
 }
@@ -32,6 +31,8 @@ export function KPICard({
   title,
   value,
   subtitle,
+  info,
+  infoSide = "top",
   icon: Icon,
   trend,
   variant = "default",
@@ -127,9 +128,13 @@ export function KPICard({
 
       <div className="relative z-10 flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <p className="mb-2 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-            {title}
-          </p>
+          <div className="mb-2 flex items-center gap-1.5">
+            <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+              {title}
+            </p>
+
+            {info && <InfoTooltip text={info} side={infoSide} />}
+          </div>
 
           <div className="flex items-baseline gap-2">
             <h3 className="truncate text-2xl font-display font-extrabold tabular-nums text-foreground">
