@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { KPICard } from "@/components/kpi-card";
 import { DataTable, type Column } from "@/components/data-table";
 import { TagBadge } from "@/components/tag-badge";
+import BeforeAfterComparator from "@/components/dashboard/beforeAfterComparator";
 import {
   Download,
   X,
@@ -304,6 +305,8 @@ export function DepuracionTab({
 
   return (
     <div className="space-y-6">
+      <BeforeAfterComparator data={data} />
+
       <div className="mb-6 text-center">
         <h2 className="section-title">
           <span className="dot-indicator bg-[hsl(var(--chart-5))]" />
