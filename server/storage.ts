@@ -371,12 +371,19 @@ function getRangoHorario(dateStr?: string): string {
 
   const h = d.getHours();
 
+  if (h < 9) return "Antes de 09:00";
   if (h >= 9 && h < 11) return "09:00-11:00";
   if (h >= 11 && h < 13) return "11:00-13:00";
   if (h >= 13 && h < 15) return "13:00-15:00";
   if (h >= 15 && h < 17) return "15:00-17:00";
   if (h >= 17 && h < 19) return "17:00-19:00";
-  return "Fuera de rango";
+  if (h >= 19 && h < 21) return "19:00-21:00";
+
+  return "Después de 21:00";
+}
+
+function isFranjaOperativaValida(franja: string): boolean {
+  return !["Sin hora", "Antes de 09:00", "Después de 21:00"].includes(franja);
 }
 
 function getTurno(dateStr?: string): string {
@@ -471,6 +478,8 @@ function getMejorFranja(calls: CallRecord[]): string {
     }
   }
 
+  const minMuestra = Math.min(100, Math.max(10, Math.round(calls.length * 0.001)));
+
   const ranked = Object.entries(franjaStats)
     .map(([franja, stats]) => ({
       franja,
@@ -483,7 +492,11 @@ function getMejorFranja(calls: CallRecord[]): string {
       return b.contacto - a.contacto;
     });
 
-  return ranked[0]?.franja || "Sin hora";
+  const rankedOperativas = ranked.filter(
+    (item) => isFranjaOperativaValida(item.franja) && item.total >= minMuestra
+  );
+
+  return rankedOperativas[0]?.franja || ranked[0]?.franja || "Sin hora";
 }
 
 function buildANIContext(
@@ -776,58 +789,197 @@ function buildResumenEjecutivo(
     { total: number; contactoEfectivo: number; noContacto: number }
   >
 ) {
-  const totalAnis = aniSummaries.length || 1;
+  const totalAnisReal = aniSummaries.length;
+  const totalAnis = totalAnisReal || 1;
+
+  const tagsADepurar = ["INVALIDO", "SOLO_BUZON", "NO_ATIENDE", "RECHAZA"];
 
   const aDepurar = aniSummaries.filter((s) =>
-    ["INVALIDO", "SOLO_BUZON", "NO_ATIENDE", "RECHAZA"].includes(s.tagTelefono)
+    tagsADepurar.includes(s.tagTelefono)
   ).length;
 
   const altaPrioridad = aniSummaries.filter((s) => s.prioridad === "ALTA").length;
   const saturados = aniSummaries.filter((s) => s.saturado === true).length;
+  const contactados = aniSummaries.filter((s) => s.intentosAnswerAgent > 0).length;
 
   const accionMap: Record<string, number> = {};
+  const tagMap: Record<string, number> = {};
+  const estadoMap: Record<string, number> = {};
+
   aniSummaries.forEach((s) => {
     const accion = s.accionSugerida || "SIN_ACCION";
     accionMap[accion] = (accionMap[accion] || 0) + 1;
+
+    const tag = s.tagTelefono || "SIN_TAG";
+    tagMap[tag] = (tagMap[tag] || 0) + 1;
+
+    const estado = s.ultimoEstadoNormalizado || "SIN_ESTADO";
+    estadoMap[estado] = (estadoMap[estado] || 0) + 1;
   });
 
   const accionDominante =
     Object.entries(accionMap).sort((a, b) => b[1] - a[1])[0]?.[0] || "-";
 
+  const tagDominante =
+    Object.entries(tagMap).sort((a, b) => b[1] - a[1])[0]?.[0] || "-";
+
+  const estadoDominante =
+    Object.entries(estadoMap).sort((a, b) => b[1] - a[1])[0]?.[0] || "-";
+
   const bestBase = [...baseInsights].sort((a, b) => b.scoreCalidad - a.scoreCalidad)[0];
   const worstBase = [...baseInsights].sort((a, b) => a.scoreCalidad - b.scoreCalidad)[0];
 
-  const franjaRanked = Object.entries(franjaDistribucion)
-    .map(([franja, stats]) => ({
-      franja,
-      total: stats.total,
-      contactoPct: safePct(stats.contactoEfectivo, stats.total),
-    }))
-    .sort((a, b) => b.contactoPct - a.contactoPct);
+  const totalRegistrosFranja = Object.values(franjaDistribucion).reduce(
+  (acc, stats) => acc + stats.total,
+  0
+);
 
-  const bestFranja = franjaRanked[0]?.franja || "-";
-  const worstFranja = franjaRanked[franjaRanked.length - 1]?.franja || "-";
+const minMuestraFranja = Math.min(
+  100,
+  Math.max(10, Math.round(totalRegistrosFranja * 0.001))
+);
+
+const franjaRanked = Object.entries(franjaDistribucion)
+  .map(([franja, stats]) => ({
+    franja,
+    total: stats.total,
+    contactoPct: safePct(stats.contactoEfectivo, stats.total),
+    noContactoPct: safePct(stats.noContacto, stats.total),
+  }))
+  .sort((a, b) => {
+    if (b.contactoPct !== a.contactoPct) {
+      return b.contactoPct - a.contactoPct;
+    }
+
+    return b.total - a.total;
+  });
+
+const franjaRankedOperativas = franjaRanked.filter(
+  (item) =>
+    isFranjaOperativaValida(item.franja) &&
+    item.total >= minMuestraFranja
+);
+
+const bestFranjaData = franjaRankedOperativas[0] || franjaRanked[0];
+
+const worstFranjaData =
+  [...franjaRankedOperativas].sort((a, b) => {
+    if (b.noContactoPct !== a.noContactoPct) {
+      return b.noContactoPct - a.noContactoPct;
+    }
+
+    return b.total - a.total;
+  })[0] ||
+  [...franjaRanked].sort((a, b) => {
+    if (b.noContactoPct !== a.noContactoPct) {
+      return b.noContactoPct - a.noContactoPct;
+    }
+
+    return b.total - a.total;
+  })[0];
+
+const bestFranja = bestFranjaData?.franja || "-";
+const worstFranja = worstFranjaData?.franja || "-";
 
   const porcentajeADepurar = safePct(aDepurar, totalAnis);
   const porcentajeAltaPrioridad = safePct(altaPrioridad, totalAnis);
   const porcentajeSaturados = safePct(saturados, totalAnis);
+  const porcentajeContactados = safePct(contactados, totalAnis);
 
+  let nivelCalidadGeneral = "Media";
+  let semaforoCalidad: "VERDE" | "AMARILLO" | "ROJO" = "AMARILLO";
   let diagnosticoGeneral = "Base equilibrada, con margen operativo razonable.";
   let focoPrincipal = "Optimizar reintentos según score y mejor franja.";
+  let principalProblemaDetectado = "No se detecta un único problema crítico dominante.";
+  let riesgoOperativo = "Riesgo moderado de pérdida de productividad si no se segmenta la gestión.";
+  let accionRecomendada = "Priorizar los ANI con mejor score y revisar los casos con baja respuesta.";
 
-  if (porcentajeADepurar >= 35) {
+  if (porcentajeADepurar >= 45) {
+    nivelCalidadGeneral = "Baja";
+    semaforoCalidad = "ROJO";
     diagnosticoGeneral =
-      "La base presenta un nivel alto de desgaste y depuración pendiente.";
-    focoPrincipal = "Reducir intentos improductivos y excluir ANI de bajo valor.";
-  } else if (porcentajeSaturados >= 20) {
+      "La base presenta un nivel alto de desgaste y requiere depuración antes de seguir insistiendo.";
+    focoPrincipal =
+      "Reducir intentos improductivos, excluir ANI de bajo valor y conservar solo segmentos trabajables.";
+    principalProblemaDetectado =
+      "Alta proporción de ANIs clasificados para depuración.";
+    riesgoOperativo =
+      "Alto riesgo de consumir tiempo operativo en registros con baja probabilidad de contacto.";
+    accionRecomendada =
+      "Depurar la base antes de volver a marcar y priorizar únicamente los segmentos con mejor score.";
+  } else if (porcentajeSaturados >= 25) {
+    nivelCalidadGeneral = "Media baja";
+    semaforoCalidad = "ROJO";
     diagnosticoGeneral =
-      "La base muestra presión operativa alta por saturación reciente.";
-    focoPrincipal = "Enfriar ANI saturados y redistribuir llamados por franja.";
+      "La base muestra presión operativa alta por saturación reciente de intentos.";
+    focoPrincipal =
+      "Enfriar ANIs saturados y redistribuir llamados hacia mejores franjas horarias.";
+    principalProblemaDetectado =
+      "Concentración relevante de ANIs saturados por exceso de intentos recientes.";
+    riesgoOperativo =
+      "Riesgo alto de quemar base por insistencia sobre contactos que todavía no deberían remarcarse.";
+    accionRecomendada =
+      "Pausar temporalmente los ANIs saturados y reintentar luego con una estrategia por franja.";
   } else if (porcentajeAltaPrioridad >= 25) {
+    nivelCalidadGeneral = "Media";
+    semaforoCalidad = "AMARILLO";
     diagnosticoGeneral =
-      "Existe una porción relevante de ANI con alta prioridad de tratamiento.";
-    focoPrincipal = "Atacar primero los ANI con mejor score y acción sugerida clara.";
+      "Existe una porción relevante de ANIs con alta prioridad de tratamiento.";
+    focoPrincipal =
+      "Atacar primero los ANIs con mejor score y acción sugerida clara.";
+    principalProblemaDetectado =
+      "Hay muchos registros que requieren gestión prioritaria para no perder oportunidad comercial.";
+    riesgoOperativo =
+      "Riesgo medio de desaprovechar contactos trabajables si no se ordena la gestión.";
+    accionRecomendada =
+      "Ordenar la base por prioridad y trabajar primero los ANIs con mayor probabilidad de contacto.";
+  } else if (porcentajeContactados >= 20 && porcentajeADepurar < 30) {
+    nivelCalidadGeneral = "Buena";
+    semaforoCalidad = "VERDE";
+    diagnosticoGeneral =
+      "La base presenta buen nivel relativo de contacto efectivo y volumen depurable controlado.";
+    focoPrincipal =
+      "Sostener la estrategia actual, reforzando las mejores franjas y bases con mayor score.";
+    principalProblemaDetectado =
+      "No se observa un problema crítico de calidad; el foco debe estar en priorización y eficiencia.";
+    riesgoOperativo =
+      "Riesgo bajo, siempre que se mantenga control sobre saturación y reintentos.";
+    accionRecomendada =
+      "Priorizar las bases y franjas de mejor rendimiento para maximizar productividad.";
   }
+
+  const formatPct = (value: number) => `${value.toFixed(1)}%`;
+
+  const lecturaEjecutiva =
+    `${diagnosticoGeneral} El TAG dominante es ${tagDominante}, ` +
+    `el estado dominante es ${estadoDominante} y la acción dominante sugerida es ${accionDominante}.`;
+
+  const interpretacionCalidad =
+    `Nivel de calidad general: ${nivelCalidadGeneral}. ` +
+    `El ${formatPct(porcentajeADepurar)} de los ANIs queda dentro de categorías de depuración.`;
+
+  const interpretacionContacto =
+    `El ${formatPct(porcentajeContactados)} de los ANIs tuvo al menos un contacto efectivo ANSWER-AGENT. ` +
+    `La mejor franja detectada es ${bestFranja}.`;
+
+  const interpretacionDepuracion =
+    `La acción dominante es ${accionDominante}. ` +
+    `Esto indica dónde debería concentrarse la limpieza o segmentación de la base antes de remarcar.`;
+
+  const interpretacionHorario =
+    `La franja con mejor respuesta es ${bestFranja}, mientras que la franja más débil o de mayor no contacto es ${worstFranja}.`;
+
+  const lecturaPresentacion = [
+    `La base analizada presenta un nivel de calidad general ${nivelCalidadGeneral.toLowerCase()}.`,
+    principalProblemaDetectado,
+    `La mejor base para priorizar es ${bestBase?.base || "-"}, con un score de calidad de ${
+      bestBase?.scoreCalidad?.toFixed(1) || "0.0"
+    }.`,
+    `La base que requiere mayor revisión es ${worstBase?.base || "-"}, por menor rendimiento relativo.`,
+    `El horario de mejor respuesta es ${bestFranja}.`,
+    riesgoOperativo,
+    accionRecomendada,
+  ];
 
   return {
     diagnosticoGeneral,
@@ -840,6 +992,20 @@ function buildResumenEjecutivo(
     porcentajeAltaPrioridad,
     porcentajeSaturados,
     accionDominante,
+
+    nivelCalidadGeneral,
+    principalProblemaDetectado,
+    estadoDominante,
+    tagDominante,
+    riesgoOperativo,
+    accionRecomendada,
+    lecturaEjecutiva,
+    lecturaPresentacion,
+    interpretacionCalidad,
+    interpretacionContacto,
+    interpretacionDepuracion,
+    interpretacionHorario,
+    semaforoCalidad,
   };
 }
 
@@ -896,16 +1062,58 @@ function buildRecomendacionesOperativas(
     });
   }
 
-  const franjas = Object.entries(franjaDistribucion)
-    .map(([franja, stats]) => ({
-      franja,
-      total: stats.total,
-      contactoPct: safePct(stats.contactoEfectivo, stats.total),
-    }))
-    .sort((a, b) => b.contactoPct - a.contactoPct);
+const totalRegistrosFranja = Object.values(franjaDistribucion).reduce(
+  (acc, stats) => acc + stats.total,
+  0
+);
 
-  const mejorFranja = franjas[0];
-  const peorFranja = franjas[franjas.length - 1];
+const minMuestraFranja = Math.min(
+  100,
+  Math.max(10, Math.round(totalRegistrosFranja * 0.001))
+);
+
+const franjasNoOperativas = [
+  "Sin hora",
+  "Fuera de rango",
+  "Antes de 09:00",
+  "Después de 21:00",
+];
+
+const franjas = Object.entries(franjaDistribucion)
+  .map(([franja, stats]) => ({
+    franja,
+    total: stats.total,
+    contactoPct: safePct(stats.contactoEfectivo, stats.total),
+    noContactoPct: safePct(stats.noContacto, stats.total),
+  }))
+  .sort((a, b) => {
+    if (b.contactoPct !== a.contactoPct) return b.contactoPct - a.contactoPct;
+    return b.total - a.total;
+  });
+
+const franjasOperativas = franjas.filter(
+  (item) =>
+    !franjasNoOperativas.includes(item.franja) &&
+    item.total >= minMuestraFranja
+);
+
+const mejorFranja = franjasOperativas[0] || franjas[0];
+
+const peorFranja =
+  [...franjasOperativas].sort((a, b) => {
+    if (b.noContactoPct !== a.noContactoPct) {
+      return b.noContactoPct - a.noContactoPct;
+    }
+
+    return b.total - a.total;
+  })[0] ||
+  [...franjas].sort((a, b) => {
+    if (b.noContactoPct !== a.noContactoPct) {
+      return b.noContactoPct - a.noContactoPct;
+    }
+
+    return b.total - a.total;
+  })[0];
 
   if (mejorFranja) {
     recomendaciones.push({
@@ -1230,6 +1438,7 @@ aniGroups.forEach((calls, ani) => {
   const baseInsights = buildBaseInsights(records, aniSummaries);
   const depuracionInsights = buildDepuracionInsights(aniSummaries);
   const franjaDistribucion = buildFranjaDistribucion(records);
+
   const resumenEjecutivo = buildResumenEjecutivo(
     aniSummaries,
     baseInsights,
