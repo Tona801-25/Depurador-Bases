@@ -51,6 +51,7 @@ import HourlyAreaChart from "@/components/dashboard/hourlyAreaChart";
 import PrefijosTreemap from "@/components/dashboard/prefijosTreemap";
 import MiniMapaArgentina from "@/components/dashboard/miniMapArgentina";
 import InfoTooltip from "@/components/infoTooltip";
+import AnalysisInsights from "@/components/dashboard/analysisInsights";
 
 export default function Home() {
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
@@ -507,6 +508,8 @@ export default function Home() {
 
               <EffectivenessRadial data={analysisResult} />
 
+              <AnalysisInsights data={analysisResult} />
+
               <FilterChips data={analysisResult} />
 
               {rankedBases.length > 0 && (
@@ -665,16 +668,6 @@ export default function Home() {
 
             <TabsContent value="prefijos-hora" className="space-y-6">
               <PrefijosPorHoraTab data={analysisResult} />
-            </TabsContent>
-
-            <TabsContent value="depuracion" className="space-y-6">
-              <DepuracionTab
-                data={analysisResult}
-                onExportResumen={handleExportResumen}
-                onExportFiltrado={handleExportFiltrado}
-                onExportBaseFinal={handleExportBaseFinal}
-                onExportPorAccion={handleExportPorAccion}
-              />
             </TabsContent>
 
             <TabsContent value="depuracion" className="space-y-6">

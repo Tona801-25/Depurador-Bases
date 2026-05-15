@@ -1,11 +1,5 @@
 import { Info } from "lucide-react";
-
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 
 interface InfoTooltipProps {
   text: string;
@@ -13,19 +7,19 @@ interface InfoTooltipProps {
   className?: string;
 }
 
-const InfoTooltip = ({ text, side = "top", className }: InfoTooltipProps) => {
+const InfoTooltip = ({ text, side = "right", className }: InfoTooltipProps) => {
   return (
-    <TooltipProvider delayDuration={120}>
-      <Tooltip>
-        <TooltipTrigger asChild>
+    <TooltipPrimitive.Provider delayDuration={120}>
+      <TooltipPrimitive.Root>
+        <TooltipPrimitive.Trigger asChild>
           <button
             type="button"
             onClick={(event) => event.stopPropagation()}
             className={[
               "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full",
-              "border border-border/80 bg-background/70 text-muted-foreground",
+              "border border-primary/40 bg-background/80 text-primary",
               "transition-all duration-200",
-              "hover:border-primary/70 hover:bg-primary/15 hover:text-primary",
+              "hover:border-primary hover:bg-primary/15 hover:text-primary",
               "focus:outline-none focus:ring-2 focus:ring-primary/40",
               className,
             ]
@@ -35,30 +29,46 @@ const InfoTooltip = ({ text, side = "top", className }: InfoTooltipProps) => {
           >
             <Info className="h-3 w-3" />
           </button>
-        </TooltipTrigger>
+        </TooltipPrimitive.Trigger>
 
-        <TooltipContent
-          side={side}
-          sideOffset={8}
-          avoidCollisions
-          collisionPadding={16}
-          className="
-            z-[99999]
-            max-w-[300px]
-            rounded-xl
-            border border-primary/30
-            bg-popover/95
-            px-3 py-2
-            text-xs leading-relaxed
-            text-popover-foreground
-            shadow-[0_12px_40px_-10px_hsl(var(--primary)/0.55)]
-            backdrop-blur-md
-          "
-        >
-          {text}
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+        <TooltipPrimitive.Portal>
+          <TooltipPrimitive.Content
+            side={side}
+            sideOffset={10}
+            collisionPadding={18}
+            avoidCollisions
+            className="
+              z-[999999]
+              max-w-[340px]
+              rounded-xl
+              border border-primary/40
+              bg-[#10151d]
+              px-3 py-2
+              text-xs
+              font-medium
+              leading-relaxed
+              text-white
+              shadow-[0_16px_45px_-12px_hsl(var(--primary)/0.75)]
+              backdrop-blur-md
+              animate-in
+              fade-in-0
+              zoom-in-95
+              data-[state=closed]:animate-out
+              data-[state=closed]:fade-out-0
+              data-[state=closed]:zoom-out-95
+              data-[side=bottom]:slide-in-from-top-2
+              data-[side=left]:slide-in-from-right-2
+              data-[side=right]:slide-in-from-left-2
+              data-[side=top]:slide-in-from-bottom-2
+            "
+          >
+            {text}
+
+            <TooltipPrimitive.Arrow className="fill-[#10151d]" />
+          </TooltipPrimitive.Content>
+        </TooltipPrimitive.Portal>
+      </TooltipPrimitive.Root>
+    </TooltipPrimitive.Provider>
   );
 };
 

@@ -119,6 +119,27 @@ export const resumenEjecutivoSchema = z.object({
   porcentajeAltaPrioridad: z.number(),
   porcentajeSaturados: z.number(),
   accionDominante: z.string(),
+
+  // Diagnóstico ejecutivo ampliado
+  nivelCalidadGeneral: z.string().optional(),
+  principalProblemaDetectado: z.string().optional(),
+  estadoDominante: z.string().optional(),
+  tagDominante: z.string().optional(),
+  riesgoOperativo: z.string().optional(),
+  accionRecomendada: z.string().optional(),
+
+  // Lectura lista para mostrar en pantalla o presentación
+  lecturaEjecutiva: z.string().optional(),
+  lecturaPresentacion: z.array(z.string()).optional(),
+
+  // Análisis comercial/operativo explicado
+  interpretacionCalidad: z.string().optional(),
+  interpretacionContacto: z.string().optional(),
+  interpretacionDepuracion: z.string().optional(),
+  interpretacionHorario: z.string().optional(),
+
+  // Semáforo general para visuales
+  semaforoCalidad: z.enum(["VERDE", "AMARILLO", "ROJO"]).optional(),
 });
 
 export type ResumenEjecutivo = z.infer<typeof resumenEjecutivoSchema>;

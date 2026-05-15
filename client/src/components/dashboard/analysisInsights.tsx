@@ -1,8 +1,24 @@
-import { AlertTriangle, CheckCircle2, Lightbulb, TrendingUp } from "lucide-react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Lightbulb,
+  TrendingUp,
+} from "lucide-react";
+
 import type { AnalysisResult } from "@shared/schema";
 
 interface AnalysisInsightsProps {
   data: AnalysisResult;
+}
+
+type InsightTone = "default" | "success" | "warning" | "danger";
+
+interface InsightItem {
+  title: string;
+  icon: typeof Lightbulb;
+  tone: InsightTone;
+  value: string;
+  description: string;
 }
 
 function getTopEntry(record?: Record<string, number>) {
@@ -13,11 +29,15 @@ function getTopEntry(record?: Record<string, number>) {
   return entries.sort((a, b) => b[1] - a[1])[0];
 }
 
-function getRiskLevel(pctNoAnswer: number, pctAnswer: number) {
+function getRiskLevel(pctNoAnswer: number, pctAnswer: number): {
+  label: string;
+  tone: InsightTone;
+  description: string;
+} {
   if (pctNoAnswer >= 75 || pctAnswer < 10) {
     return {
       label: "Riesgo alto",
-      tone: "danger" as const,
+      tone: "danger",
       description:
         "La base muestra baja capacidad de contacto. Conviene revisar calidad, horarios, origen de datos y estrategia de reintentos antes de seguir consumiendo gestión.",
     };
@@ -26,7 +46,7 @@ function getRiskLevel(pctNoAnswer: number, pctAnswer: number) {
   if (pctNoAnswer >= 55 || pctAnswer < 20) {
     return {
       label: "Riesgo medio",
-      tone: "warning" as const,
+      tone: "warning",
       description:
         "La base tiene oportunidades de mejora. No necesariamente debe descartarse, pero conviene segmentar y priorizar los grupos con mejor respuesta.",
     };
@@ -34,13 +54,13 @@ function getRiskLevel(pctNoAnswer: number, pctAnswer: number) {
 
   return {
     label: "Riesgo controlado",
-    tone: "success" as const,
+    tone: "success",
     description:
       "La base presenta una contactabilidad aceptable. Se puede seguir gestionando, priorizando los segmentos con mejor rendimiento.",
   };
 }
 
-function getToneClass(tone: "success" | "warning" | "danger" | "default") {
+function getToneClass(tone: InsightTone) {
   if (tone === "success") {
     return "border-success/30 bg-success/5 text-success";
   }
@@ -59,6 +79,7 @@ function getToneClass(tone: "success" | "warning" | "danger" | "default") {
 const AnalysisInsights = ({ data }: AnalysisInsightsProps) => {
   const topEstado = getTopEntry(data.estadoDistribucion);
   const topTag = getTopEntry(data.tagDistribucion);
+
   const topBase = [...(data.baseInsights ?? [])].sort(
     (a, b) => b.scoreCalidad - a.scoreCalidad
   )[0];
@@ -71,7 +92,7 @@ const AnalysisInsights = ({ data }: AnalysisInsightsProps) => {
   const pctDepurar =
     data.totalAnis > 0 ? (data.anisADepurar / data.totalAnis) * 100 : 0;
 
-  const insights = [
+  const insights: InsightItem[] = [
     {
       title: "Lectura general",
       icon: Lightbulb,
@@ -82,7 +103,12 @@ const AnalysisInsights = ({ data }: AnalysisInsightsProps) => {
     {
       title: "Contacto efectivo",
       icon: CheckCircle2,
-      tone: pctContactados >= 20 ? "success" : pctContactados >= 10 ? "warning" : "danger",
+      tone:
+        pctContactados >= 20
+          ? "success"
+          : pctContactados >= 10
+            ? "warning"
+            : "danger",
       value: `${pctContactados.toFixed(1)}% de ANIs contactados`,
       description:
         "Este indicador muestra qué proporción de teléfonos únicos logró contacto efectivo. Es clave para medir la calidad real de la base, más allá del volumen cargado.",
@@ -100,7 +126,12 @@ const AnalysisInsights = ({ data }: AnalysisInsightsProps) => {
     {
       title: "Acción sugerida",
       icon: AlertTriangle,
-      tone: pctDepurar >= 25 ? "danger" : pctDepurar >= 10 ? "warning" : "success",
+      tone:
+        pctDepurar >= 25
+          ? "danger"
+          : pctDepurar >= 10
+            ? "warning"
+            : "success",
       value:
         pctDepurar >= 25
           ? "Depurar antes de seguir marcando"
@@ -196,8 +227,9 @@ const AnalysisInsights = ({ data }: AnalysisInsightsProps) => {
               </p>
 
               <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
-                Es la base con mejor score relativo dentro del archivo cargado. Conviene
-                tomarla como prioridad de gestión o como referencia para comparar contra el resto.
+                Es la base con mejor score relativo dentro del archivo cargado.
+                Conviene tomarla como prioridad de gestión o como referencia para
+                comparar contra el resto.
               </p>
             </div>
           )}
