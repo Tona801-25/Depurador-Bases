@@ -433,18 +433,19 @@ export default function Home() {
                 <span className="hidden sm:inline">Filtro detallado</span>
               </TabsTrigger>
 
-              <TabsTrigger value="catalogo" className="flex items-center gap-2 py-2">
-                <BookOpen className="h-4 w-4" />
-                <span className="hidden sm:inline">Catálogo de prefijos</span>
-              </TabsTrigger>
-
               <TabsTrigger value="simulador" className="flex items-center gap-2 py-2">
                 <Settings className="h-4 w-4" />
                 <span className="hidden sm:inline">Simulador</span>
               </TabsTrigger>
+              
+              <TabsTrigger value="catalogo" className="flex items-center gap-2 py-2">
+                <BookOpen className="h-4 w-4" />
+                <span className="hidden sm:inline">Catálogo de prefijos</span>
+              </TabsTrigger>
             </TabsList>
 
             <TabsContent value="resumen" className="space-y-6">
+              <div data-summary-export-root="true" className="mx-auto w-full max-w-[1120px] space-y-6 rounded-2xl bg-background p-6">
               <div className="flex flex-col gap-3 pt-1 sm:flex-row sm:items-start sm:justify-between">
                 <div className="text-center sm:text-left">
                   <h2 className="gradient-text text-base font-display font-bold">
@@ -633,6 +634,7 @@ export default function Home() {
                   </CardContent>
                 </Card>
               )}
+              </div>
             </TabsContent>
 
             <TabsContent value="graficos" className="space-y-6">

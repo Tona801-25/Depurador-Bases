@@ -169,6 +169,11 @@ export const analysisResultSchema = z.object({
   pctNoAnswer: z.number(),
 
   estadoDistribucion: z.record(z.string(), z.number()),
+
+  estadoOperativoDistribucion: z
+    .record(z.string(), z.number())
+    .optional(),
+
   tagDistribucion: z.record(z.string(), z.number()),
 
   turnoDistribucion: z.record(
