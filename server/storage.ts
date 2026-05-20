@@ -99,6 +99,39 @@ function isNoContacto(record: CallRecord): boolean {
   );
 }
 
+function getEstadoOperativo(record: CallRecord): string {
+  const estado = normalizeEstado(record.estado);
+  const subestado = normalizeSubestado(record.subestado);
+
+  if (estado === "answer" && subestado.includes("agent")) {
+    return "CONTACTO_EFECTIVO";
+  }
+
+  if (
+    estado === "answer" &&
+    (subestado.includes("machine") ||
+      subestado.includes("answering") ||
+      subestado.includes("buzon") ||
+      subestado.includes("voicemail"))
+  ) {
+    return "CONTESTADOR_BUZON";
+  }
+
+  if (estado === "noanswer") {
+    return "NO_CONTESTA";
+  }
+
+  if (estado === "busy" || estado === "rejected") {
+    return "OCUPADO_RECHAZO";
+  }
+
+  if (estado === "unallocated") {
+    return "INVALIDO";
+  }
+
+  return "OTROS_TECNICOS";
+}
+
 export function applyRecordFilters(
   records: CallRecord[],
   filters?: RecordsFilter
@@ -1323,6 +1356,13 @@ aniGroups.forEach((calls, ani) => {
     estadoDistribucion[estado] = (estadoDistribucion[estado] || 0) + 1;
   });
 
+  const estadoOperativoDistribucion: Record<string, number> = {};
+  records.forEach((record) => {
+    const estadoOperativo = getEstadoOperativo(record);
+    estadoOperativoDistribucion[estadoOperativo] =
+      (estadoOperativoDistribucion[estadoOperativo] || 0) + 1;
+  });
+
   const tagDistribucion: Record<string, number> = {};
   aniSummaries.forEach((s) => {
     tagDistribucion[s.tagTelefono] = (tagDistribucion[s.tagTelefono] || 0) + 1;
@@ -1461,6 +1501,7 @@ aniGroups.forEach((calls, ani) => {
     pctAnswer,
     pctNoAnswer,
     estadoDistribucion,
+    estadoOperativoDistribucion,
     tagDistribucion,
     turnoDistribucion,
     prefijoDistribucion,

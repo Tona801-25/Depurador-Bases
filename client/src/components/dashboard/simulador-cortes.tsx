@@ -14,13 +14,6 @@ import {
 import { KPICard } from "@/components/kpi-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import type { AnalysisResult } from "@shared/schema";
 import {
@@ -32,26 +25,104 @@ interface SimuladorCortesProps {
   data: AnalysisResult;
 }
 
+const ALL_BASES_VALUE = "__TODAS_LAS_BASES__";
+
+type SimuladorRecommendation = {
+  title: string;
+  description: string;
+  variant: "neutral" | "warning" | "danger" | "success";
+};
+
+function normalizeBaseName(base?: string) {
+  return String(base || "").trim();
+}
+
+function getRecommendation(
+  maxIntentos: number,
+  pctDelAmbito: number,
+  anisQueSeCortan: number,
+  anisSinContacto: number
+): SimuladorRecommendation {
+  if (anisSinContacto === 0) {
+    return {
+      title: "Sin ANIs pendientes de contacto",
+      description:
+        "No se detectan ANIs sin ANSWER-AGENT dentro del ámbito seleccionado. No hace falta aplicar corte por intentos.",
+      variant: "success",
+    };
+  }
+
+  if (anisQueSeCortan === 0) {
+    return {
+      title: "El corte actual no genera impacto",
+      description: `Con un corte mayor a ${maxIntentos} intentos no se excluiría ningún ANI. Probá bajar el umbral a 3, 4 o 5 intentos para evaluar un escenario más útil.`,
+      variant: "neutral",
+    };
+  }
+
+  if (pctDelAmbito < 5) {
+    return {
+      title: "Impacto bajo",
+      description:
+        "El corte depura pocos ANIs sin contacto. Puede servir como limpieza conservadora, pero no modifica demasiado la base final.",
+      variant: "neutral",
+    };
+  }
+
+  if (pctDelAmbito <= 20) {
+    return {
+      title: "Corte moderado recomendable",
+      description:
+        "El escenario reduce una porción relevante de ANIs sin contacto sin ser excesivamente agresivo. Conviene revisarlo por base antes de exportar.",
+      variant: "warning",
+    };
+  }
+
+  return {
+    title: "Corte agresivo",
+    description:
+      "El escenario excluye un volumen alto de ANIs sin contacto. Usalo solo si la base muestra baja contactabilidad o fatiga clara de intentos.",
+    variant: "danger",
+  };
+}
+
+function getRecommendationClasses(variant: SimuladorRecommendation["variant"]) {
+  if (variant === "success") {
+    return "border-success/30 bg-success/5 text-success";
+  }
+
+  if (variant === "warning") {
+    return "border-warning/30 bg-warning/5 text-warning";
+  }
+
+  if (variant === "danger") {
+    return "border-destructive/30 bg-destructive/5 text-destructive";
+  }
+
+  return "border-primary/25 bg-primary/5 text-primary";
+}
+
 export function SimuladorCortesTab({ data }: SimuladorCortesProps) {
-  const [selectedBase, setSelectedBase] = useState<string>("all");
+  const [selectedBase, setSelectedBase] = useState<string>(ALL_BASES_VALUE);
   const [maxIntentos, setMaxIntentos] = useState<number>(10);
 
   const uniqueBases = useMemo(() => {
     const bases = new Set<string>();
 
     data.rawRecords.forEach((record) => {
-      if (record.base) bases.add(record.base);
+      const base = normalizeBaseName(record.base);
+      if (base.length > 0) bases.add(base);
     });
 
-    return Array.from(bases).sort();
+    return Array.from(bases).sort((a, b) => a.localeCompare(b, "es"));
   }, [data.rawRecords]);
 
   const filteredAnis = useMemo(() => {
-    if (selectedBase === "all") return data.aniSummaries;
+    if (selectedBase === ALL_BASES_VALUE) return data.aniSummaries;
 
     const anisInBase = new Set(
       data.rawRecords
-        .filter((record) => record.base === selectedBase)
+        .filter((record) => normalizeBaseName(record.base) === selectedBase)
         .map((record) => record.ani)
     );
 
@@ -82,6 +153,13 @@ export function SimuladorCortesTab({ data }: SimuladorCortesProps) {
   const pctSobreTotal =
     filteredAnis.length > 0 ? (anisQueSiguen / filteredAnis.length) * 100 : 100;
 
+  const recommendation = getRecommendation(
+    maxIntentos,
+    pctDelAmbito,
+    anisQueSeCortan.length,
+    anisSinContacto.length
+  );
+
   const chartData = useMemo(
     () => [
       {
@@ -105,34 +183,45 @@ export function SimuladorCortesTab({ data }: SimuladorCortesProps) {
           <Settings className="h-5 w-5 text-[hsl(var(--chart-5))]" />
           Simulador de corte de intentos por ANI
         </h2>
+
+        <p className="mt-2 text-xs text-muted-foreground">
+          Simula cuántos ANIs sin contacto efectivo se pausarían si se define
+          un límite máximo de intentos sin ANSWER-AGENT.
+        </p>
       </div>
 
       <Card className="glass-card border-glass-border hover-elevate">
         <CardContent className="space-y-6 pt-6">
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
             <div className="space-y-2">
-              <Label className="text-xs font-display font-semibold uppercase tracking-wider">
+              <Label
+                htmlFor="simulador-base-select"
+                className="text-xs font-display font-semibold uppercase tracking-wider"
+              >
                 Filtrar por campaña / base
               </Label>
 
-              <Select value={selectedBase} onValueChange={setSelectedBase}>
-                <SelectTrigger
-                  className="border-glass-border bg-secondary/50"
-                  data-testid="select-base-simulador"
-                >
-                  <SelectValue placeholder="Seleccionar base" />
-                </SelectTrigger>
+              <select
+                id="simulador-base-select"
+                value={selectedBase}
+                onChange={(event) => setSelectedBase(event.target.value)}
+                data-testid="select-base-simulador"
+                className="
+                  h-10 w-full rounded-md border border-glass-border
+                  bg-secondary/50 px-3 text-sm font-medium text-foreground
+                  outline-none transition-colors
+                  hover:border-primary/40
+                  focus:border-primary/70 focus:ring-2 focus:ring-primary/20
+                "
+              >
+                <option value={ALL_BASES_VALUE}>(Todas)</option>
 
-                <SelectContent>
-                  <SelectItem value="all">(Todas)</SelectItem>
-
-                  {uniqueBases.map((base) => (
-                    <SelectItem key={base} value={base}>
-                      {base}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                {uniqueBases.map((base) => (
+                  <option key={base} value={base}>
+                    {base}
+                  </option>
+                ))}
+              </select>
 
               <p className="text-xs text-muted-foreground">
                 ANIs en el ámbito:{" "}
@@ -153,7 +242,7 @@ export function SimuladorCortesTab({ data }: SimuladorCortesProps) {
                   min={1}
                   max={20}
                   step={1}
-                  onValueChange={(value) => setMaxIntentos(value[0])}
+                  onValueChange={(value) => setMaxIntentos(value[0] ?? 1)}
                   data-testid="slider-max-intentos"
                 />
               </div>
@@ -204,6 +293,19 @@ export function SimuladorCortesTab({ data }: SimuladorCortesProps) {
             />
           </div>
 
+          <div
+            className={`rounded-xl border p-4 ${getRecommendationClasses(
+              recommendation.variant
+            )}`}
+          >
+            <p className="text-sm font-display font-bold">
+              {recommendation.title}
+            </p>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              {recommendation.description}
+            </p>
+          </div>
+
           <div className="h-[300px]">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={chartData} layout="vertical">
@@ -250,13 +352,17 @@ export function SimuladorCortesTab({ data }: SimuladorCortesProps) {
             </ResponsiveContainer>
           </div>
 
-          <p className="text-center text-xs text-muted-foreground">
-            Solo corta ANIs que{" "}
-            <span className="font-semibold text-destructive">
-              nunca tuvieron ANSWER-AGENT
-            </span>
-            .
-          </p>
+          <div className="rounded-xl border border-border/70 bg-secondary/20 p-4">
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              <span className="font-semibold text-foreground">Criterio:</span>{" "}
+              el simulador solo corta ANIs que{" "}
+              <span className="font-semibold text-destructive">
+                nunca tuvieron ANSWER-AGENT
+              </span>
+              . No elimina contactos efectivos. Sirve para evaluar una regla de
+              pausa o exclusión temporal por exceso de intentos improductivos.
+            </p>
+          </div>
         </CardContent>
       </Card>
     </div>

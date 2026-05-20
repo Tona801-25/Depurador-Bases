@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import Sparkline from "@/components/dashboard/sparkline";
 import InfoTooltip from "@/components/infoTooltip";
+import * as TooltipPrimitive from "@radix-ui/react-tooltip";
 interface KPICardProps {
   title: string;
   value: string | number;
@@ -94,6 +95,10 @@ export function KPICard({
   const shouldShowSparkline =
     Array.isArray(sparklineData) && sparklineData.length > 1;
 
+    const valueText = String(value);
+    const shouldShowValueTooltip =
+    typeof value === "string" && valueText.trim().length > 18;
+
   return (
     <div
       className={cn(
@@ -136,10 +141,64 @@ export function KPICard({
             {info && <InfoTooltip text={info} side={infoSide} />}
           </div>
 
-          <div className="flex items-baseline gap-2">
-            <h3 className="truncate text-2xl font-display font-extrabold tabular-nums text-foreground">
-              {value}
-            </h3>
+    <div className="flex min-w-0 items-baseline gap-2">
+      {shouldShowValueTooltip ? (
+        <TooltipPrimitive.Provider delayDuration={120}>
+          <TooltipPrimitive.Root>
+            <TooltipPrimitive.Trigger asChild>
+              <h3
+                title={valueText}
+                className="max-w-full cursor-help truncate text-2xl font-display font-extrabold tabular-nums text-foreground"
+              >
+                {value}
+              </h3>
+            </TooltipPrimitive.Trigger>
+
+            <TooltipPrimitive.Portal>
+              <TooltipPrimitive.Content
+                side="top"
+                sideOffset={10}
+                collisionPadding={18}
+                avoidCollisions
+                className="
+                  z-[999999]
+                  max-w-[420px]
+                  rounded-xl
+                  border border-primary/40
+                  bg-[#10151d]
+                  px-3 py-2
+                  text-xs
+                  font-semibold
+                  leading-relaxed
+                  text-white
+                  shadow-[0_16px_45px_-12px_hsl(var(--primary)/0.75)]
+                  backdrop-blur-md
+                  animate-in
+                  fade-in-0
+                  zoom-in-95
+                  data-[state=closed]:animate-out
+                  data-[state=closed]:fade-out-0
+                  data-[state=closed]:zoom-out-95
+                  data-[side=bottom]:slide-in-from-top-2
+                  data-[side=left]:slide-in-from-right-2
+                  data-[side=right]:slide-in-from-left-2
+                  data-[side=top]:slide-in-from-bottom-2
+                "
+              >
+                {valueText}
+                <TooltipPrimitive.Arrow className="fill-[#10151d]" />
+              </TooltipPrimitive.Content>
+            </TooltipPrimitive.Portal>
+          </TooltipPrimitive.Root>
+        </TooltipPrimitive.Provider>
+      ) : (
+        <h3
+          title={valueText}
+          className="max-w-full truncate text-2xl font-display font-extrabold tabular-nums text-foreground"
+        >
+          {value}
+        </h3>
+      )}
 
             {trend && (
               <span
