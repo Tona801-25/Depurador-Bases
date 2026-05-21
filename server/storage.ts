@@ -1194,6 +1194,291 @@ const peorFranja =
   );
 }
 
+function buildComparativaMultiarchivo(records: CallRecord[]) {
+  const archivosCargados = Array.from(
+    new Set(
+      records
+        .map((record) => record.archivoOrigen || "Sin archivo identificado")
+        .filter(Boolean)
+    )
+  );
+
+  const totalArchivos = archivosCargados.length;
+
+  const baseArchivoMap = new Map<
+    string,
+    {
+      base: string;
+      archivos: Set<string>;
+      totalRegistros: number;
+    }
+  >();
+
+  records.forEach((record) => {
+    const base = (record.base || "SIN_BASE").trim() || "SIN_BASE";
+    const archivo = record.archivoOrigen || "Sin archivo identificado";
+
+    const current =
+      baseArchivoMap.get(base) ||
+      {
+        base,
+        archivos: new Set<string>(),
+        totalRegistros: 0,
+      };
+
+    current.archivos.add(archivo);
+    current.totalRegistros++;
+    baseArchivoMap.set(base, current);
+  });
+
+  const basesRepetidas = Array.from(baseArchivoMap.values())
+    .filter((item) => item.archivos.size > 1)
+    .map((item) => ({
+      base: item.base,
+      apariciones: item.archivos.size,
+      archivos: Array.from(item.archivos),
+      totalRegistros: item.totalRegistros,
+      lectura:
+        "Esta base aparece en más de un archivo. Conviene analizarla por día, prefijo y franja antes de mezclarla completa.",
+    }))
+    .sort((a, b) => b.apariciones - a.apariciones || b.totalRegistros - a.totalRegistros);
+
+  const segmentoMap = new Map<string, CallRecord[]>();
+
+  records.forEach((record) => {
+    const archivo = record.archivoOrigen || "Sin archivo identificado";
+    const fechaArchivo = record.fechaArchivo || "Sin fecha";
+    const base = (record.base || "SIN_BASE").trim() || "SIN_BASE";
+    const prefijo = extractPrefijo(record.ani);
+    const franja = getRangoHorario(record.fecha);
+
+    const key = [archivo, fechaArchivo, base, prefijo, franja].join("|||");
+    const current = segmentoMap.get(key) || [];
+
+    current.push(record);
+    segmentoMap.set(key, current);
+  });
+
+  const segmentos = Array.from(segmentoMap.entries())
+    .map(([key, segmentRecords]) => {
+      const [archivoOrigen, fechaArchivo, base, prefijo, franja] = key.split("|||");
+
+      const anis = new Set(segmentRecords.map((record) => record.ani).filter(Boolean));
+      const totalRegistros = segmentRecords.length;
+      const totalAnis = anis.size;
+
+      const contactoEfectivo = segmentRecords.filter(isAnswerAgent).length;
+      const buzones = segmentRecords.filter(isAnswerMachine).length;
+      const invalidos = segmentRecords.filter(isUnallocated).length;
+
+      const noContacto = segmentRecords.filter(
+        (record) => isNoContacto(record) || isAnswerMachine(record)
+      ).length;
+
+      const pctContactoEfectivo =
+        totalRegistros > 0 ? (contactoEfectivo / totalRegistros) * 100 : 0;
+
+      const pctNoContacto =
+        totalRegistros > 0 ? (noContacto / totalRegistros) * 100 : 0;
+
+      const pctBuzon = totalRegistros > 0 ? (buzones / totalRegistros) * 100 : 0;
+      const pctInvalidos =
+        totalRegistros > 0 ? (invalidos / totalRegistros) * 100 : 0;
+
+      let accionSugerida = "REVISAR";
+      let nivel = "Medio";
+      let lectura =
+        "Segmento con comportamiento intermedio. Conviene revisarlo antes de tomar una decisión fuerte.";
+
+      if (totalRegistros < 20) {
+        accionSugerida = "VALIDAR_MUESTRA";
+        nivel = "Muestra baja";
+        lectura =
+          "La muestra es baja. Puede servir como señal preliminar, pero no conviene tomarla como conclusión definitiva.";
+      } else if (pctContactoEfectivo >= 12 && pctNoContacto < 70) {
+        accionSugerida = "PRIORIZAR";
+        nivel = "Oportunidad";
+        lectura =
+          "Segmento con buena señal de contacto efectivo. Conviene priorizarlo para generar más oportunidades comerciales.";
+      } else if (pctInvalidos >= 20) {
+        accionSugerida = "EXCLUIR_INVALIDOS";
+        nivel = "Crítico";
+        lectura =
+          "Segmento con alto peso de inválidos. Conviene excluir o depurar antes de volver a operar.";
+      } else if (pctBuzon >= 30) {
+        accionSugerida = "REINTENTAR_OTRA_FRANJA";
+        nivel = "Revisar";
+        lectura =
+          "Segmento con alto peso de contestador o buzón. Conviene probar otra franja antes de insistir.";
+      } else if (pctNoContacto >= 75) {
+        accionSugerida = "PAUSAR_O_SEGMENTAR";
+        nivel = "Riesgo alto";
+        lectura =
+          "Segmento con alto no contacto. Conviene pausar, segmentar o bajar intensidad de marcado.";
+      }
+
+      return {
+        archivoOrigen,
+        fechaArchivo: fechaArchivo === "Sin fecha" ? undefined : fechaArchivo,
+        base,
+        prefijo,
+        franja,
+        totalRegistros,
+        totalAnis,
+        contactoEfectivo,
+        pctContactoEfectivo,
+        noContacto,
+        pctNoContacto,
+        buzones,
+        invalidos,
+        accionSugerida,
+        nivel,
+        lectura,
+      };
+    })
+    .sort((a, b) => {
+      if (b.pctContactoEfectivo !== a.pctContactoEfectivo) {
+        return b.pctContactoEfectivo - a.pctContactoEfectivo;
+      }
+
+      return b.totalRegistros - a.totalRegistros;
+    });
+
+  const segmentosConMuestra = segmentos.filter((segmento) => segmento.totalRegistros >= 20);
+
+  const mejoresSegmentos = segmentosConMuestra
+    .filter((segmento) => segmento.accionSugerida === "PRIORIZAR")
+    .slice(0, 5);
+
+  const segmentosARevisar = segmentosConMuestra
+    .filter((segmento) =>
+      ["PAUSAR_O_SEGMENTAR", "REINTENTAR_OTRA_FRANJA", "EXCLUIR_INVALIDOS"].includes(
+        segmento.accionSugerida
+      )
+    )
+    .sort((a, b) => {
+      if (b.pctNoContacto !== a.pctNoContacto) {
+        return b.pctNoContacto - a.pctNoContacto;
+      }
+
+      return b.totalRegistros - a.totalRegistros;
+    })
+    .slice(0, 5);
+
+  const franjaStats = new Map<
+    string,
+    {
+      total: number;
+      contacto: number;
+    }
+  >();
+
+  records.forEach((record) => {
+    const franja = getRangoHorario(record.fecha);
+
+    if (!isFranjaOperativaValida(franja)) return;
+
+    const current =
+      franjaStats.get(franja) ||
+      {
+        total: 0,
+        contacto: 0,
+      };
+
+    current.total++;
+
+    if (isAnswerAgent(record)) {
+      current.contacto++;
+    }
+
+    franjaStats.set(franja, current);
+  });
+
+  const franjaMasConveniente = Array.from(franjaStats.entries())
+    .map(([franja, stats]) => ({
+      franja,
+      total: stats.total,
+      pctContacto: stats.total > 0 ? (stats.contacto / stats.total) * 100 : 0,
+    }))
+    .filter((item) => item.total >= 20)
+    .sort((a, b) => {
+      if (b.pctContacto !== a.pctContacto) return b.pctContacto - a.pctContacto;
+      return b.total - a.total;
+    })[0]?.franja;
+
+  const prefijoArchivoStats = new Map<
+    string,
+    {
+      prefijo: string;
+      archivos: Set<string>;
+      total: number;
+      contacto: number;
+    }
+  >();
+
+  records.forEach((record) => {
+    const prefijo = extractPrefijo(record.ani);
+    const archivo = record.archivoOrigen || "Sin archivo identificado";
+
+    const current =
+      prefijoArchivoStats.get(prefijo) ||
+      {
+        prefijo,
+        archivos: new Set<string>(),
+        total: 0,
+        contacto: 0,
+      };
+
+    current.archivos.add(archivo);
+    current.total++;
+
+    if (isAnswerAgent(record)) {
+      current.contacto++;
+    }
+
+    prefijoArchivoStats.set(prefijo, current);
+  });
+
+  const prefijoMasEstable = Array.from(prefijoArchivoStats.values())
+    .map((item) => ({
+      prefijo: item.prefijo,
+      apariciones: item.archivos.size,
+      total: item.total,
+      pctContacto: item.total > 0 ? (item.contacto / item.total) * 100 : 0,
+    }))
+    .filter((item) => item.apariciones >= 2 && item.total >= 20)
+    .sort((a, b) => {
+      if (b.pctContacto !== a.pctContacto) return b.pctContacto - a.pctContacto;
+      if (b.apariciones !== a.apariciones) return b.apariciones - a.apariciones;
+      return b.total - a.total;
+    })[0]?.prefijo;
+
+  let recomendacionGeneral =
+    "Analizar los segmentos por base, prefijo y franja antes de definir la estrategia de marcado.";
+
+  if (totalArchivos > 1 && basesRepetidas.length > 0) {
+    recomendacionGeneral =
+      "Se detectaron bases repetidas entre archivos. No conviene mezclar todo automáticamente: priorizá los segmentos con mejor contacto efectivo y revisá los que concentran no contacto, buzón o inválidos.";
+  } else if (totalArchivos > 1) {
+    recomendacionGeneral =
+      "Se cargaron varios archivos. Conviene comparar rendimiento por día, prefijo y franja antes de operar toda la base como un único bloque.";
+  } else if (mejoresSegmentos.length > 0) {
+    recomendacionGeneral =
+      "Hay segmentos con buena señal comercial. Conviene priorizarlos para aumentar oportunidades de venta.";
+  }
+
+  return {
+    totalArchivos,
+    archivosCargados,
+    basesRepetidas,
+    mejoresSegmentos,
+    segmentosARevisar,
+    prefijoMasEstable,
+    franjaMasConveniente,
+    recomendacionGeneral,
+  };
+}
+
 export function processCallRecords(rawData: Record<string, any>[]): AnalysisResult {
   const columns = rawData.length > 0 ? Object.keys(rawData[0]) : [];
 
@@ -1229,6 +1514,8 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
 
     return {
       fecha: parsed ? parsed.toISOString() : row[colFecha]?.toString() || undefined,
+      archivoOrigen: row.__archivoOrigen?.toString() || undefined,
+      fechaArchivo: row.__fechaArchivo?.toString() || undefined,
       estado: row[colEstado]?.toString() || "",
       subestado: row[colSubestado]?.toString() || undefined,
       ani: row[colAni]?.toString()?.trim() || "",
@@ -1490,6 +1777,8 @@ aniGroups.forEach((calls, ani) => {
     franjaDistribucion
   );
 
+  const comparativaMultiarchivo = buildComparativaMultiarchivo(records);
+
   return {
     id: randomUUID(),
     fileName: "uploaded_files",
@@ -1516,6 +1805,7 @@ aniGroups.forEach((calls, ani) => {
     franjaDistribucion,
     resumenEjecutivo,
     recomendacionesOperativas,
+    comparativaMultiarchivo,
   };
 }
 

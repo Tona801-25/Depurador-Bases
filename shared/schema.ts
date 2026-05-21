@@ -2,6 +2,8 @@ import { z } from "zod";
 
 export const callRecordSchema = z.object({
   fecha: z.string().optional(),
+  archivoOrigen: z.string().optional(),
+  fechaArchivo: z.string().optional(),
   estado: z.string(),
   subestado: z.string().optional(),
   ani: z.string(),
@@ -155,6 +157,54 @@ export const recomendacionOperativaSchema = z.object({
   volumen: z.number().optional(),
 });
 
+export const segmentoMultiarchivoSchema = z.object({
+  archivoOrigen: z.string(),
+  fechaArchivo: z.string().optional(),
+  base: z.string(),
+  prefijo: z.string(),
+  franja: z.string(),
+  totalRegistros: z.number(),
+  totalAnis: z.number(),
+  contactoEfectivo: z.number(),
+  pctContactoEfectivo: z.number(),
+  noContacto: z.number(),
+  pctNoContacto: z.number(),
+  buzones: z.number(),
+  invalidos: z.number(),
+  accionSugerida: z.string(),
+  nivel: z.string(),
+  lectura: z.string(),
+});
+
+export type SegmentoMultiarchivo = z.infer<typeof segmentoMultiarchivoSchema>;
+
+export const baseRepetidaMultiarchivoSchema = z.object({
+  base: z.string(),
+  apariciones: z.number(),
+  archivos: z.array(z.string()),
+  totalRegistros: z.number(),
+  lectura: z.string(),
+});
+
+export type BaseRepetidaMultiarchivo = z.infer<
+  typeof baseRepetidaMultiarchivoSchema
+>;
+
+export const comparativaMultiarchivoSchema = z.object({
+  totalArchivos: z.number(),
+  archivosCargados: z.array(z.string()),
+  basesRepetidas: z.array(baseRepetidaMultiarchivoSchema),
+  mejoresSegmentos: z.array(segmentoMultiarchivoSchema),
+  segmentosARevisar: z.array(segmentoMultiarchivoSchema),
+  prefijoMasEstable: z.string().optional(),
+  franjaMasConveniente: z.string().optional(),
+  recomendacionGeneral: z.string(),
+});
+
+export type ComparativaMultiarchivo = z.infer<
+  typeof comparativaMultiarchivoSchema
+>;
+
 export type RecomendacionOperativa = z.infer<typeof recomendacionOperativaSchema>;
 
 export const analysisResultSchema = z.object({
@@ -235,6 +285,7 @@ export const analysisResultSchema = z.object({
       .optional(),
     resumenEjecutivo: resumenEjecutivoSchema.optional(),
     recomendacionesOperativas: z.array(recomendacionOperativaSchema).optional(),
+    comparativaMultiarchivo: comparativaMultiarchivoSchema.optional(),
 });
 
 export type AnalysisResult = z.infer<typeof analysisResultSchema>;

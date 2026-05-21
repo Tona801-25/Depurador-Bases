@@ -52,6 +52,7 @@ import PrefijosTreemap from "@/components/dashboard/prefijosTreemap";
 import MiniMapaArgentina from "@/components/dashboard/miniMapArgentina";
 import InfoTooltip from "@/components/infoTooltip";
 import AnalysisInsights from "@/components/dashboard/analysisInsights";
+import DiagnosticoEjecutivo from "@/components/dashboard/diagnostico-ejecutivo";
 
 export default function Home() {
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
@@ -446,14 +447,16 @@ export default function Home() {
 
             <TabsContent value="resumen" className="space-y-6">
               <div data-summary-export-root="true" className="mx-auto w-full max-w-[1120px] space-y-6 rounded-2xl bg-background p-6">
-              <div className="flex flex-col gap-3 pt-1 sm:flex-row sm:items-start sm:justify-between">
+                <DiagnosticoEjecutivo data={analysisResult} />
+
+                <div className="flex flex-col gap-3 pt-1 sm:flex-row sm:items-start sm:justify-between">
                 <div className="text-center sm:text-left">
                   <h2 className="gradient-text text-base font-display font-bold">
-                    Resumen ejecutivo de calidad de base
+                    Detalle técnico del resumen
                   </h2>
 
                   <p className="mt-2 text-sm text-muted-foreground">
-                    Vista inicial para entender rápidamente el estado general de la base.
+                    Indicadores complementarios para profundizar el diagnóstico de calidad, bases y estados operativos.
                   </p>
                 </div>
 
