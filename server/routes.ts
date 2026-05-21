@@ -46,6 +46,34 @@ function buildBaseFinalRows(rows: any[]) {
   }));
 }
 
+function extractFechaArchivoFromName(fileName: string): string | undefined {
+  const normalized = fileName.trim();
+
+  const compactDate = normalized.match(/(?:^|[^0-9])(\d{2})(\d{2})(20\d{2})(?:[^0-9]|$)/);
+  if (compactDate) {
+    const [, dd, mm, yyyy] = compactDate;
+    return `${dd}/${mm}/${yyyy}`;
+  }
+
+  const separatedDate = normalized.match(/(?:^|[^0-9])(\d{1,2})[-_.](\d{1,2})[-_.](20\d{2})(?:[^0-9]|$)/);
+  if (separatedDate) {
+    const [, d, m, yyyy] = separatedDate;
+    const dd = d.padStart(2, "0");
+    const mm = m.padStart(2, "0");
+    return `${dd}/${mm}/${yyyy}`;
+  }
+
+  const isoDate = normalized.match(/(?:^|[^0-9])(20\d{2})[-_.](\d{1,2})[-_.](\d{1,2})(?:[^0-9]|$)/);
+  if (isoDate) {
+    const [, yyyy, m, d] = isoDate;
+    const dd = d.padStart(2, "0");
+    const mm = m.padStart(2, "0");
+    return `${dd}/${mm}/${yyyy}`;
+  }
+
+  return undefined;
+}
+
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   app.get("/api/health", (_req, res) => res.json({ ok: true }));
   app.get("/health", (_req, res) => res.json({ ok: true }));
@@ -112,7 +140,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           continue;
         }
 
-        allRecords.push(...records);
+        const archivoOrigen = file.originalname;
+        const fechaArchivo = extractFechaArchivoFromName(file.originalname);
+
+        const recordsConMetadata = records.map((row) => ({
+          ...row,
+          __archivoOrigen: archivoOrigen,
+          __fechaArchivo: fechaArchivo || "",
+        }));
+
+        allRecords.push(...recordsConMetadata);
       } finally {
         // Limpieza
         try {

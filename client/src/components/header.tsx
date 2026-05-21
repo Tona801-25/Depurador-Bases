@@ -25,9 +25,9 @@ export function Header() {
                 Depurador de Bases
               </h1>
             </div>
-            <p className="hidden truncate text-xs text-muted-foreground sm:block">
-              Neotel · CSV / TXT / XLS / XLSX <span className="mx-1.5 opacity-50">•</span> Filtrá como en Excel
-            </p>
+              <p className="text-sm text-muted-foreground">
+                Analizá, depurá y priorizá bases de llamadas para operar con mejor calidad.
+              </p>
           </div>
         </div>
 
