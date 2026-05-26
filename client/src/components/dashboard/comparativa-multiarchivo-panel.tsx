@@ -1,0 +1,664 @@
+import { useMemo, useState } from "react";
+import type { AnalysisResult } from "@shared/schema";
+import { Card, CardContent } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import {
+  Clock3,
+  GitCompareArrows,
+  Layers3,
+  MapPin,
+  Repeat2,
+} from "lucide-react";
+
+interface ComparativaMultiarchivoPanelProps {
+  data: AnalysisResult;
+}
+
+type EnfoqueAnalisis = "base" | "franja" | "prefijo" | "segmento";
+
+function formatNumber(value: number) {
+  return value.toLocaleString("es-AR");
+}
+
+function formatPercentValue(value: number) {
+  return `${value.toFixed(1)}%`;
+}
+
+function getActionBadgeClass(action: string) {
+  if (action.includes("PRIORIZAR")) {
+    return "border-success/25 bg-success/15 text-success";
+  }
+
+  if (action.includes("PAUSAR") || action.includes("EXCLUIR")) {
+    return "border-destructive/25 bg-destructive/15 text-destructive";
+  }
+
+  return "border-warning/25 bg-warning/15 text-warning";
+}
+
+function getActionLabel(action: string) {
+  if (action === "PRIORIZAR") return "Priorizar";
+  if (action === "VALIDAR_MUESTRA") return "Validar muestra";
+  if (action === "REINTENTAR_OTRA_FRANJA") return "Reintentar otra franja";
+  if (action === "PAUSAR_O_SEGMENTAR") return "Pausar o segmentar";
+  if (action === "EXCLUIR_INVALIDOS") return "Excluir inválidos";
+
+  return action.replaceAll("_", " ").toLowerCase();
+}
+
+export default function ComparativaMultiarchivoPanel({
+  data,
+}: ComparativaMultiarchivoPanelProps) {
+  const [enfoque, setEnfoque] = useState<EnfoqueAnalisis>("base");
+
+  const comparativa = data.comparativaMultiarchivo;
+
+  const segmentos = useMemo(() => {
+    if (!comparativa) return [];
+
+    return [
+      ...comparativa.mejoresSegmentos,
+      ...comparativa.segmentosARevisar,
+    ];
+  }, [comparativa]);
+
+  const resumenPorBase = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        base: string;
+        archivos: Set<string>;
+        totalRegistros: number;
+        contactoEfectivo: number;
+        noContacto: number;
+        mejorFranja: string;
+        mejorPrefijo: string;
+        accionSugerida: string;
+      }
+    >();
+
+    segmentos.forEach((segmento) => {
+      const current =
+        map.get(segmento.base) ||
+        {
+          base: segmento.base,
+          archivos: new Set<string>(),
+          totalRegistros: 0,
+          contactoEfectivo: 0,
+          noContacto: 0,
+          mejorFranja: segmento.franja,
+          mejorPrefijo: segmento.prefijo,
+          accionSugerida: segmento.accionSugerida,
+        };
+
+      current.archivos.add(segmento.archivoOrigen);
+      current.totalRegistros += segmento.totalRegistros;
+      current.contactoEfectivo += segmento.contactoEfectivo;
+      current.noContacto += segmento.noContacto;
+
+      const currentPct =
+        current.totalRegistros > 0
+          ? (current.contactoEfectivo / current.totalRegistros) * 100
+          : 0;
+
+      if (segmento.pctContactoEfectivo >= currentPct) {
+        current.mejorFranja = segmento.franja;
+        current.mejorPrefijo = segmento.prefijo;
+      }
+
+      if (
+        segmento.accionSugerida === "PRIORIZAR" ||
+        current.accionSugerida !== "PRIORIZAR"
+      ) {
+        current.accionSugerida = segmento.accionSugerida;
+      }
+
+      map.set(segmento.base, current);
+    });
+
+    return Array.from(map.values())
+      .map((item) => {
+        const pctContacto =
+          item.totalRegistros > 0
+            ? (item.contactoEfectivo / item.totalRegistros) * 100
+            : 0;
+
+        const pctNoContacto =
+          item.totalRegistros > 0
+            ? (item.noContacto / item.totalRegistros) * 100
+            : 0;
+
+        let accionSugerida = item.accionSugerida;
+
+        if (pctContacto >= 12) {
+          accionSugerida = "PRIORIZAR";
+        } else if (pctNoContacto >= 75) {
+          accionSugerida = "PAUSAR_O_SEGMENTAR";
+        } else if (pctContacto < 8) {
+          accionSugerida = "REINTENTAR_OTRA_FRANJA";
+        }
+
+        return {
+          ...item,
+          archivos: Array.from(item.archivos),
+          pctContacto,
+          pctNoContacto,
+          accionSugerida,
+        };
+      })
+      .sort((a, b) => {
+        if (b.pctContacto !== a.pctContacto) {
+          return b.pctContacto - a.pctContacto;
+        }
+
+        return b.totalRegistros - a.totalRegistros;
+      });
+  }, [segmentos]);
+
+  const resumenPorFranja = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        franja: string;
+        bases: Set<string>;
+        prefijos: Set<string>;
+        totalRegistros: number;
+        contactoEfectivo: number;
+        noContacto: number;
+        mejorBase: string;
+        prefijoDestacado: string;
+      }
+    >();
+
+    segmentos.forEach((segmento) => {
+      const current =
+        map.get(segmento.franja) ||
+        {
+          franja: segmento.franja,
+          bases: new Set<string>(),
+          prefijos: new Set<string>(),
+          totalRegistros: 0,
+          contactoEfectivo: 0,
+          noContacto: 0,
+          mejorBase: segmento.base,
+          prefijoDestacado: segmento.prefijo,
+        };
+
+      current.bases.add(segmento.base);
+      current.prefijos.add(segmento.prefijo);
+      current.totalRegistros += segmento.totalRegistros;
+      current.contactoEfectivo += segmento.contactoEfectivo;
+      current.noContacto += segmento.noContacto;
+
+      const currentPct =
+        current.totalRegistros > 0
+          ? (current.contactoEfectivo / current.totalRegistros) * 100
+          : 0;
+
+      if (segmento.pctContactoEfectivo >= currentPct) {
+        current.mejorBase = segmento.base;
+        current.prefijoDestacado = segmento.prefijo;
+      }
+
+      map.set(segmento.franja, current);
+    });
+
+    return Array.from(map.values())
+      .map((item) => ({
+        ...item,
+        bases: Array.from(item.bases),
+        prefijos: Array.from(item.prefijos),
+        pctContacto:
+          item.totalRegistros > 0
+            ? (item.contactoEfectivo / item.totalRegistros) * 100
+            : 0,
+        pctNoContacto:
+          item.totalRegistros > 0
+            ? (item.noContacto / item.totalRegistros) * 100
+            : 0,
+      }))
+      .sort((a, b) => {
+        if (b.pctContacto !== a.pctContacto) {
+          return b.pctContacto - a.pctContacto;
+        }
+
+        return b.totalRegistros - a.totalRegistros;
+      });
+  }, [segmentos]);
+
+  const resumenPorPrefijo = useMemo(() => {
+    const map = new Map<
+      string,
+      {
+        prefijo: string;
+        bases: Set<string>;
+        franjas: Set<string>;
+        totalRegistros: number;
+        contactoEfectivo: number;
+        noContacto: number;
+        mejorBase: string;
+        mejorFranja: string;
+      }
+    >();
+
+    segmentos.forEach((segmento) => {
+      const current =
+        map.get(segmento.prefijo) ||
+        {
+          prefijo: segmento.prefijo,
+          bases: new Set<string>(),
+          franjas: new Set<string>(),
+          totalRegistros: 0,
+          contactoEfectivo: 0,
+          noContacto: 0,
+          mejorBase: segmento.base,
+          mejorFranja: segmento.franja,
+        };
+
+      current.bases.add(segmento.base);
+      current.franjas.add(segmento.franja);
+      current.totalRegistros += segmento.totalRegistros;
+      current.contactoEfectivo += segmento.contactoEfectivo;
+      current.noContacto += segmento.noContacto;
+
+      const currentPct =
+        current.totalRegistros > 0
+          ? (current.contactoEfectivo / current.totalRegistros) * 100
+          : 0;
+
+      if (segmento.pctContactoEfectivo >= currentPct) {
+        current.mejorBase = segmento.base;
+        current.mejorFranja = segmento.franja;
+      }
+
+      map.set(segmento.prefijo, current);
+    });
+
+    return Array.from(map.values())
+      .map((item) => ({
+        ...item,
+        bases: Array.from(item.bases),
+        franjas: Array.from(item.franjas),
+        pctContacto:
+          item.totalRegistros > 0
+            ? (item.contactoEfectivo / item.totalRegistros) * 100
+            : 0,
+        pctNoContacto:
+          item.totalRegistros > 0
+            ? (item.noContacto / item.totalRegistros) * 100
+            : 0,
+      }))
+      .sort((a, b) => {
+        if (b.pctContacto !== a.pctContacto) {
+          return b.pctContacto - a.pctContacto;
+        }
+
+        return b.totalRegistros - a.totalRegistros;
+      });
+  }, [segmentos]);
+
+  if (!comparativa) return null;
+
+  const topBase = resumenPorBase[0];
+  const topFranja = resumenPorFranja[0];
+  const topPrefijo = resumenPorPrefijo[0];
+
+  return (
+    <Card className="glass-card soft-cyan-hover border-primary/15">
+      <CardContent className="space-y-4 p-4 md:p-5">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              <GitCompareArrows className="h-4 w-4 text-primary" />
+              Comparativa multiarchivo
+            </div>
+
+            <h3 className="text-lg font-bold text-foreground">
+              Bases, horarios y prefijos con mayor impacto comercial
+            </h3>
+
+            <p className="mt-1 max-w-4xl text-sm leading-relaxed text-muted-foreground">
+              {comparativa.recomendacionGeneral}
+            </p>
+          </div>
+
+          <Badge className="border-primary/25 bg-primary/15 text-primary">
+            {comparativa.totalArchivos} archivo
+            {comparativa.totalArchivos !== 1 ? "s" : ""}
+          </Badge>
+        </div>
+
+        <div className="flex flex-col gap-2 rounded-xl border border-border bg-background/60 p-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Analizar por
+            </p>
+
+            <p className="text-xs text-muted-foreground">
+              Elegí desde qué mirada querés decidir la operación.
+            </p>
+          </div>
+
+          <select
+            value={enfoque}
+            onChange={(event) => setEnfoque(event.target.value as EnfoqueAnalisis)}
+            className="h-9 rounded-lg border border-border bg-card px-3 text-sm font-medium text-foreground outline-none transition-colors hover:border-primary/50 focus:border-primary"
+          >
+            <option value="base">Base</option>
+            <option value="franja">Franja horaria</option>
+            <option value="prefijo">Prefijo</option>
+            <option value="segmento">Segmento combinado</option>
+          </select>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          <div className="soft-cyan-hover rounded-xl border border-border bg-background/60 p-3 transition-all duration-200">
+            <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              <Layers3 className="h-3.5 w-3.5 text-success" />
+              Mejor base
+            </div>
+
+            <p className="truncate text-xl font-bold text-foreground">
+              {topBase?.base || "-"}
+            </p>
+
+            <p className="mt-1 text-xs text-muted-foreground">
+              {topBase
+                ? `${formatPercentValue(topBase.pctContacto)} contacto · ${formatNumber(
+                    topBase.totalRegistros
+                  )} registros`
+                : "Sin datos suficientes."}
+            </p>
+          </div>
+
+          <div className="soft-cyan-hover rounded-xl border border-border bg-background/60 p-3 transition-all duration-200">
+            <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              <Clock3 className="h-3.5 w-3.5 text-primary" />
+              Mejor horario
+            </div>
+
+            <p className="truncate text-xl font-bold text-foreground">
+              {topFranja?.franja || comparativa.franjaMasConveniente || "-"}
+            </p>
+
+            <p className="mt-1 text-xs text-muted-foreground">
+              {topFranja
+                ? `${formatPercentValue(topFranja.pctContacto)} contacto · ${topFranja.mejorBase}`
+                : "Horario con mejor contacto relativo."}
+            </p>
+          </div>
+
+          <div className="soft-cyan-hover rounded-xl border border-border bg-background/60 p-3 transition-all duration-200">
+            <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              <MapPin className="h-3.5 w-3.5 text-warning" />
+              Prefijo estable
+            </div>
+
+            <p className="truncate text-xl font-bold text-foreground">
+              {topPrefijo?.prefijo || comparativa.prefijoMasEstable || "-"}
+            </p>
+
+            <p className="mt-1 text-xs text-muted-foreground">
+              {topPrefijo
+                ? `${formatPercentValue(topPrefijo.pctContacto)} contacto · ${topPrefijo.mejorFranja}`
+                : "Mejor señal repetida entre archivos."}
+            </p>
+          </div>
+        </div>
+
+        {enfoque === "base" && (
+          <div className="rounded-xl border border-success/20 bg-success/5 p-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-success">
+              Análisis por base
+            </p>
+
+            <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+              {resumenPorBase.slice(0, 6).map((base) => (
+                <div
+                  key={base.base}
+                  className="soft-cyan-hover rounded-lg border border-border/70 bg-background/60 p-3 transition-all duration-200">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <p className="truncate text-sm font-semibold text-foreground">
+                      {base.base}
+                    </p>
+
+                    <Badge className={getActionBadgeClass(base.accionSugerida)}>
+                      {getActionLabel(base.accionSugerida)}
+                    </Badge>
+                  </div>
+
+                  <p className="text-xs text-muted-foreground">
+                    Mejor franja {base.mejorFranja} · Prefijo {base.mejorPrefijo}
+                  </p>
+
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Contacto efectivo:{" "}
+                    <span className="font-semibold text-success">
+                      {formatPercentValue(base.pctContacto)}
+                    </span>{" "}
+                    · No contacto:{" "}
+                    <span className="font-semibold text-warning">
+                      {formatPercentValue(base.pctNoContacto)}
+                    </span>{" "}
+                    · {base.archivos.length} archivo
+                    {base.archivos.length !== 1 ? "s" : ""}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {enfoque === "franja" && (
+          <div className="rounded-xl border border-primary/20 bg-primary/5 p-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-primary">
+              Análisis por franja horaria
+            </p>
+
+            <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+              {resumenPorFranja.slice(0, 6).map((franja) => (
+                <div
+                  key={franja.franja}
+                  className="soft-cyan-hover rounded-lg border border-border/70 bg-background/60 p-3 transition-all duration-200"
+                >
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <p className="truncate text-sm font-semibold text-foreground">
+                      {franja.franja}
+                    </p>
+
+                    <Badge className="border-primary/25 bg-primary/15 text-primary">
+                      Horario
+                    </Badge>
+                  </div>
+
+                  <p className="text-xs text-muted-foreground">
+                    Mejor base {franja.mejorBase} · Prefijo {franja.prefijoDestacado}
+                  </p>
+
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Contacto efectivo:{" "}
+                    <span className="font-semibold text-success">
+                      {formatPercentValue(franja.pctContacto)}
+                    </span>{" "}
+                    · Registros: {formatNumber(franja.totalRegistros)}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {enfoque === "prefijo" && (
+          <div className="rounded-xl border border-warning/20 bg-warning/5 p-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-warning">
+              Análisis por prefijo
+            </p>
+
+            <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+              {resumenPorPrefijo.slice(0, 6).map((prefijo) => (
+                <div
+                  key={prefijo.prefijo}
+                  className="soft-cyan-hover rounded-lg border border-border/70 bg-background/60 p-3 transition-all duration-200"
+                >
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <p className="truncate text-sm font-semibold text-foreground">
+                      Prefijo {prefijo.prefijo}
+                    </p>
+
+                    <Badge className="border-warning/25 bg-warning/15 text-warning">
+                      Zona
+                    </Badge>
+                  </div>
+
+                  <p className="text-xs text-muted-foreground">
+                    Mejor base {prefijo.mejorBase} · Franja {prefijo.mejorFranja}
+                  </p>
+
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Contacto efectivo:{" "}
+                    <span className="font-semibold text-success">
+                      {formatPercentValue(prefijo.pctContacto)}
+                    </span>{" "}
+                    · Registros: {formatNumber(prefijo.totalRegistros)}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {enfoque === "segmento" && (
+          <div className="space-y-3">
+            {comparativa.basesRepetidas.length > 0 && (
+              <div className="rounded-xl border border-warning/20 bg-warning/5 p-3">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-warning">
+                  Bases repetidas detectadas
+                </p>
+
+                <div className="space-y-2">
+                  {comparativa.basesRepetidas.slice(0, 3).map((base) => (
+                    <div
+                      key={base.base}
+                      className="flex flex-col gap-1 rounded-lg border border-border/70 bg-background/60 p-3 md:flex-row md:items-center md:justify-between"
+                    >
+                      <div>
+                        <p className="text-sm font-semibold text-foreground">
+                          {base.base}
+                        </p>
+
+                        <p className="text-xs text-muted-foreground">
+                          {base.lectura}
+                        </p>
+                      </div>
+
+                      <div className="shrink-0 text-xs text-muted-foreground md:text-right">
+                        <p>{base.apariciones} archivos</p>
+                        <p>{formatNumber(base.totalRegistros)} registros</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {comparativa.mejoresSegmentos.length > 0 && (
+              <div className="rounded-xl border border-success/20 bg-success/5 p-3">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-success">
+                  Segmentos para priorizar
+                </p>
+
+                <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+                  {comparativa.mejoresSegmentos.slice(0, 4).map((segmento) => (
+                    <div
+                      key={`${segmento.archivoOrigen}-${segmento.base}-${segmento.prefijo}-${segmento.franja}`}
+                      className="soft-cyan-hover rounded-lg border border-border/70 bg-background/60 p-3 transition-all duration-200"
+                    >
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <p className="truncate text-sm font-semibold text-foreground">
+                          {segmento.base}
+                        </p>
+
+                        <Badge className="border-success/25 bg-success/15 text-success">
+                          Priorizar
+                        </Badge>
+                      </div>
+
+                      <p className="text-xs text-muted-foreground">
+                        Prefijo {segmento.prefijo} · {segmento.franja}
+                        {segmento.fechaArchivo ? ` · ${segmento.fechaArchivo}` : ""}
+                      </p>
+
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        Contacto efectivo:{" "}
+                        <span className="font-semibold text-success">
+                          {formatPercentValue(segmento.pctContactoEfectivo)}
+                        </span>{" "}
+                        · Registros: {formatNumber(segmento.totalRegistros)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {comparativa.segmentosARevisar.length > 0 && (
+              <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-3">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-destructive">
+                  Segmentos a revisar antes de operar
+                </p>
+
+                <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+                  {comparativa.segmentosARevisar.slice(0, 4).map((segmento) => (
+                    <div
+                      key={`${segmento.archivoOrigen}-${segmento.base}-${segmento.prefijo}-${segmento.franja}`}
+                      className="soft-cyan-hover rounded-lg border border-border/70 bg-background/60 p-3 transition-all duration-200"
+                    >
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <p className="truncate text-sm font-semibold text-foreground">
+                          {segmento.base}
+                        </p>
+
+                        <Badge className="border-destructive/25 bg-destructive/15 text-destructive">
+                          {getActionLabel(segmento.accionSugerida)}
+                        </Badge>
+                      </div>
+
+                      <p className="text-xs text-muted-foreground">
+                        Prefijo {segmento.prefijo} · {segmento.franja}
+                        {segmento.fechaArchivo ? ` · ${segmento.fechaArchivo}` : ""}
+                      </p>
+
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        No contacto:{" "}
+                        <span className="font-semibold text-destructive">
+                          {formatPercentValue(segmento.pctNoContacto)}
+                        </span>{" "}
+                        · Registros: {formatNumber(segmento.totalRegistros)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="rounded-xl border border-border bg-background/50 p-3">
+          <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            <Repeat2 className="h-3.5 w-3.5 text-warning" />
+            Bases repetidas
+          </div>
+
+          <p className="text-sm text-muted-foreground">
+            Se detectaron{" "}
+            <span className="font-semibold text-foreground">
+              {comparativa.basesRepetidas.length}
+            </span>{" "}
+            bases presentes en más de un archivo. Esto permite revisar si un lote
+            sigue rindiendo o si empieza a agotarse con los días.
+          </p>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
