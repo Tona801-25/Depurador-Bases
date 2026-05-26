@@ -149,7 +149,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           __fechaArchivo: fechaArchivo || "",
         }));
 
-        allRecords.push(...recordsConMetadata);
+        for (const record of recordsConMetadata) {
+          allRecords.push(record);
+        }
       } finally {
         // Limpieza
         try {

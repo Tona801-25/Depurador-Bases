@@ -56,6 +56,12 @@ import DiagnosticoEjecutivo from "@/components/dashboard/diagnostico-ejecutivo";
 
 export default function Home() {
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [lastUploadInfo, setLastUploadInfo] = useState<{
+    count: number;
+    names: string[];
+  } | null>(null);
+
   const { toast } = useToast();
 
   const uploadMutation = useMutation({
@@ -71,15 +77,25 @@ export default function Home() {
         body: formData,
       });
 
-      if (!response.ok) {
+    if (!response.ok) {
+      let message = "Error al procesar los archivos";
+
+      try {
         const error = await response.json();
-        throw new Error(error.message || "Error al procesar los archivos");
+        message = error.message || error.error || message;
+      } catch {
+        message = `Error del servidor (${response.status}) al procesar los archivos`;
       }
+
+      throw new Error(message);
+    }
 
       return response.json() as Promise<AnalysisResult>;
     },
     onSuccess: (data) => {
+      setUploadError(null);
       setAnalysisResult(data);
+
       toast({
         title: "Análisis completado",
         description: `Se procesaron ${data.totalRecords.toLocaleString(
@@ -88,6 +104,9 @@ export default function Home() {
       });
     },
     onError: (error: Error) => {
+      setAnalysisResult(null);
+      setUploadError(error.message);
+
       toast({
         title: "Error al procesar",
         description: error.message,
@@ -98,6 +117,13 @@ export default function Home() {
 
   const handleFilesSelected = useCallback(
     (files: File[]) => {
+      setUploadError(null);
+
+      setLastUploadInfo({
+        count: files.length,
+        names: files.map((file) => file.name),
+      });
+
       uploadMutation.mutate(files);
     },
     [uploadMutation]
@@ -403,47 +429,49 @@ export default function Home() {
 
         {analysisResult && !uploadMutation.isPending && (
           <Tabs defaultValue="resumen" className="space-y-6">
-            <TabsList className="grid h-auto w-full grid-cols-3 gap-1 p-1 lg:grid-cols-8">
-              <TabsTrigger value="resumen" className="flex items-center gap-2 py-2">
-                <BarChart3 className="h-4 w-4" />
-                <span className="hidden sm:inline">Resumen ejecutivo</span>
-              </TabsTrigger>
+            <div className="sticky top-[65px] z-40 -mx-1 rounded-2xl bg-background/80 px-1 py-2 backdrop-blur-xl supports-[backdrop-filter]:bg-background/65">
+              <TabsList className="grid h-auto w-full grid-cols-3 gap-1 p-1 lg:grid-cols-8">
+                <TabsTrigger value="resumen" className="flex items-center gap-2 py-2">
+                  <BarChart3 className="h-4 w-4" />
+                  <span className="hidden sm:inline">Resumen ejecutivo</span>
+                </TabsTrigger>
 
-              <TabsTrigger value="graficos" className="flex items-center gap-2 py-2">
-                <PieChart className="h-4 w-4" />
-                <span className="hidden sm:inline">Gráficos</span>
-              </TabsTrigger>
+                <TabsTrigger value="graficos" className="flex items-center gap-2 py-2">
+                  <PieChart className="h-4 w-4" />
+                  <span className="hidden sm:inline">Gráficos</span>
+                </TabsTrigger>
 
-              <TabsTrigger value="turnos" className="flex items-center gap-2 py-2">
-                <TrendingUp className="h-4 w-4" />
-                <span className="hidden sm:inline">Turnos y prefijos</span>
-              </TabsTrigger>
+                <TabsTrigger value="turnos" className="flex items-center gap-2 py-2">
+                  <TrendingUp className="h-4 w-4" />
+                  <span className="hidden sm:inline">Turnos y prefijos</span>
+                </TabsTrigger>
 
-              <TabsTrigger value="prefijos-hora" className="flex items-center gap-2 py-2">
-                <Clock className="h-4 w-4" />
-                <span className="hidden sm:inline">Prefijos por hora</span>
-              </TabsTrigger>
+                <TabsTrigger value="prefijos-hora" className="flex items-center gap-2 py-2">
+                  <Clock className="h-4 w-4" />
+                  <span className="hidden sm:inline">Prefijos por hora</span>
+                </TabsTrigger>
 
-              <TabsTrigger value="depuracion" className="flex items-center gap-2 py-2">
-                <Trash2 className="h-4 w-4" />
-                <span className="hidden sm:inline">Motor de depuración</span>
-              </TabsTrigger>
+                <TabsTrigger value="depuracion" className="flex items-center gap-2 py-2">
+                  <Trash2 className="h-4 w-4" />
+                  <span className="hidden sm:inline">Motor de depuración</span>
+                </TabsTrigger>
 
-              <TabsTrigger value="filtros" className="flex items-center gap-2 py-2">
-                <Filter className="h-4 w-4" />
-                <span className="hidden sm:inline">Filtro detallado</span>
-              </TabsTrigger>
+                <TabsTrigger value="filtros" className="flex items-center gap-2 py-2">
+                  <Filter className="h-4 w-4" />
+                  <span className="hidden sm:inline">Filtro detallado</span>
+                </TabsTrigger>
 
-              <TabsTrigger value="simulador" className="flex items-center gap-2 py-2">
-                <Settings className="h-4 w-4" />
-                <span className="hidden sm:inline">Simulador</span>
-              </TabsTrigger>
-              
-              <TabsTrigger value="catalogo" className="flex items-center gap-2 py-2">
-                <BookOpen className="h-4 w-4" />
-                <span className="hidden sm:inline">Catálogo de prefijos</span>
-              </TabsTrigger>
-            </TabsList>
+                <TabsTrigger value="simulador" className="flex items-center gap-2 py-2">
+                  <Settings className="h-4 w-4" />
+                  <span className="hidden sm:inline">Simulador</span>
+                </TabsTrigger>
+                
+                <TabsTrigger value="catalogo" className="flex items-center gap-2 py-2">
+                  <BookOpen className="h-4 w-4" />
+                  <span className="hidden sm:inline">Catálogo de prefijos</span>
+                </TabsTrigger>
+              </TabsList>
+            </div>
 
             <TabsContent value="resumen" className="space-y-6">
               <div data-summary-export-root="true" className="mx-auto w-full max-w-[1120px] space-y-6 rounded-2xl bg-background p-6">
@@ -660,10 +688,6 @@ export default function Home() {
 
               <IntentosDistribucionChart data={analysisResult} />
 
-              <HourlyAreaChart data={analysisResult} />
-
-              <PrefijosTreemap data={analysisResult} />
-
               <MiniMapaArgentina data={analysisResult} />
             </TabsContent>
 
@@ -699,7 +723,58 @@ export default function Home() {
           </Tabs>
         )}
 
-        {!analysisResult && !uploadMutation.isPending && (
+        {!analysisResult && !uploadMutation.isPending && uploadError && (
+          <Card className="glass-card border-destructive/30 bg-destructive/5">
+            <CardContent className="flex min-h-[260px] flex-col items-center justify-center p-10 text-center">
+              <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-destructive/10">
+                <AlertTriangle className="h-7 w-7 text-destructive" />
+              </div>
+
+              <h3 className="text-3xl font-bold text-foreground">
+                No se pudo procesar la carga
+              </h3>
+
+              <p className="mt-3 max-w-[620px] text-base leading-relaxed text-muted-foreground">
+                Se seleccionaron{" "}
+                <span className="font-semibold text-foreground">
+                  {lastUploadInfo?.count ?? 0}
+                </span>{" "}
+                archivo{lastUploadInfo?.count === 1 ? "" : "s"}, pero el backend devolvió
+                un error durante el procesamiento.
+              </p>
+
+              <div className="mt-5 max-w-[720px] rounded-xl border border-destructive/25 bg-background/70 p-4 text-left">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-destructive">
+                  Detalle del error
+                </p>
+
+                <p className="text-sm leading-relaxed text-foreground">
+                  {uploadError}
+                </p>
+              </div>
+
+              {lastUploadInfo?.names?.length ? (
+                <div className="mt-4 flex max-w-[760px] flex-wrap justify-center gap-2">
+                  {lastUploadInfo.names.slice(0, 6).map((name) => (
+                    <Badge
+                      key={name}
+                      className="border-border bg-secondary/70 text-muted-foreground"
+                    >
+                      {name}
+                    </Badge>
+                  ))}
+                </div>
+              ) : null}
+
+              <p className="mt-5 max-w-[640px] text-sm leading-relaxed text-muted-foreground">
+                Probá cargar un archivo por vez para detectar cuál falla, o revisá la
+                terminal de Visual Studio Code para ver el error técnico exacto.
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
+        {!analysisResult && !uploadMutation.isPending && !uploadError && (
           <Card className="glass-card">
             <CardContent className="flex min-h-[280px] flex-col items-center justify-center p-10 text-center">
               <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-muted">
