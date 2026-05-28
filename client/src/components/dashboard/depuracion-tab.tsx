@@ -36,6 +36,15 @@ interface DepuracionTabProps {
     scoreMinimo?: number | null;
     busqueda?: string;
   }) => void;
+  onExportNeotel: (filters: {
+    aniList?: string[];
+    tags: string[];
+    prioridad?: string;
+    accion?: string;
+    soloSaturados?: boolean;
+    scoreMinimo?: number | null;
+    busqueda?: string;
+  }) => void;
   onExportPorAccion: (accion: string) => void;
 }
 
@@ -99,8 +108,10 @@ export function DepuracionTab({
   onExportResumen,
   onExportFiltrado,
   onExportBaseFinal,
+  onExportNeotel,
   onExportPorAccion,
 }: DepuracionTabProps) {
+
   const [selectedTags, setSelectedTags] = useState<TagType[]>(["SEGUIR_INTENTANDO"]);
   const [selectedPrioridad, setSelectedPrioridad] = useState<string>("TODAS");
   const [selectedAccion, setSelectedAccion] = useState<string>("TODAS");
@@ -551,6 +562,27 @@ export function DepuracionTab({
             >
               <Download className="h-4 w-4" />
               Base final depurada
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={filteredAnis.length === 0}
+              onClick={() =>
+                onExportNeotel({
+                  aniList: filteredAnis.map((item) => item.ani).filter(Boolean),
+                  tags: selectedTags,
+                  prioridad: selectedPrioridad,
+                  accion: selectedAccion,
+                  soloSaturados,
+                  scoreMinimo: scoreMinimo.trim() === "" ? null : Number(scoreMinimo),
+                  busqueda,
+                })
+              }
+              className="gap-2 rounded-lg border-primary/30 bg-primary/5 text-primary hover:bg-primary/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Download className="h-4 w-4" />
+              Lote Neotel (.xls)
             </Button>
 
             <Button

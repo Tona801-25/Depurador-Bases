@@ -229,6 +229,66 @@ export default function Home() {
     [analysisResult, toast]
   );
 
+  const handleExportNeotel = useCallback(
+  async (filters: {
+    aniList?: string[];
+    tags: string[];
+    prioridad?: string;
+    accion?: string;
+    soloSaturados?: boolean;
+    scoreMinimo?: number | null;
+    busqueda?: string;
+  }) => {
+    if (!analysisResult) return;
+
+    try {
+      const response = await fetch("/api/export/neotel", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          analysisId: analysisResult.id,
+          ...filters,
+        }),
+      });
+
+    if (!response.ok) {
+      let message = "No se pudo generar el lote Neotel";
+
+      try {
+        const errorData = await response.json();
+        if (errorData?.message) {
+          message = errorData.message;
+        }
+      } catch {
+        // Si no viene JSON, dejamos el mensaje genérico.
+      }
+
+      throw new Error(message);
+    }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+
+      a.href = url;
+      a.download = "contactos_neotel_depurados.xls";
+      a.click();
+
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      toast({
+        title: "Error al exportar",
+        description:
+          error instanceof Error
+            ? error.message
+            : "No se pudo generar el lote Neotel",
+        variant: "destructive",
+      });
+    }
+  },
+  [analysisResult, toast]
+);
+
   const handleExportPorAccion = useCallback(
     async (accion: string) => {
       if (!analysisResult || !accion || accion === "TODAS") return;
@@ -398,6 +458,7 @@ export default function Home() {
           <FileUpload
             onFilesSelected={handleFilesSelected}
             isUploading={uploadMutation.isPending}
+            uploadError={uploadError}
           />
         </section>
 
@@ -705,6 +766,7 @@ export default function Home() {
                 onExportResumen={handleExportResumen}
                 onExportFiltrado={handleExportFiltrado}
                 onExportBaseFinal={handleExportBaseFinal}
+                onExportNeotel={handleExportNeotel}
                 onExportPorAccion={handleExportPorAccion}
               />
             </TabsContent>

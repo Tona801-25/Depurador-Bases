@@ -6,6 +6,8 @@ import {
   Plus,
   FileSpreadsheet,
   CheckCircle2,
+  Clock3,
+  AlertCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -13,6 +15,7 @@ import { cn } from "@/lib/utils";
 interface FileUploadProps {
   onFilesSelected: (files: File[]) => void;
   isUploading?: boolean;
+  uploadError?: string | null;
   acceptedFormats?: string[];
   className?: string;
 }
@@ -20,6 +23,7 @@ interface FileUploadProps {
 export function FileUpload({
   onFilesSelected,
   isUploading = false,
+  uploadError = null,
   acceptedFormats = [".csv", ".txt", ".xls", ".xlsx", ".xlsm", ".xlsb"],
   className,
 }: FileUploadProps) {
@@ -84,6 +88,42 @@ export function FileUpload({
 
   const hasFiles = selectedFiles.length > 0;
 
+    const getFileStatus = () => {
+    if (uploadError) {
+      return {
+        label: "Error",
+        icon: AlertCircle,
+        chipClass:
+          "border-destructive/35 bg-destructive/10 text-destructive shadow-[0_0_18px_rgba(239,68,68,0.10)]",
+        iconClass: "text-destructive",
+        pulse: false,
+      };
+    }
+
+    if (isUploading) {
+      return {
+        label: "Procesando",
+        icon: Loader2,
+        chipClass:
+          "border-primary/25 bg-primary/5 text-primary",
+        iconClass: "animate-spin text-primary",
+        pulse: false,
+      };
+    }
+
+    return {
+      label: "Leído / OK",
+      icon: CheckCircle2,
+      chipClass:
+        "border-emerald-500/35 bg-emerald-500/10 text-emerald-400 shadow-[0_0_18px_rgba(16,185,129,0.12)]",
+      iconClass: "text-emerald-400",
+      pulse: false,
+    };
+  };
+
+  const fileStatus = getFileStatus();
+  const FileStatusIcon = fileStatus.icon;
+
   const acceptedFormatsLabel = acceptedFormats
     .map((format) => format.replace(".", "").toUpperCase())
     .join(" · ");
@@ -108,11 +148,15 @@ export function FileUpload({
         </h2>
 
         {hasFiles && (
-          <span className="flex items-center gap-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
-            <CheckCircle2 className="h-3.5 w-3.5" />
+          <span
+            className={cn(
+              "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium",
+              fileStatus.chipClass
+            )}
+          >
+            <FileStatusIcon className={cn("h-3.5 w-3.5", fileStatus.iconClass)} />
             {selectedFiles.length} archivo
-            {selectedFiles.length !== 1 ? "s" : ""} listo
-            {selectedFiles.length !== 1 ? "s" : ""}
+            {selectedFiles.length !== 1 ? "s" : ""} · {fileStatus.label}
           </span>
         )}
       </div>
@@ -192,8 +236,7 @@ export function FileUpload({
                 "group relative flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-primary/25 bg-primary/10 px-4 py-2 text-sm font-semibold text-primary",
                 "transition-all duration-200 hover:bg-primary/15 hover:shadow-[0_0_22px_rgba(0,188,212,0.12)]",
                 isUploading && "pointer-events-none opacity-60"
-              )}
-            >
+              )}>
               <input
                 type="file"
                 multiple
@@ -215,25 +258,52 @@ export function FileUpload({
 
             <div className="flex flex-1 flex-wrap items-center gap-2 lg:justify-end">
               {selectedFiles.map((file, index) => (
-                <div
-                  key={`${file.name}-${index}`}
-                  className={cn(
-                    "group/chip flex max-w-full items-center gap-2 rounded-lg border border-border bg-secondary/60 px-3 py-2 text-xs",
-                    "transition-all duration-200 hover:border-primary/40 hover:bg-secondary hover:shadow-sm",
-                    isUploading && "opacity-70"
+            <div
+              key={`${file.name}-${index}`}
+              className={cn(
+                "group/chip relative flex max-w-full items-center gap-2 rounded-lg border px-3 py-2 text-xs",
+                "transition-all duration-200 hover:border-primary/35 hover:bg-secondary/80",                fileStatus.chipClass,
+              )}
+              style={{ animationDelay: `${index * 60}ms` }}
+              data-testid={`file-item-${index}`}>
+              <span className="relative flex h-5 w-5 shrink-0 items-center justify-center">
+                <FileSpreadsheet className="h-3.5 w-3.5 text-primary" />
+
+                <span className={cn(
+                    "absolute -right-2 -top-2 flex h-4 w-4 items-center justify-center rounded-full border border-background bg-background",
+                    uploadError
+                      ? "text-destructive"
+                      : isUploading
+                        ? "text-primary"
+                        : "text-emerald-400"
+                  )}>
+                  {uploadError ? (
+                    <AlertCircle className="h-3 w-3" />
+                  ) : isUploading ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="h-3 w-3" />
                   )}
-                  style={{ animationDelay: `${index * 60}ms` }}
-                  data-testid={`file-item-${index}`}
-                >
-                  <FileSpreadsheet className="h-3.5 w-3.5 shrink-0 text-primary" />
+                </span>
+              </span>
 
                   <span className="max-w-[230px] truncate font-medium text-secondary-foreground">
                     {file.name}
                   </span>
 
-                  <span className="shrink-0 tabular-nums text-muted-foreground">
-                    {formatFileSize(file.size)}
-                  </span>
+              <span className="shrink-0 tabular-nums text-muted-foreground">
+                {formatFileSize(file.size)}
+              </span>
+
+              <span className={cn("shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
+                  uploadError
+                    ? "border-destructive/30 bg-destructive/10 text-destructive"
+                    : isUploading
+                      ? "border-primary/30 bg-primary/10 text-primary"
+                      : "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+                )}>
+                {uploadError ? "Error" : isUploading ? "Leyendo" : "OK"}
+              </span>
 
                   <Button
                     variant="ghost"
