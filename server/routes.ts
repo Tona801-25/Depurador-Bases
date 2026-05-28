@@ -7,6 +7,7 @@ import fs from "fs";
 import path from "path";
 
 import { storage, processCallRecords, generateCSV, applyRecordFilters, computeAnalysisMeta } from "./storage";
+import { getLocalHistoryStats, saveAnalysisToLocalDb } from "./localDb";
 import type { RecordsFilter } from "@shared/schema";
 
 // Guardamos archivos temporales en disco para no cargar todo en RAM.
@@ -46,6 +47,148 @@ function buildBaseFinalRows(rows: any[]) {
   }));
 }
 
+function filtrarAniSummariesParaExportar(
+  rows: any[],
+  options: {
+    aniList?: string[];
+    tags?: string[];
+    prioridad?: string;
+    accion?: string;
+    soloSaturados?: boolean;
+    scoreMinimo?: number | null;
+    busqueda?: string;
+  }
+) {
+  let filteredRows = [...rows];
+
+  if (Array.isArray(options.aniList) && options.aniList.length > 0) {
+    const selectedAnis = new Set(
+      options.aniList
+        .map((ani) => limpiarLineaNeotel(ani))
+        .filter((ani) => ani.length > 0)
+    );
+
+    filteredRows = filteredRows.filter((item) =>
+      selectedAnis.has(limpiarLineaNeotel(item.ani))
+    );
+
+    return filteredRows;
+  }
+
+  if (Array.isArray(options.tags) && options.tags.length > 0) {
+    const selectedTags = new Set(options.tags);
+    filteredRows = filteredRows.filter((item) => selectedTags.has(item.tagTelefono));
+  }
+
+  if (options.prioridad && options.prioridad !== "TODAS") {
+    filteredRows = filteredRows.filter(
+      (item) => (item.prioridad || "").toUpperCase() === options.prioridad
+    );
+  }
+
+  if (options.accion && options.accion !== "TODAS") {
+    filteredRows = filteredRows.filter(
+      (item) => (item.accionSugerida || "").toUpperCase() === options.accion
+    );
+  }
+
+  if (options.soloSaturados) {
+    filteredRows = filteredRows.filter((item) => item.saturado === true);
+  }
+
+  if (typeof options.scoreMinimo === "number" && Number.isFinite(options.scoreMinimo)) {
+    filteredRows = filteredRows.filter(
+      (item) => (item.scoreRecontactabilidad ?? 0) >= Number(options.scoreMinimo)
+    );
+  }
+
+  const textoBusqueda = (options.busqueda ?? "").trim().toLowerCase();
+
+  if (textoBusqueda) {
+    filteredRows = filteredRows.filter((item) =>
+      [
+        item.ani,
+        item.basePrincipal,
+        item.prefijo,
+        item.mejorFranja,
+        item.prioridad,
+        item.accionSugerida,
+        item.motivoDepuracion,
+        item.ultimoEstadoNormalizado,
+        item.ultimoSubestadoNormalizado,
+      ]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(textoBusqueda))
+    );
+  }
+
+  return filteredRows;
+}
+
+function limpiarLineaNeotel(value: unknown) {
+  return String(value ?? "")
+    .replace(/\D/g, "")
+    .trim();
+}
+
+const NEOTEL_HEADERS = [
+  "LINEA",
+  "RAZON SOCIAL",
+  "DOCUMENTO",
+  "DIRECCION del CLIENTE",
+  "FECHA DE NACIMIENTO",
+  "MERCADO ACTUAL",
+  "PLAN ACTUAL",
+  "PLAN SUGERIDO",
+  "PRECIO",
+  "FUENTE DE SOLICITUD",
+  "LOCALIDAD",
+  "CP",
+];
+
+function buildNeotelRows(rows: any[]) {
+  const seen = new Set<string>();
+
+  return rows
+    .map((s) => limpiarLineaNeotel(s.ani))
+    .filter((linea) => {
+      if (!linea) return false;
+      if (seen.has(linea)) return false;
+
+      seen.add(linea);
+      return true;
+    })
+    .map((linea) => ({
+      LINEA: linea,
+      "RAZON SOCIAL": "",
+      DOCUMENTO: "",
+      "DIRECCION del CLIENTE": "",
+      "FECHA DE NACIMIENTO": "",
+      "MERCADO ACTUAL": "",
+      "PLAN ACTUAL": "",
+      "PLAN SUGERIDO": "",
+      PRECIO: "",
+      "FUENTE DE SOLICITUD": "",
+      LOCALIDAD: "",
+      CP: "",
+    }));
+}
+
+function buildNeotelWorksheet(rows: any[]) {
+  const aoaRows = [
+    NEOTEL_HEADERS,
+    ...rows.map((row) => NEOTEL_HEADERS.map((header) => row[header] ?? "")),
+  ];
+
+  const worksheet = XLSX.utils.aoa_to_sheet(aoaRows);
+
+  worksheet["!cols"] = NEOTEL_HEADERS.map((header) => ({
+    wch: Math.max(header.length + 2, 14),
+  }));
+
+  return worksheet;
+}
+
 function extractFechaArchivoFromName(fileName: string): string | undefined {
   const normalized = fileName.trim();
 
@@ -77,6 +220,17 @@ function extractFechaArchivoFromName(fileName: string): string | undefined {
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   app.get("/api/health", (_req, res) => res.json({ ok: true }));
   app.get("/health", (_req, res) => res.json({ ok: true }));
+
+    app.get("/api/history/stats", (_req, res) => {
+    try {
+      res.json(getLocalHistoryStats());
+    } catch (error) {
+      console.error("Error leyendo historial local:", error);
+      res.status(500).json({
+        message: "Error al leer el historial local",
+      });
+    }
+  });
 
   // 1) Upload a disco + parseo + store (DEVOLVEMOS FULL)
   app.post("/api/upload", upload.array("files"), async (req, res) => {
@@ -164,11 +318,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(400).json({ message: "No se pudieron leer datos" });
     }
 
-    const analysisResult = processCallRecords(allRecords);
-    await storage.storeAnalysis(analysisResult);
+  const analysisResult = processCallRecords(allRecords);
+  await storage.storeAnalysis(analysisResult);
 
-    // ✅ DEVOLVEMOS FULL (incluye rawRecords + prefijoPorHora)
-    res.json(analysisResult);
+  try {
+    const sqliteResult = saveAnalysisToLocalDb(analysisResult);
+
+    console.log("Historial SQLite actualizado:", {
+      archivosNuevos: sqliteResult.insertedFiles,
+      archivosDuplicados: sqliteResult.duplicatedFiles,
+      registrosNuevos: sqliteResult.insertedRecords,
+      registrosDuplicados: sqliteResult.duplicatedRecords,
+    });
+  } catch (sqliteError) {
+    console.error("No se pudo guardar en SQLite, pero el análisis sigue funcionando:", sqliteError);
+  }
+
+  // ✅ DEVOLVEMOS FULL (incluye rawRecords + prefijoPorHora)
+  res.json(analysisResult);
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Error interno al procesar archivos" });
@@ -337,6 +504,64 @@ if (textoBusqueda) {
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", "attachment; filename=base_final_depurada.csv");
   res.send(csv);
+});
+
+  app.post("/api/export/neotel", async (req, res) => {
+  const {
+    analysisId,
+    aniList,
+    tags,
+    prioridad,
+    accion,
+    soloSaturados,
+    scoreMinimo,
+    busqueda,
+  } = req.body as {
+    analysisId: string;
+    aniList?: string[];
+    tags?: string[];
+    prioridad?: string;
+    accion?: string;
+    soloSaturados?: boolean;
+    scoreMinimo?: number | null;
+    busqueda?: string;
+  };
+
+  const analysis = await storage.getAnalysis(analysisId);
+  if (!analysis) return res.status(404).json({ message: "Análisis no encontrado" });
+
+  const filteredRows = filtrarAniSummariesParaExportar(analysis.aniSummaries, {
+  aniList,
+  tags,
+  prioridad,
+  accion,
+  soloSaturados,
+  scoreMinimo,
+  busqueda,
+  });
+
+  const neotelRows = buildNeotelRows(filteredRows);
+
+  if (neotelRows.length === 0) {
+    return res.status(400).json({
+      message:
+        "No hay líneas para exportar con los filtros actuales. Revisá la tabla de decisión por ANI.",
+    });
+  }
+
+  const worksheet = buildNeotelWorksheet(neotelRows);
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Contactos");
+
+  const buffer = XLSX.write(workbook, {
+    type: "buffer",
+    bookType: "biff8",
+  });
+
+  res.setHeader("Content-Type", "application/vnd.ms-excel");
+  res.setHeader("Content-Disposition", "attachment; filename=contactos_neotel_depurados.xls");
+  res.send(buffer);
 });
 
   app.post("/api/export/accion", async (req, res) => {
