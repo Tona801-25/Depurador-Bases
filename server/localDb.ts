@@ -69,12 +69,11 @@ function buildRecordHash(record: CallRecord): string {
   );
 }
 
-function buildFileHash(fileName: string, records: CallRecord[]): string {
+function buildFileHash(_fileName: string, records: CallRecord[]): string {
   const recordHashes = records.map(buildRecordHash).sort();
 
   return sha256(
     [
-      normalizeValue(fileName),
       String(records.length),
       recordHashes[0] ?? "",
       recordHashes[recordHashes.length - 1] ?? "",
@@ -310,4 +309,85 @@ export function getLocalHistoryStats() {
     totalContactosEfectivos: contactos.total,
     totalAnalysisRuns: analyses.total,
   };
+}
+
+export function getImportedFiles(limit = 10) {
+  initLocalDb();
+
+  const safeLimit = Math.min(Math.max(limit, 1), 50);
+
+  const rows = db
+    .prepare(`
+      SELECT
+        id,
+        file_name AS fileName,
+        file_hash AS fileHash,
+        fecha_archivo AS fechaArchivo,
+        uploaded_at AS uploadedAt,
+        total_records AS totalRecords
+      FROM imported_files
+      ORDER BY uploaded_at DESC, id DESC
+      LIMIT ?
+    `)
+    .all(safeLimit) as Array<{
+      id: number;
+      fileName: string;
+      fileHash: string;
+      fechaArchivo: string | null;
+      uploadedAt: string;
+      totalRecords: number;
+    }>;
+
+  return rows;
+}
+
+export function deleteImportedFile(fileId: number) {
+  initLocalDb();
+
+  const file = db
+    .prepare(`
+      SELECT
+        id,
+        file_name AS fileName,
+        total_records AS totalRecords
+      FROM imported_files
+      WHERE id = ?
+    `)
+    .get(fileId) as
+    | {
+        id: number;
+        fileName: string;
+        totalRecords: number;
+      }
+    | undefined;
+
+  if (!file) {
+    return {
+      deleted: false,
+      message: "No se encontró el archivo importado",
+      deletedRecords: 0,
+    };
+  }
+
+  const transaction = db.transaction(() => {
+    const deletedRecordsResult = db
+      .prepare(`
+        DELETE FROM call_records
+        WHERE file_id = ?
+      `)
+      .run(fileId);
+
+    db.prepare(`
+      DELETE FROM imported_files
+      WHERE id = ?
+    `).run(fileId);
+
+    return {
+      deleted: true,
+      file,
+      deletedRecords: deletedRecordsResult.changes,
+    };
+  });
+
+  return transaction();
 }

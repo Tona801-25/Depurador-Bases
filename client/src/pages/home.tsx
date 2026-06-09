@@ -24,7 +24,7 @@ import { CatalogoPrefijosTab } from "@/components/dashboard/catalogo-prefijos";
 import { SimuladorCortesTab } from "@/components/dashboard/simulador-cortes";
 import { PrefijosPorHoraTab } from "@/components/dashboard/prefijos-por-hora-tab";
 import EffectivenessRadial from "@/components/dashboard/effectivenessRadial";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import type { AnalysisResult, RecordsFilter, BaseInsight } from "@shared/schema";
 import {
@@ -44,6 +44,7 @@ import {
   XCircle,
   Layers3,
   PieChart,
+  Database,
 } from "lucide-react";
 import FilterChips from "@/components/dashboard/filterChips";
 import ExportMenu from "@/components/dashboard/exportMenu";
@@ -54,6 +55,24 @@ import InfoTooltip from "@/components/infoTooltip";
 import AnalysisInsights from "@/components/dashboard/analysisInsights";
 import DiagnosticoEjecutivo from "@/components/dashboard/diagnostico-ejecutivo";
 
+type LocalHistoryStats = {
+  dbPath: string;
+  totalFiles: number;
+  totalRecords: number;
+  totalAnis: number;
+  totalContactosEfectivos: number;
+  totalAnalysisRuns: number;
+};
+
+type LocalHistoryFile = {
+  id: number;
+  fileName: string;
+  fileHash: string;
+  fechaArchivo: string | null;
+  uploadedAt: string;
+  totalRecords: number;
+};
+
 export default function Home() {
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -62,9 +81,81 @@ export default function Home() {
     names: string[];
   } | null>(null);
 
-  const { toast } = useToast();
+    const { toast } = useToast();
 
-  const uploadMutation = useMutation({
+    const historyStatsQuery = useQuery<LocalHistoryStats>({
+      queryKey: ["local-history-stats"],
+      queryFn: async () => {
+        const response = await fetch("/api/history/stats");
+
+        if (!response.ok) {
+          throw new Error("No se pudo leer el historial local");
+        }
+
+        return response.json();
+      },
+      refetchOnWindowFocus: false,
+      retry: false,
+    });
+
+    const historyFilesQuery = useQuery<LocalHistoryFile[]>({
+    queryKey: ["local-history-files"],
+    queryFn: async () => {
+      const response = await fetch("/api/history/files");
+
+      if (!response.ok) {
+        throw new Error("No se pudieron leer los archivos importados");
+      }
+
+      return response.json();
+    },
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+
+    const deleteHistoryFileMutation = useMutation({
+      mutationFn: async (fileId: number) => {
+        const confirmed = window.confirm(
+          "¿Querés eliminar este ticket del historial local? Esta acción también elimina sus registros guardados en SQLite."
+        );
+
+        if (!confirmed) {
+          throw new Error("Eliminación cancelada");
+        }
+
+        const response = await fetch(`/api/history/files/${fileId}`, {
+          method: "DELETE",
+        });
+
+        if (!response.ok) {
+          throw new Error("No se pudo eliminar el ticket guardado");
+        }
+
+        return response.json();
+      },
+      onSuccess: () => {
+        historyStatsQuery.refetch();
+        historyFilesQuery.refetch();
+
+        toast({
+          title: "Ticket eliminado",
+          description: "El archivo y sus registros fueron eliminados del historial local.",
+        });
+      },
+      onError: (error) => {
+        if (error instanceof Error && error.message === "Eliminación cancelada") {
+          return;
+        }
+
+        toast({
+          title: "No se pudo eliminar",
+          description: "Revisá la terminal o intentá nuevamente.",
+          variant: "destructive",
+        });
+      },
+    });
+
+    const uploadMutation = useMutation({
     mutationFn: async (files: File[]) => {
       const formData = new FormData();
 
@@ -92,17 +183,20 @@ export default function Home() {
 
       return response.json() as Promise<AnalysisResult>;
     },
-    onSuccess: (data) => {
-      setUploadError(null);
-      setAnalysisResult(data);
+      onSuccess: (data) => {
+        setUploadError(null);
+        setAnalysisResult(data);
+        historyStatsQuery.refetch();
+        historyFilesQuery.refetch();
 
-      toast({
-        title: "Análisis completado",
-        description: `Se procesaron ${data.totalRecords.toLocaleString(
-          "es-AR"
-        )} registros de ${data.totalAnis.toLocaleString("es-AR")} ANIs únicos.`,
-      });
-    },
+        toast({
+          title: "Análisis completado",
+          description: `Se procesaron ${data.totalRecords.toLocaleString(
+            "es-AR"
+          )} registros de ${data.totalAnis.toLocaleString("es-AR")} ANIs únicos.`,
+        });
+      },
+
     onError: (error: Error) => {
       setAnalysisResult(null);
       setUploadError(error.message);
@@ -425,6 +519,11 @@ export default function Home() {
   };
 }, [analysisResult]);
 
+  const localHistoryStats = historyStatsQuery.data;
+  const localHistoryFiles = historyFilesQuery.data ?? [];
+
+
+
   const renderBadge = (recomendacion: string) => {
     if (recomendacion === "UTILIZAR") {
       return (
@@ -460,6 +559,179 @@ export default function Home() {
             isUploading={uploadMutation.isPending}
             uploadError={uploadError}
           />
+        </section>
+
+        <section className="mb-8">
+          <Card className="glass-card overflow-hidden border-primary/15 bg-background/70">
+            <CardContent className="p-4">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <div className="flex items-start gap-3">
+                  <div className="rounded-2xl border border-primary/20 bg-primary/10 p-3 text-primary">
+                    <Database className="h-5 w-5" />
+                  </div>
+
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="text-sm font-semibold text-foreground">
+                        Historial local SQLite
+                      </h2>
+
+                      <Badge className="border-primary/25 bg-primary/10 text-primary hover:bg-primary/10">
+                        activo
+                      </Badge>
+                    </div>
+
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Los tickets cargados quedan guardados localmente para futuras consultas y comparativas.
+                    </p>
+                  </div>
+                </div>
+
+                {historyStatsQuery.isLoading ? (
+                  <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+                    {[...Array(4)].map((_, index) => (
+                      <div key={index} className="rounded-xl border border-border/60 bg-muted/20 p-3">
+                        <Skeleton className="mb-2 h-3 w-20" />
+                        <Skeleton className="h-5 w-14" />
+                      </div>
+                    ))}
+                  </div>
+                ) : localHistoryStats ? (
+                  <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+                    <div className="rounded-xl border border-border/60 bg-muted/20 p-3">
+                      <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                        Archivos
+                      </p>
+                      <p className="mt-1 text-lg font-bold text-foreground">
+                        {localHistoryStats.totalFiles.toLocaleString("es-AR")}
+                      </p>
+                    </div>
+
+                    <div className="rounded-xl border border-border/60 bg-muted/20 p-3">
+                      <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                        Registros
+                      </p>
+                      <p className="mt-1 text-lg font-bold text-foreground">
+                        {localHistoryStats.totalRecords.toLocaleString("es-AR")}
+                      </p>
+                    </div>
+
+                    <div className="rounded-xl border border-border/60 bg-muted/20 p-3">
+                      <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                        ANIs únicos
+                      </p>
+                      <p className="mt-1 text-lg font-bold text-foreground">
+                        {localHistoryStats.totalAnis.toLocaleString("es-AR")}
+                      </p>
+                    </div>
+
+                    <div className="rounded-xl border border-border/60 bg-muted/20 p-3">
+                      <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                        Contactos efectivos
+                      </p>
+                      <p className="mt-1 flex items-center gap-1 text-lg font-bold text-success">
+                        <CheckCircle2 className="h-4 w-4" />
+                        {localHistoryStats.totalContactosEfectivos.toLocaleString("es-AR")}
+                      </p>
+                    </div>
+                  </div>
+                ) : historyStatsQuery.isError ? (
+                  <div className="rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+                    No se pudo conectar con el historial local SQLite. Revisá que el backend esté corriendo y que exista el endpoint /api/history/stats.
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-warning/20 bg-warning/10 px-4 py-3 text-sm text-warning">
+                    Historial local inicializándose. Si es la primera vez, cargá un ticket para crear la base local.
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        </section>
+
+        <section className="mb-8">
+          <Card className="glass-card overflow-hidden border-border/70 bg-background/70">
+            <CardContent className="p-4">
+              <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h2 className="text-sm font-semibold text-foreground">
+                    Últimos tickets guardados
+                  </h2>
+                  <p className="text-xs text-muted-foreground">
+                    Archivos importados al historial local para reutilizar sin volver a cargarlos.
+                  </p>
+                </div>
+
+                <Badge variant="outline" className="w-fit">
+                  {localHistoryFiles.length.toLocaleString("es-AR")} visibles
+                </Badge>
+              </div>
+
+              {historyFilesQuery.isLoading ? (
+                <div className="rounded-xl border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
+                  Cargando últimos tickets guardados...
+                </div>
+              ) : historyFilesQuery.isError ? (
+                <div className="rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+                  No se pudo leer la lista de tickets guardados.
+                </div>
+              ) : localHistoryFiles.length === 0 ? (
+                <div className="rounded-xl border border-border/60 bg-muted/20 px-4 py-5 text-sm text-muted-foreground">
+                  Todavía no hay tickets guardados. Cargá un archivo de Neotel para empezar a construir el historial.
+                </div>
+              ) : (
+                <div className="overflow-hidden rounded-xl border border-border/60">
+                  <div className="grid grid-cols-12 gap-3 border-b border-border/60 bg-muted/30 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                    <div className="col-span-4">Archivo</div>
+                    <div className="col-span-2">Fecha archivo</div>
+                    <div className="col-span-2 text-right">Registros</div>
+                    <div className="col-span-3 text-right">Cargado</div>
+                    <div className="col-span-1 text-right">Acción</div>
+                  </div>
+
+                  <div className="divide-y divide-border/60">
+                    {localHistoryFiles.map((file) => (
+                      <div
+                        key={file.id}
+                        className="grid grid-cols-12 gap-3 px-4 py-3 text-sm transition-colors hover:bg-muted/20">
+                        <div className="col-span-4 min-w-0">
+                          <p className="truncate font-medium text-foreground">
+                            {file.fileName}
+                          </p>
+                          <p className="truncate text-[11px] text-muted-foreground">
+                            Hash: {file.fileHash.slice(0, 10)}...
+                          </p>
+                        </div>
+
+                        <div className="col-span-2 flex items-center text-muted-foreground">
+                          {file.fechaArchivo || "Sin fecha"}
+                        </div>
+
+                        <div className="col-span-2 flex items-center justify-end font-semibold text-foreground">
+                          {file.totalRecords.toLocaleString("es-AR")}
+                        </div>
+
+                        <div className="col-span-3 flex items-center justify-end text-xs text-muted-foreground">
+                          {new Date(file.uploadedAt).toLocaleString("es-AR")}
+                        </div>
+
+                        <div className="col-span-1 flex items-center justify-end">
+                          <button type="button"
+                            className="rounded-lg border border-destructive/20 bg-destructive/10 p-2 text-destructive transition-colors hover:bg-destructive/20 disabled:opacity-50"
+                            disabled={deleteHistoryFileMutation.isPending}
+                            onClick={() => deleteHistoryFileMutation.mutate(file.id)}
+                            title="Eliminar ticket del historial" >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </section>
 
         {uploadMutation.isPending && (
@@ -599,12 +871,6 @@ export default function Home() {
                 />
               </div>
 
-              <EffectivenessRadial data={analysisResult} />
-
-              <AnalysisInsights data={analysisResult} />
-
-              <FilterChips data={analysisResult} />
-
               {rankedBases.length > 0 && (
                 <Card className="glass-card">
                   <CardHeader className="pb-2">
@@ -621,8 +887,7 @@ export default function Home() {
                     {rankedBases.slice(0, 5).map((base: BaseInsight) => (
                       <div
                         key={base.base}
-                        className="soft-cyan-hover flex flex-col gap-3 rounded-xl border border-border bg-card p-4 lg:flex-row lg:items-center lg:justify-between"
-                      >
+                        className="soft-cyan-hover flex flex-col gap-3 rounded-xl border border-border bg-card p-4 lg:flex-row lg:items-center lg:justify-between">
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
                             <p className="truncate text-sm font-semibold text-foreground">
@@ -661,8 +926,7 @@ export default function Home() {
 
                               <InfoTooltip
                                 side="top"
-                                text="Porcentaje de ANIs de esa base que lograron contacto efectivo. A mayor valor, mejor potencial operativo tiene la base."
-                              />
+                                text="Porcentaje de ANIs de esa base que lograron contacto efectivo. A mayor valor, mejor potencial operativo tiene la base." />
                             </div>
 
                             <p className="mt-1 font-semibold text-success">
@@ -678,8 +942,7 @@ export default function Home() {
 
                               <InfoTooltip
                                 side="top"
-                                text="Porcentaje de ANIs que derivaron en buzón o contestador. Un valor alto puede indicar baja disponibilidad, mala calidad de datos o necesidad de ajustar horarios y reintentos."
-                              />
+                                text="Porcentaje de ANIs que derivaron en buzón o contestador. Un valor alto puede indicar baja disponibilidad, mala calidad de datos o necesidad de ajustar horarios y reintentos." />
                             </div>
 
                             <p className="mt-1 font-semibold text-warning">
@@ -695,8 +958,7 @@ export default function Home() {
 
                               <InfoTooltip
                                 side="top"
-                                text="Porcentaje de registros con señales inválidas, rechazadas o no gestionables. Si este valor es alto, conviene depurar la base antes de seguir marcando."
-                              />
+                                text="Porcentaje de registros con señales inválidas, rechazadas o no gestionables. Si este valor es alto, conviene depurar la base antes de seguir marcando." />
                             </div>
 
                             <p className="mt-1 font-semibold text-destructive">
@@ -712,8 +974,7 @@ export default function Home() {
 
                               <InfoTooltip
                                 side="top"
-                                text="Indicador resumen de calidad de la base. Combina métricas positivas y negativas para facilitar la decisión operativa. Cuanto más alto, mejor calidad relativa."
-                              />
+                                text="Indicador resumen de calidad de la base. Combina métricas positivas y negativas para facilitar la decisión operativa. Cuanto más alto, mejor calidad relativa." />
                             </div>
 
                             <p className="mt-1 font-semibold text-foreground">
@@ -739,6 +1000,12 @@ export default function Home() {
                   Análisis visual de estados, TAGs, contactación, intentos, prefijos y cobertura regional.
                 </p>
               </div>
+
+              <EffectivenessRadial data={analysisResult} />
+
+              <AnalysisInsights data={analysisResult} />
+
+              <FilterChips data={analysisResult} />
 
               <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
                 <EstadoDistribucionChart data={analysisResult} />

@@ -7,7 +7,12 @@ import fs from "fs";
 import path from "path";
 
 import { storage, processCallRecords, generateCSV, applyRecordFilters, computeAnalysisMeta } from "./storage";
-import { getLocalHistoryStats, saveAnalysisToLocalDb } from "./localDb";
+import {
+  deleteImportedFile,
+  getImportedFiles,
+  getLocalHistoryStats,
+  saveAnalysisToLocalDb,
+} from "./localDb";
 import type { RecordsFilter } from "@shared/schema";
 
 // Guardamos archivos temporales en disco para no cargar todo en RAM.
@@ -221,13 +226,40 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/health", (_req, res) => res.json({ ok: true }));
   app.get("/health", (_req, res) => res.json({ ok: true }));
 
-    app.get("/api/history/stats", (_req, res) => {
+  app.get("/api/history/files", (_req, res) => {
     try {
-      res.json(getLocalHistoryStats());
+      res.json(getImportedFiles(10));
     } catch (error) {
-      console.error("Error leyendo historial local:", error);
+      console.error("Error leyendo archivos importados:", error);
       res.status(500).json({
-        message: "Error al leer el historial local",
+        message: "Error al leer los archivos importados",
+      });
+    }
+  });
+
+  app.delete("/api/history/files/:id", (req, res) => {
+    try {
+      const fileId = Number(req.params.id);
+
+      if (!Number.isFinite(fileId) || fileId <= 0) {
+        return res.status(400).json({
+          message: "ID de archivo inválido",
+        });
+      }
+
+      const result = deleteImportedFile(fileId);
+
+      if (!result.deleted) {
+        return res.status(404).json(result);
+      }
+
+      res.json(result);
+    } catch (error) {
+      console.error("Error eliminando archivo importado:", error);
+
+      res.status(500).json({
+        message: "Error al eliminar el archivo importado",
+        detail: error instanceof Error ? error.message : String(error),
       });
     }
   });
