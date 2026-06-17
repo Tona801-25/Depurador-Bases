@@ -32,6 +32,7 @@ import {
   Clock,
   TrendingUp,
   Trash2,
+  PlayCircle,
   Filter,
   BookOpen,
   Settings,
@@ -101,8 +102,7 @@ export default function Home() {
     const historyFilesQuery = useQuery<LocalHistoryFile[]>({
     queryKey: ["local-history-files"],
     queryFn: async () => {
-      const response = await fetch("/api/history/files");
-
+      const response = await fetch("/api/history/files?limit=100");
       if (!response.ok) {
         throw new Error("No se pudieron leer los archivos importados");
       }
@@ -111,6 +111,70 @@ export default function Home() {
     },
     refetchOnWindowFocus: false,
     retry: false,
+  });
+
+    const analyzeAllHistoryMutation = useMutation({
+      mutationFn: async () => {
+        const response = await fetch("/api/history/analyze-all", {
+          method: "POST",
+        });
+
+        if (!response.ok) {
+          throw new Error("No se pudo analizar el historial completo");
+        }
+
+        return response.json();
+      },
+      onSuccess: (data) => {
+        setUploadError(null);
+        setAnalysisResult(data);
+
+        toast({
+          title: "Historial completo analizado",
+          description: `Se analizaron ${data.totalRecords.toLocaleString(
+            "es-AR"
+          )} registros guardados en SQLite.`,
+        });
+      },
+      onError: () => {
+        toast({
+          title: "No se pudo analizar el historial",
+          description: "Revisá la terminal o intentá nuevamente.",
+          variant: "destructive",
+        });
+      },
+    });
+
+    const analyzeHistoryFileMutation = useMutation({
+    mutationFn: async (fileId: number) => {
+      const response = await fetch(`/api/history/files/${fileId}/analyze`, {
+        method: "POST",
+      });
+
+      if (!response.ok) {
+        throw new Error("No se pudo analizar el ticket guardado");
+      }
+
+      return response.json();
+    },
+    onSuccess: (data) => {
+      setUploadError(null);
+      setAnalysisResult(data);
+
+      toast({
+        title: "Ticket histórico analizado",
+        description: `Se analizaron ${data.totalRecords.toLocaleString(
+          "es-AR"
+        )} registros desde SQLite.`,
+      });
+    },
+    onError: () => {
+      toast({
+        title: "No se pudo analizar",
+        description: "Revisá la terminal o intentá nuevamente.",
+        variant: "destructive",
+      });
+    },
   });
 
     const deleteHistoryFileMutation = useMutation({
@@ -149,6 +213,59 @@ export default function Home() {
 
         toast({
           title: "No se pudo eliminar",
+          description: "Revisá la terminal o intentá nuevamente.",
+          variant: "destructive",
+        });
+      },
+    });
+
+    const deleteAllHistoryMutation = useMutation({
+      mutationFn: async () => {
+        const confirmed = window.confirm(
+          "¿Querés eliminar TODO el historial local SQLite? Esta acción borra todos los tickets y registros guardados, pero no elimina tus archivos Excel originales."
+        );
+
+        if (!confirmed) {
+          throw new Error("Eliminación cancelada");
+        }
+
+        const secondConfirmed = window.confirm(
+          "Confirmación final: se va a vaciar todo el historial local. Después vas a tener que volver a cargar los tickets."
+        );
+
+        if (!secondConfirmed) {
+          throw new Error("Eliminación cancelada");
+        }
+        
+        const response = await fetch("/api/history/clear-all", {
+          method: "DELETE",
+        });
+
+        if (!response.ok) {
+          throw new Error("No se pudo eliminar el historial completo");
+        }
+
+        return response.json();
+      },
+      onSuccess: () => {
+        setAnalysisResult(null);
+        setUploadError(null);
+
+        historyStatsQuery.refetch();
+        historyFilesQuery.refetch();
+
+        toast({
+          title: "Historial eliminado",
+          description: "Se eliminaron todos los tickets y registros guardados en SQLite.",
+        });
+      },
+      onError: (error) => {
+        if (error instanceof Error && error.message === "Eliminación cancelada") {
+          return;
+        }
+
+        toast({
+          title: "No se pudo eliminar el historial",
           description: "Revisá la terminal o intentá nuevamente.",
           variant: "destructive",
         });
@@ -652,20 +769,44 @@ export default function Home() {
         <section className="mb-8">
           <Card className="glass-card overflow-hidden border-border/70 bg-background/70">
             <CardContent className="p-4">
-              <div className="mb-4 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h2 className="text-sm font-semibold text-foreground">
-                    Últimos tickets guardados
-                  </h2>
-                  <p className="text-xs text-muted-foreground">
-                    Archivos importados al historial local para reutilizar sin volver a cargarlos.
-                  </p>
-                </div>
+                <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h2 className="text-sm font-semibold text-foreground">
+                      Últimos tickets guardados
+                    </h2>
+                    <p className="text-xs text-muted-foreground">
+                      Archivos importados al historial local para reutilizar sin volver a cargarlos.
+                    </p>
+                  </div>
 
-                <Badge variant="outline" className="w-fit">
-                  {localHistoryFiles.length.toLocaleString("es-AR")} visibles
-                </Badge>
-              </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-2 rounded-lg border border-primary/25 bg-primary/10 px-3 py-2 text-xs font-semibold text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={analyzeAllHistoryMutation.isPending || localHistoryFiles.length === 0}
+                      onClick={() => analyzeAllHistoryMutation.mutate()}>
+                      <PlayCircle className="h-4 w-4" />
+                      {analyzeAllHistoryMutation.isPending
+                        ? "Analizando historial..."
+                        : "Analizar historial completo"}
+                    </button>
+
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-2 rounded-lg border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs font-semibold text-destructive transition-colors hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={deleteAllHistoryMutation.isPending || localHistoryFiles.length === 0}
+                      onClick={() => deleteAllHistoryMutation.mutate()}>
+                      <Trash2 className="h-4 w-4" />
+                      {deleteAllHistoryMutation.isPending
+                        ? "Eliminando..."
+                        : "Eliminar historial"}
+                    </button>
+
+                    <Badge variant="outline" className="w-fit">
+                      {localHistoryFiles.length.toLocaleString("es-AR")} visibles
+                    </Badge>
+                  </div>
+                </div>
 
               {historyFilesQuery.isLoading ? (
                 <div className="rounded-xl border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
@@ -680,7 +821,7 @@ export default function Home() {
                   Todavía no hay tickets guardados. Cargá un archivo de Neotel para empezar a construir el historial.
                 </div>
               ) : (
-                <div className="overflow-hidden rounded-xl border border-border/60">
+                  <div className="max-h-[520px] overflow-auto rounded-xl border border-border/60">
                   <div className="grid grid-cols-12 gap-3 border-b border-border/60 bg-muted/30 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                     <div className="col-span-4">Archivo</div>
                     <div className="col-span-2">Fecha archivo</div>
@@ -715,12 +856,20 @@ export default function Home() {
                           {new Date(file.uploadedAt).toLocaleString("es-AR")}
                         </div>
 
-                        <div className="col-span-1 flex items-center justify-end">
+                        <div className="col-span-1 flex items-center justify-end gap-2">
+                          <button type="button"
+                            className="rounded-lg border border-primary/20 bg-primary/10 p-2 text-primary transition-colors hover:bg-primary/20 disabled:opacity-50"
+                            disabled={analyzeHistoryFileMutation.isPending}
+                            onClick={() => analyzeHistoryFileMutation.mutate(file.id)}
+                            title="Analizar ticket guardado">
+                            <PlayCircle className="h-4 w-4" />
+                          </button>
+
                           <button type="button"
                             className="rounded-lg border border-destructive/20 bg-destructive/10 p-2 text-destructive transition-colors hover:bg-destructive/20 disabled:opacity-50"
                             disabled={deleteHistoryFileMutation.isPending}
                             onClick={() => deleteHistoryFileMutation.mutate(file.id)}
-                            title="Eliminar ticket del historial" >
+                            title="Eliminar ticket del historial">
                             <Trash2 className="h-4 w-4" />
                           </button>
                         </div>

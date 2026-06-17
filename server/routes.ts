@@ -1,4 +1,4 @@
-import type { Express } from "express";
+import type { Express, Request, Response } from "express";
 import type { Server } from "http";
 import multer from "multer";
 import * as XLSX from "xlsx";
@@ -8,9 +8,12 @@ import path from "path";
 
 import { storage, processCallRecords, generateCSV, applyRecordFilters, computeAnalysisMeta } from "./storage";
 import {
+  deleteAllLocalHistory,
   deleteImportedFile,
+  getAllHistoryRecords,
   getImportedFiles,
   getLocalHistoryStats,
+  getRecordsForImportedFile,
   saveAnalysisToLocalDb,
 } from "./localDb";
 import type { RecordsFilter } from "@shared/schema";
@@ -226,13 +229,55 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/health", (_req, res) => res.json({ ok: true }));
   app.get("/health", (_req, res) => res.json({ ok: true }));
 
-  app.get("/api/history/files", (_req, res) => {
+  app.get("/api/history/stats", (_req, res) => {
     try {
-      res.json(getImportedFiles(10));
+      res.json(getLocalHistoryStats());
+    } catch (error) {
+      console.error("Error leyendo estadisticas SQLite:", error);
+
+      res.status(500).json({
+        ok: false,
+        message: "Error al leer las estadisticas del historial local",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  const clearAllHistoryHandler = (_req: Request, res: Response) => {
+    try {
+      const result = deleteAllLocalHistory();
+
+      res.json({
+        ok: true,
+        ...result,
+      });
+    } catch (error) {
+      console.error("Error eliminando historial completo:", error);
+
+      res.status(500).json({
+        ok: false,
+        message: "Error al eliminar el historial completo",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  app.delete("/api/history/clear-all", clearAllHistoryHandler);
+  app.post("/api/history/clear-all", clearAllHistoryHandler);
+
+  app.get("/api/history/files", (req, res) => {
+    try {
+      const limitParam = Number(req.query.limit);
+      const limit = Number.isFinite(limitParam) && limitParam > 0 ? limitParam : 100;
+
+      const files = getImportedFiles(limit);
+      res.json(files);
     } catch (error) {
       console.error("Error leyendo archivos importados:", error);
+
       res.status(500).json({
         message: "Error al leer los archivos importados",
+        detail: error instanceof Error ? error.message : String(error),
       });
     }
   });
@@ -259,6 +304,62 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
       res.status(500).json({
         message: "Error al eliminar el archivo importado",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  app.post("/api/history/files/:id/analyze", async (req, res) => {
+  try {
+    const fileId = Number(req.params.id);
+
+    if (!Number.isFinite(fileId) || fileId <= 0) {
+      return res.status(400).json({
+        message: "ID de archivo inválido",
+      });
+    }
+
+    const records = getRecordsForImportedFile(fileId);
+
+    if (records.length === 0) {
+      return res.status(404).json({
+        message: "No se encontraron registros para este ticket",
+      });
+    }
+
+    const analysisResult = processCallRecords(records);
+    await storage.storeAnalysis(analysisResult);
+
+    res.json(analysisResult);
+  } catch (error) {
+    console.error("Error analizando ticket histórico:", error);
+
+    res.status(500).json({
+      message: "Error al analizar el ticket histórico",
+      detail: error instanceof Error ? error.message : String(error),
+    });
+  }
+  });
+
+    app.post("/api/history/analyze-all", async (_req, res) => {
+    try {
+      const records = getAllHistoryRecords();
+
+      if (records.length === 0) {
+        return res.status(404).json({
+          message: "No hay registros guardados en SQLite para analizar",
+        });
+      }
+
+      const analysisResult = processCallRecords(records);
+      await storage.storeAnalysis(analysisResult);
+
+      res.json(analysisResult);
+    } catch (error) {
+      console.error("Error analizando historial completo:", error);
+
+      res.status(500).json({
+        message: "Error al analizar el historial completo",
         detail: error instanceof Error ? error.message : String(error),
       });
     }

@@ -339,63 +339,137 @@ function extractPrefijo(ani: string): string {
 function excelSerialToDate(serial: number): Date | null {
   if (!Number.isFinite(serial)) return null;
   const ms = (serial - 25569) * 86400 * 1000;
-  const d = new Date(ms);
-  return Number.isNaN(d.getTime()) ? null : d;
+  const utcDate = new Date(ms);
+  if (Number.isNaN(utcDate.getTime())) return null;
+
+  return buildValidatedLocalDate(
+    utcDate.getUTCFullYear(),
+    utcDate.getUTCMonth() + 1,
+    utcDate.getUTCDate(),
+    utcDate.getUTCHours(),
+    utcDate.getUTCMinutes(),
+    utcDate.getUTCSeconds()
+  );
+}
+
+function buildValidatedLocalDate(
+  year: number,
+  month: number,
+  day: number,
+  hour = 0,
+  minute = 0,
+  second = 0
+): Date | null {
+  if (![year, month, day, hour, minute, second].every(Number.isFinite)) return null;
+  if (month < 1 || month > 12) return null;
+  if (day < 1 || day > 31) return null;
+  if (hour < 0 || hour > 23) return null;
+  if (minute < 0 || minute > 59) return null;
+  if (second < 0 || second > 59) return null;
+
+  const d = new Date(year, month - 1, day, hour, minute, second);
+  if (Number.isNaN(d.getTime())) return null;
+
+  if (
+    d.getFullYear() !== year ||
+    d.getMonth() !== month - 1 ||
+    d.getDate() !== day ||
+    d.getHours() !== hour ||
+    d.getMinutes() !== minute ||
+    d.getSeconds() !== second
+  ) {
+    return null;
+  }
+
+  return d;
 }
 
 function parseTicketDate(value?: unknown): Date | null {
   if (value === null || value === undefined) return null;
+
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
 
   if (typeof value === "number") {
     if (value > 20000) return excelSerialToDate(value);
     return null;
   }
 
-  const s = String(value).trim();
+  const s = String(value).trim().replace(/\s+/g, " ");
   if (!s) return null;
 
-  if (/^\d+(\.\d+)?$/.test(s)) {
-    const num = Number(s);
-    if (Number.isFinite(num) && num > 20000) return excelSerialToDate(num);
-  }
-
+  // Formato compacto Neotel: 20260529. Debe evaluarse antes que serial Excel.
   if (/^\d{8}$/.test(s)) {
     const year = Number(s.slice(0, 4));
     const month = Number(s.slice(4, 6));
     const day = Number(s.slice(6, 8));
-    const d = new Date(year, month - 1, day, 0, 0, 0);
-    return Number.isNaN(d.getTime()) ? null : d;
+    return buildValidatedLocalDate(year, month, day);
+  }
+
+  const numericString = s.replace(",", ".");
+  if (/^\d+(\.\d+)?$/.test(numericString)) {
+    const num = Number(numericString);
+    if (Number.isFinite(num) && num > 20000) return excelSerialToDate(num);
+  }
+
+  // Formato Neotel Argentina: 29-05-2026 20:08:00 o 29/05/2026 20:08:00
+  // IMPORTANTE: esto va ANTES de new Date(s), porque JS puede interpretar mal fechas tipo 05-06-2026.
+  const neotelMatch = s.match(
+    /^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?(?:\s*(AM|PM))?$/i
+  );
+
+  if (neotelMatch) {
+    const [, firstStr, secondStr, yyyyStr, hhStr = "0", miStr = "0", ssStr = "0", meridian] =
+      neotelMatch;
+
+    const first = Number(firstStr);
+    const second = Number(secondStr);
+    const yyyy = Number(yyyyStr.length === 2 ? `20${yyyyStr}` : yyyyStr);
+    let hh = Number(hhStr);
+    const mi = Number(miStr);
+    const ss = Number(ssStr);
+
+    if (meridian) {
+      const upperMeridian = meridian.toUpperCase();
+      if (upperMeridian === "PM" && hh < 12) hh += 12;
+      if (upperMeridian === "AM" && hh === 12) hh = 0;
+    }
+
+    const isMonthDay = first <= 12 && second > 12;
+    const dd = isMonthDay ? second : first;
+    const mm = isMonthDay ? first : second;
+
+    return buildValidatedLocalDate(yyyy, mm, dd, hh, mi, ss);
+  }
+
+  const isoLikeMatch = s.match(
+    /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T\s](\d{1,2}):(\d{2})(?::(\d{2}))?)?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?$/
+  );
+
+  if (isoLikeMatch) {
+    const [, yyyyStr, mmStr, ddStr, hhStr = "0", miStr = "0", ssStr = "0"] =
+      isoLikeMatch;
+
+    const parsed = new Date(s);
+    if (!Number.isNaN(parsed.getTime()) && /(?:Z|[+-]\d{2}:?\d{2})$/.test(s)) {
+      return parsed;
+    }
+
+    return buildValidatedLocalDate(
+      Number(yyyyStr),
+      Number(mmStr),
+      Number(ddStr),
+      Number(hhStr),
+      Number(miStr),
+      Number(ssStr)
+    );
   }
 
   const isoTry = new Date(s);
   if (!Number.isNaN(isoTry.getTime())) return isoTry;
 
-  const [datePart, timePart] = s.split(" ");
-  if (!datePart) return null;
-
-  const sep = datePart.includes("-") ? "-" : datePart.includes("/") ? "/" : null;
-  if (!sep) return null;
-
-  const [ddStr, mmStr, yyyyStr] = datePart.split(sep);
-  const dd = Number(ddStr);
-  const mm = Number(mmStr);
-  const yyyy = Number(yyyyStr);
-
-  let hh = 0;
-  let mi = 0;
-  let ss = 0;
-
-  if (timePart) {
-    const t = timePart.split(":").map(Number);
-    hh = t[0] ?? 0;
-    mi = t[1] ?? 0;
-    ss = t[2] ?? 0;
-  }
-
-  if (![dd, mm, yyyy, hh, mi, ss].every(Number.isFinite)) return null;
-
-  const d = new Date(yyyy, mm - 1, dd, hh, mi, ss);
-  return Number.isNaN(d.getTime()) ? null : d;
+  return null;
 }
 
 function getRangoHorario(dateStr?: string): string {
@@ -419,7 +493,50 @@ function isFranjaOperativaValida(franja: string): boolean {
   return !["Sin hora", "Antes de 09:00", "Después de 21:00"].includes(franja);
 }
 
-function getTurno(dateStr?: string): string {
+function parseNeotelDate(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined;
+
+  const raw = String(value).trim();
+  if (!raw) return undefined;
+
+  // Excel a veces manda fechas como número serial.
+  const numericValue = Number(raw);
+  if (Number.isFinite(numericValue) && numericValue > 20000 && numericValue < 80000) {
+    const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+    const date = new Date(excelEpoch.getTime() + numericValue * 24 * 60 * 60 * 1000);
+    return date.toISOString();
+  }
+
+  // Formato Neotel habitual: 29-05-2026 20:08:00 o 29/05/2026 20:08:00
+  const match = raw.match(
+    /^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/
+  );
+
+  if (match) {
+    const [, dd, mm, yyyyRaw, hh = "00", min = "00", ss = "00"] = match;
+    const yyyy = yyyyRaw.length === 2 ? `20${yyyyRaw}` : yyyyRaw;
+
+    return `${yyyy.padStart(4, "0")}-${mm.padStart(2, "0")}-${dd.padStart(
+      2,
+      "0"
+    )}T${hh.padStart(2, "0")}:${min.padStart(2, "0")}:${ss.padStart(2, "0")}`;
+  }
+
+  // Formato compacto de columna Fecha: 20260529
+  const compact = raw.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (compact) {
+    const [, yyyy, mm, dd] = compact;
+    return `${yyyy}-${mm}-${dd}T00:00:00`;
+  }
+
+  const parsed = new Date(raw);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toISOString();
+  }
+  return raw;
+}
+
+function getTurno(dateStr?: string | undefined): string {
   const d = parseTicketDate(dateStr);
 
   if (!d) return "Sin hora";
@@ -1498,36 +1615,75 @@ export function processCallRecords(rawData: Record<string, any>[]): AnalysisResu
   const colDuracion =
     findColumn(columns, ["DURACION", "DURACIONENSEGUNDOS", "SEGUNDOS", "DURATION"]) ||
     "Duración";
-  const colFecha =
-    findColumn(columns, [
-      "INICIO",
-      "FECHAINICIO",
-      "FECHAHORA",
-      "LOGTIME",
-      "FECHALLAMADA",
-      "START",
-      "BEGIN",
-    ]) || "Inicio";
 
-  const records: CallRecord[] = rawData.map((row) => {
-    const parsed = parseTicketDate(row[colFecha]);
+      const colFecha =
+        findColumn(columns, [
+          "INICIO",
+          "FECHAINICIO",
+          "FECHAHORA",
+          "FECHA HORA",
+          "FECHA LLAMADA",
+          "FECHALLAMADA",
+          "LOGTIME",
+          "START",
+          "BEGIN",
+          "FECHA",
+        ]) || "Inicio";
 
-    return {
-      fecha: parsed ? parsed.toISOString() : row[colFecha]?.toString() || undefined,
-      archivoOrigen: row.__archivoOrigen?.toString() || undefined,
-      fechaArchivo: row.__fechaArchivo?.toString() || undefined,
-      estado: row[colEstado]?.toString() || "",
-      subestado: row[colSubestado]?.toString() || undefined,
-      ani: row[colAni]?.toString()?.trim() || "",
-      base: row[colBase]?.toString() || undefined,
-      duracion: Number.isFinite(Number(row[colDuracion]))
-        ? Number(row[colDuracion])
-        : undefined,
-      direccion: row["Dirección"]?.toString() || row["Direccion"]?.toString() || undefined,
-      conexion: row["Conexión"]?.toString() || row["Conexion"]?.toString() || undefined,
-      fin: row["Fin"]?.toString() || undefined,
-    };
-  });
+      const records: CallRecord[] = rawData.map((row) => {
+        const fechaOriginal =
+          row[colFecha] ??
+          row.fecha ??
+          row.Fecha ??
+          row.FECHA ??
+          row.Inicio ??
+          row.INICIO ??
+          row["Fecha Inicio"] ??
+          row["FECHA INICIO"];
+
+        const parsed = parseTicketDate(fechaOriginal);
+
+        return {
+          fecha: parsed
+            ? parsed.toISOString()
+            : fechaOriginal?.toString() || undefined,
+          archivoOrigen:
+            row.__archivoOrigen?.toString() ||
+            row.archivoOrigen?.toString() ||
+            row.archivo_origen?.toString() ||
+            undefined,
+          fechaArchivo:
+            row.__fechaArchivo?.toString() ||
+            row.fechaArchivo?.toString() ||
+            row.fecha_archivo?.toString() ||
+            undefined,
+          estado: row[colEstado]?.toString() || row.estado?.toString() || "",
+          subestado:
+            row[colSubestado]?.toString() ||
+            row.subestado?.toString() ||
+            undefined,
+          ani: (row[colAni]?.toString() || row.ani?.toString() || "").trim(),
+          base: row[colBase]?.toString() || row.base?.toString() || undefined,
+          duracion: Number.isFinite(Number(row[colDuracion] ?? row.duracion))
+            ? Number(row[colDuracion] ?? row.duracion)
+            : undefined,
+          direccion:
+            row["Dirección"]?.toString() ||
+            row["Direccion"]?.toString() ||
+            row.direccion?.toString() ||
+            undefined,
+          conexion:
+            row["Conexión"]?.toString() ||
+            row["Conexion"]?.toString() ||
+            row.conexion?.toString() ||
+            undefined,
+          fin:
+            row["Fin"]?.toString() ||
+            row.FIN?.toString() ||
+            row.fin?.toString() ||
+            undefined,
+        };
+      });
 
   const rangoDistribucion: Record<string, { total: number; answer: number; noAnswer: number }> = {};
 
