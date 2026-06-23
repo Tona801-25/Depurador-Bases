@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { DataTable, type Column } from "@/components/data-table";
 import type { AnalysisResult } from "@shared/schema";
 import HourlyAreaChart from "@/components/dashboard/hourlyAreaChart";
@@ -7,6 +8,30 @@ import PrefijoHeatmap from "@/components/dashboard/prefijosHeatmap";
 
 interface PrefijosPorHoraTabProps {
   data: AnalysisResult;
+}
+
+function getStrategyLabel(strategy: string) {
+  if (strategy === "PRIORIZAR_TARDE") return "Lote tarde";
+  if (strategy === "PRIORIZAR_MANANA") return "Lote mañana";
+  if (strategy === "MANTENER_MIXTO") return "Lote mixto";
+  if (strategy === "AMPLIAR_PRUEBA_TARDE") return "Ampliar prueba";
+  return "Muestra insuficiente";
+}
+
+function getStrategyClass(strategy: string) {
+  if (strategy === "PRIORIZAR_TARDE") {
+    return "border-success/30 bg-success/10 text-success";
+  }
+
+  if (strategy === "PRIORIZAR_MANANA") {
+    return "border-primary/30 bg-primary/10 text-primary";
+  }
+
+  if (strategy === "MANTENER_MIXTO") {
+    return "border-warning/30 bg-warning/10 text-warning";
+  }
+
+  return "border-border bg-muted/40 text-muted-foreground";
 }
 
 // Parser simple y robusto para: "DD-MM-YYYY HH:mm:ss" o "DD/MM/YYYY HH:mm:ss"
@@ -57,7 +82,13 @@ function parseTicketDateClient(dateStr?: string): Date | null {
 
   export function PrefijosPorHoraTab({ data }: PrefijosPorHoraTabProps) {
 
-  console.log("rawRecords sample:", data.rawRecords?.[0]); 
+  const estrategia = data.estrategiaPrefijos;
+  const prefijosConMuestra =
+    estrategia?.items.filter((item) => item.estrategia !== "VALIDAR_MUESTRA") ??
+    [];
+  const prefijosTarde = prefijosConMuestra.filter(
+    (item) => item.estrategia === "PRIORIZAR_TARDE"
+  );
 
 const tableData = useMemo(() => {
   const raw = data.rawRecords ?? [];
@@ -185,6 +216,135 @@ const tableData = useMemo(() => {
           Detectá en qué horario domina cada prefijo para ajustar tu estrategia.
         </p>
       </div>
+
+      {estrategia && (
+        <Card className="glass-card border-primary/20">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm font-display font-bold">
+              Estrategia de lotes por prefijo
+            </CardTitle>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              Usa todos los ANIs del prefijo y compara contacto efectivo por turno.
+              Solo recomienda un turno cuando existe muestra suficiente.
+            </p>
+          </CardHeader>
+
+          <CardContent className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div className="rounded-lg border border-border bg-background/60 p-3">
+                <p className="text-[10px] font-semibold uppercase text-muted-foreground">
+                  Mañana
+                </p>
+                <p className="mt-1 text-xl font-bold text-foreground">
+                  {estrategia.pctContactoMananaGlobal.toFixed(1)}%
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  contacto por ANI único
+                </p>
+              </div>
+
+              <div className="rounded-lg border border-success/25 bg-success/5 p-3">
+                <p className="text-[10px] font-semibold uppercase text-success">
+                  Tarde desde {estrategia.horaInicioTarde}:00
+                </p>
+                <p className="mt-1 text-xl font-bold text-foreground">
+                  {estrategia.pctContactoTardeGlobal.toFixed(1)}%
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  contacto por ANI único
+                </p>
+              </div>
+
+              <div className="rounded-lg border border-primary/25 bg-primary/5 p-3">
+                <p className="text-[10px] font-semibold uppercase text-primary">
+                  Prefijos para lote tarde
+                </p>
+                <p className="mt-1 text-xl font-bold text-foreground">
+                  {prefijosTarde.length.toLocaleString("es-AR")}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  con ventaja confirmada
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-border bg-background/50 p-3 text-sm leading-relaxed text-muted-foreground">
+              {estrategia.recomendacionGeneral}
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-xs font-semibold uppercase text-muted-foreground">
+                  Recomendación por prefijo
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  Mínimo: {estrategia.minimoAnisPrefijo} ANIs por prefijo y{" "}
+                  {estrategia.minimoAnisTurno} por turno
+                </p>
+              </div>
+
+              <div className="grid gap-2 lg:grid-cols-2">
+                {prefijosConMuestra.slice(0, 12).map((item) => (
+                  <div
+                    key={item.prefijo}
+                    className="rounded-lg border border-border/70 bg-background/60 p-3"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-bold text-foreground">
+                          Prefijo {item.prefijo}
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {item.totalAnis.toLocaleString("es-AR")} ANIs · Buzón sin
+                          contacto {item.pctBuzonSinContacto.toFixed(1)}%
+                        </p>
+                      </div>
+
+                      <Badge className={getStrategyClass(item.estrategia)}>
+                        {getStrategyLabel(item.estrategia)}
+                      </Badge>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                      <div>
+                        <p className="text-muted-foreground">Mañana</p>
+                        <p className="font-semibold text-foreground">
+                          {item.pctContactoManana.toFixed(1)}%
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Tarde</p>
+                        <p className="font-semibold text-foreground">
+                          {item.pctContactoTarde.toFixed(1)}%
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Diferencia</p>
+                        <p
+                          className={
+                            item.diferenciaPp > 0
+                              ? "font-semibold text-success"
+                              : item.diferenciaPp < 0
+                                ? "font-semibold text-warning"
+                                : "font-semibold text-foreground"
+                          }
+                        >
+                          {item.diferenciaPp > 0 ? "+" : ""}
+                          {item.diferenciaPp.toFixed(1)} pp
+                        </p>
+                      </div>
+                    </div>
+
+                    <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
+                      {item.motivo}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <HourlyAreaChart data={data} />
 

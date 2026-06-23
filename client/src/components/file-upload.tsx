@@ -6,8 +6,8 @@ import {
   Plus,
   FileSpreadsheet,
   CheckCircle2,
-  Clock3,
   AlertCircle,
+  ChevronDown,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -29,6 +29,7 @@ export function FileUpload({
 }: FileUploadProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [showFileList, setShowFileList] = useState(false);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -87,6 +88,7 @@ export function FileUpload({
   };
 
   const hasFiles = selectedFiles.length > 0;
+  const totalFileSize = selectedFiles.reduce((total, file) => total + file.size, 0);
 
     const getFileStatus = () => {
     if (uploadError) {
@@ -230,7 +232,7 @@ export function FileUpload({
           )}
           data-testid="file-upload-dropzone"
         >
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <label
               className={cn(
                 "group relative flex cursor-pointer items-center justify-center gap-2 rounded-lg border border-primary/25 bg-primary/10 px-4 py-2 text-sm font-semibold text-primary",
@@ -256,54 +258,56 @@ export function FileUpload({
               {isUploading ? "Procesando..." : "Agregar archivos"}
             </label>
 
-            <div className="flex flex-1 flex-wrap items-center gap-2 lg:justify-end">
-              {selectedFiles.map((file, index) => (
-            <div
-              key={`${file.name}-${index}`}
-              className={cn(
-                "group/chip relative flex max-w-full items-center gap-2 rounded-lg border px-3 py-2 text-xs",
-                "transition-all duration-200 hover:border-primary/35 hover:bg-secondary/80",                fileStatus.chipClass,
-              )}
-              style={{ animationDelay: `${index * 60}ms` }}
-              data-testid={`file-item-${index}`}>
-              <span className="relative flex h-5 w-5 shrink-0 items-center justify-center">
-                <FileSpreadsheet className="h-3.5 w-3.5 text-primary" />
-
-                <span className={cn(
-                    "absolute -right-2 -top-2 flex h-4 w-4 items-center justify-center rounded-full border border-background bg-background",
-                    uploadError
-                      ? "text-destructive"
-                      : isUploading
-                        ? "text-primary"
-                        : "text-emerald-400"
-                  )}>
-                  {uploadError ? (
-                    <AlertCircle className="h-3 w-3" />
-                  ) : isUploading ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <CheckCircle2 className="h-3 w-3" />
-                  )}
+            <button
+              type="button"
+              className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-muted/40 sm:justify-end"
+              onClick={() => setShowFileList((current) => !current)}
+              aria-expanded={showFileList}
+              aria-controls="selected-files-list"
+            >
+              <span className="min-w-0 truncate text-xs text-muted-foreground">
+                <span className="font-semibold text-foreground">
+                  {selectedFiles.length} archivo{selectedFiles.length !== 1 ? "s" : ""}
                 </span>
+                {" · "}
+                {formatFileSize(totalFileSize)}
+                {" · "}
+                {fileStatus.label}
               </span>
 
+              <ChevronDown
+                className={cn(
+                  "h-4 w-4 shrink-0 text-muted-foreground transition-transform",
+                  showFileList && "rotate-180"
+                )}
+              />
+            </button>
+          </div>
+
+          {showFileList && (
+            <div
+              id="selected-files-list"
+              className="mt-3 max-h-56 overflow-y-auto border-t border-border/60 pt-3"
+            >
+              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+              {selectedFiles.map((file, index) => (
+                <div
+                  key={`${file.name}-${index}`}
+                  className={cn(
+                    "group/chip flex min-w-0 items-center gap-2 rounded-lg border px-3 py-2 text-xs",
+                    "transition-colors hover:border-primary/35",
+                    fileStatus.chipClass
+                  )}
+                  data-testid={`file-item-${index}`}
+                >
+                  <FileSpreadsheet className="h-4 w-4 shrink-0 text-primary" />
                   <span className="max-w-[230px] truncate font-medium text-secondary-foreground">
                     {file.name}
                   </span>
 
-              <span className="shrink-0 tabular-nums text-muted-foreground">
-                {formatFileSize(file.size)}
-              </span>
-
-              <span className={cn("shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide",
-                  uploadError
-                    ? "border-destructive/30 bg-destructive/10 text-destructive"
-                    : isUploading
-                      ? "border-primary/30 bg-primary/10 text-primary"
-                      : "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
-                )}>
-                {uploadError ? "Error" : isUploading ? "Leyendo" : "OK"}
-              </span>
+                  <span className="ml-auto shrink-0 tabular-nums text-muted-foreground">
+                    {formatFileSize(file.size)}
+                  </span>
 
                   <Button
                     variant="ghost"
@@ -321,12 +325,9 @@ export function FileUpload({
                   </Button>
                 </div>
               ))}
-
-              <span className="ml-1 shrink-0 text-xs tabular-nums text-muted-foreground">
-                {selectedFiles.length} total
-              </span>
+              </div>
             </div>
-          </div>
+          )}
         </div>
       )}
     </div>

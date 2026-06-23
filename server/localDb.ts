@@ -221,6 +221,48 @@ function getFechaFromRecord(record: Record<string, unknown>): string | undefined
   return normalizeDateForStorage(value);
 }
 
+function formatFechaArchivo(value: unknown): string | undefined {
+  const normalized = normalizeDateForStorage(value);
+  if (!normalized) return undefined;
+
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return undefined;
+
+  const day = String(date.getDate()).padStart(2, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const year = String(date.getFullYear());
+
+  return `${day}/${month}/${year}`;
+}
+
+function inferFechaArchivo(records: CallRecord[]): string | undefined {
+  const explicitDate = records
+    .map(
+      (record) =>
+        getRecordExtra(record, "fechaArchivo") ||
+        getRecordExtra(record, "fecha_archivo")
+    )
+    .find((value) => Boolean(value?.trim()));
+
+  if (explicitDate) return explicitDate;
+
+  let earliestDate: Date | null = null;
+
+  for (const record of records) {
+    const normalized = getFechaFromRecord(record as Record<string, unknown>);
+    if (!normalized) continue;
+
+    const date = new Date(normalized);
+    if (Number.isNaN(date.getTime())) continue;
+
+    if (!earliestDate || date.getTime() < earliestDate.getTime()) {
+      earliestDate = date;
+    }
+  }
+
+  return earliestDate ? formatFechaArchivo(earliestDate) : undefined;
+}
+
 function getPrefijo(ani?: string): string {
   const clean = String(ani ?? "").replace(/\D/g, "");
 
@@ -299,6 +341,11 @@ export function initLocalDb() {
       result_json TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS local_db_migrations (
+      id TEXT PRIMARY KEY,
+      applied_at TEXT NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_call_records_fecha ON call_records(fecha);
     CREATE INDEX IF NOT EXISTS idx_call_records_ani ON call_records(ani);
     CREATE INDEX IF NOT EXISTS idx_call_records_base ON call_records(base);
@@ -306,6 +353,49 @@ export function initLocalDb() {
     CREATE INDEX IF NOT EXISTS idx_call_records_prefijo ON call_records(prefijo);
     CREATE INDEX IF NOT EXISTS idx_imported_files_fecha_archivo ON imported_files(fecha_archivo);
   `);
+
+  const migrationId = "backfill_imported_file_dates_v1";
+  const migrationApplied = db
+    .prepare(`SELECT 1 FROM local_db_migrations WHERE id = ?`)
+    .get(migrationId);
+
+  if (!migrationApplied) {
+    const missingDates = db
+      .prepare(`
+        SELECT
+          imported_files.id,
+          MIN(call_records.fecha) AS first_record_date
+        FROM imported_files
+        INNER JOIN call_records ON call_records.file_id = imported_files.id
+        WHERE TRIM(COALESCE(imported_files.fecha_archivo, '')) = ''
+          AND TRIM(COALESCE(call_records.fecha, '')) <> ''
+        GROUP BY imported_files.id
+      `)
+      .all() as Array<{ id: number; first_record_date: string | null }>;
+
+    const updateFileDate = db.prepare(`
+      UPDATE imported_files
+      SET fecha_archivo = ?
+      WHERE id = ?
+        AND TRIM(COALESCE(fecha_archivo, '')) = ''
+    `);
+
+    const applyMigration = db.transaction(() => {
+      for (const row of missingDates) {
+        const inferredDate = formatFechaArchivo(row.first_record_date);
+        if (inferredDate) {
+          updateFileDate.run(inferredDate, row.id);
+        }
+      }
+
+      db.prepare(`
+        INSERT INTO local_db_migrations (id, applied_at)
+        VALUES (?, ?)
+      `).run(migrationId, new Date().toISOString());
+    });
+
+    applyMigration();
+  }
 }
 
 export function saveAnalysisToLocalDb(analysis: AnalysisResult) {
@@ -344,6 +434,13 @@ export function saveAnalysisToLocalDb(analysis: AnalysisResult) {
     SELECT id
     FROM imported_files
     WHERE file_hash = ?
+  `);
+
+  const updateMissingFileDate = db.prepare(`
+    UPDATE imported_files
+    SET fecha_archivo = ?
+    WHERE id = ?
+      AND TRIM(COALESCE(fecha_archivo, '')) = ''
   `);
 
   const insertRecord = db.prepare(`
@@ -389,13 +486,7 @@ export function saveAnalysisToLocalDb(analysis: AnalysisResult) {
       ([fileName, records]: [string, CallRecord[]]) => {
         const fileHash = buildFileHash(fileName, records);
 
-        const fechaArchivo =
-          records.find((record: CallRecord) => getRecordExtra(record, "fechaArchivo"))
-            ? getRecordExtra(
-                records.find((record: CallRecord) => getRecordExtra(record, "fechaArchivo"))!,
-                "fechaArchivo"
-              )
-            : "";
+        const fechaArchivo = inferFechaArchivo(records) || "";
 
         const fileResult = insertFile.run(
           fileName,
@@ -414,6 +505,10 @@ export function saveAnalysisToLocalDb(analysis: AnalysisResult) {
         const fileRow = getFileId.get(fileHash) as { id: number } | undefined;
         const fileId = fileRow?.id ?? null;
 
+        if (fileId && fechaArchivo) {
+          updateMissingFileDate.run(fechaArchivo, fileId);
+        }
+
         for (const record of records) {
           const recordHash = buildRecordHash(record);
 
@@ -425,7 +520,7 @@ export function saveAnalysisToLocalDb(analysis: AnalysisResult) {
           const fechaArchivoRecord =
             getRecordExtra(record, "fechaArchivo") ||
             getRecordExtra(record, "fecha_archivo") ||
-            "";
+            fechaArchivo;
 
           const recordResult = insertRecord.run(
             recordHash,
@@ -453,6 +548,23 @@ export function saveAnalysisToLocalDb(analysis: AnalysisResult) {
       }
     );
 
+    const analysisSummary = {
+      id: analysis.id,
+      fileName: analysis.fileName,
+      uploadedAt: analysis.uploadedAt,
+      totalRecords: analysis.totalRecords,
+      totalAnis: analysis.totalAnis,
+      anisContactados: analysis.anisContactados,
+      anisADepurar: analysis.anisADepurar,
+      pctAnswer: analysis.pctAnswer,
+      pctNoAnswer: analysis.pctNoAnswer,
+      estadoDistribucion: analysis.estadoDistribucion,
+      tagDistribucion: analysis.tagDistribucion,
+      turnoDistribucion: analysis.turnoDistribucion,
+      rangoDistribucion: analysis.rangoDistribucion,
+      resumenEjecutivo: analysis.resumenEjecutivo,
+    };
+
     insertAnalysis.run(
       analysis.id,
       now,
@@ -460,7 +572,7 @@ export function saveAnalysisToLocalDb(analysis: AnalysisResult) {
       analysis.totalRecords,
       analysis.totalAnis,
       analysis.pctAnswer,
-      JSON.stringify(analysis)
+      JSON.stringify(analysisSummary)
     );
 
     return {
@@ -680,19 +792,23 @@ export function getRecordsForImportedFile(fileId: number): CallRecord[] {
   const rows = db
     .prepare(`
       SELECT
-        raw_json,
-        fecha,
-        archivo_origen,
-        fecha_archivo,
-        ani,
-        estado,
-        subestado,
-        base,
-        prefijo,
-        duracion
+        call_records.raw_json,
+        call_records.fecha,
+        call_records.archivo_origen,
+        COALESCE(
+          NULLIF(call_records.fecha_archivo, ''),
+          imported_files.fecha_archivo
+        ) AS fecha_archivo,
+        call_records.ani,
+        call_records.estado,
+        call_records.subestado,
+        call_records.base,
+        call_records.prefijo,
+        call_records.duracion
       FROM call_records
-      WHERE file_id = ?
-      ORDER BY id ASC
+      LEFT JOIN imported_files ON imported_files.id = call_records.file_id
+      WHERE call_records.file_id = ?
+      ORDER BY call_records.id ASC
     `)
     .all(fileId) as StoredCallRecordRow[];
 
@@ -705,18 +821,22 @@ export function getAllHistoryRecords(): CallRecord[] {
   const rows = db
     .prepare(`
       SELECT
-        raw_json,
-        fecha,
-        archivo_origen,
-        fecha_archivo,
-        ani,
-        estado,
-        subestado,
-        base,
-        prefijo,
-        duracion
+        call_records.raw_json,
+        call_records.fecha,
+        call_records.archivo_origen,
+        COALESCE(
+          NULLIF(call_records.fecha_archivo, ''),
+          imported_files.fecha_archivo
+        ) AS fecha_archivo,
+        call_records.ani,
+        call_records.estado,
+        call_records.subestado,
+        call_records.base,
+        call_records.prefijo,
+        call_records.duracion
       FROM call_records
-      ORDER BY id ASC
+      LEFT JOIN imported_files ON imported_files.id = call_records.file_id
+      ORDER BY call_records.id ASC
     `)
     .all() as StoredCallRecordRow[];
 

@@ -3,7 +3,11 @@ import type { AnalysisResult } from "@shared/schema";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
+  AlertTriangle,
+  Check,
+  ChevronDown,
   Clock3,
+  Copy,
   GitCompareArrows,
   Layers3,
   MapPin,
@@ -15,6 +19,54 @@ interface ComparativaMultiarchivoPanelProps {
 }
 
 type EnfoqueAnalisis = "base" | "franja" | "prefijo" | "segmento";
+
+function getRecordHour(dateValue?: string) {
+  if (!dateValue) return null;
+
+  const date = new Date(dateValue);
+  return Number.isNaN(date.getTime()) ? null : date.getHours();
+}
+
+function getRecordRange(dateValue?: string) {
+  const hour = getRecordHour(dateValue);
+  if (hour === null) return "Sin hora";
+  if (hour < 9) return "Antes de 09:00";
+  if (hour < 11) return "09:00-11:00";
+  if (hour < 13) return "11:00-13:00";
+  if (hour < 15) return "13:00-15:00";
+  if (hour < 17) return "15:00-17:00";
+  if (hour < 19) return "17:00-19:00";
+  if (hour < 21) return "19:00-21:00";
+  return "Después de 21:00";
+}
+
+function getRecordPrefix(ani?: string) {
+  const digits = String(ani ?? "").replace(/\D/g, "");
+
+  if (digits.startsWith("54")) {
+    const rest = digits.slice(2);
+
+    if (rest.startsWith("9")) {
+      const mobile = rest.slice(1);
+      if (mobile.startsWith("11")) return "11";
+      for (const length of [4, 3, 2]) {
+        if (mobile.length >= length) return mobile.slice(0, length);
+      }
+    }
+
+    if (rest.startsWith("11")) return "11";
+    for (const length of [4, 3, 2]) {
+      if (rest.length >= length) return rest.slice(0, length);
+    }
+  }
+
+  if (digits.startsWith("11")) return "11";
+  for (const length of [4, 3, 2]) {
+    if (digits.length >= length) return digits.slice(0, length);
+  }
+
+  return digits.slice(0, 2) || "00";
+}
 
 function formatNumber(value: number) {
   return value.toLocaleString("es-AR");
@@ -50,6 +102,8 @@ export default function ComparativaMultiarchivoPanel({
   data,
 }: ComparativaMultiarchivoPanelProps) {
   const [enfoque, setEnfoque] = useState<EnfoqueAnalisis>("base");
+  const [expandedBase, setExpandedBase] = useState<string | null>(null);
+  const [copiedAlert, setCopiedAlert] = useState<string | null>(null);
 
   const comparativa = data.comparativaMultiarchivo;
 
@@ -74,6 +128,10 @@ export default function ComparativaMultiarchivoPanel({
         mejorFranja: string;
         mejorPrefijo: string;
         accionSugerida: string;
+        segmentosDestacados: number;
+        segmentosOportunidad: number;
+        segmentosRiesgo: number;
+        segmentos: typeof segmentos;
       }
     >();
 
@@ -89,12 +147,24 @@ export default function ComparativaMultiarchivoPanel({
           mejorFranja: segmento.franja,
           mejorPrefijo: segmento.prefijo,
           accionSugerida: segmento.accionSugerida,
+          segmentosDestacados: 0,
+          segmentosOportunidad: 0,
+          segmentosRiesgo: 0,
+          segmentos: [],
         };
 
       current.archivos.add(segmento.archivoOrigen);
       current.totalRegistros += segmento.totalRegistros;
       current.contactoEfectivo += segmento.contactoEfectivo;
       current.noContacto += segmento.noContacto;
+      current.segmentosDestacados++;
+      current.segmentos.push(segmento);
+
+      if (segmento.accionSugerida === "PRIORIZAR") {
+        current.segmentosOportunidad++;
+      } else {
+        current.segmentosRiesgo++;
+      }
 
       const currentPct =
         current.totalRegistros > 0
@@ -118,6 +188,9 @@ export default function ComparativaMultiarchivoPanel({
 
     return Array.from(map.values())
       .map((item) => {
+        const globalBase = data.baseInsights?.find(
+          (base) => base.base === item.base
+        );
         const pctContacto =
           item.totalRegistros > 0
             ? (item.contactoEfectivo / item.totalRegistros) * 100
@@ -144,6 +217,16 @@ export default function ComparativaMultiarchivoPanel({
           pctContacto,
           pctNoContacto,
           accionSugerida,
+          globalTotalRegistros: globalBase?.totalRegistros ?? 0,
+          globalTotalAnis: globalBase?.totalAnis ?? 0,
+          globalPctContacto:
+            typeof globalBase?.pctContactoEfectivo === "number"
+              ? globalBase.pctContactoEfectivo * 100
+              : null,
+          coberturaDestacada:
+            (globalBase?.totalRegistros ?? 0) > 0
+              ? (item.totalRegistros / globalBase!.totalRegistros) * 100
+              : 0,
         };
       })
       .sort((a, b) => {
@@ -153,7 +236,44 @@ export default function ComparativaMultiarchivoPanel({
 
         return b.totalRegistros - a.totalRegistros;
       });
-  }, [segmentos]);
+  }, [data.baseInsights, segmentos]);
+
+  const alertAnis = useMemo(() => {
+    const result = new Map<string, string[]>();
+    const highlightedSegments = resumenPorBase.flatMap((base) => base.segmentos);
+
+    highlightedSegments.forEach((segmento) => {
+      const key = [
+        segmento.archivoOrigen,
+        segmento.base,
+        segmento.prefijo,
+        segmento.franja,
+      ].join("|||");
+      result.set(key, []);
+    });
+
+    for (const record of data.rawRecords ?? []) {
+      const key = [
+        record.archivoOrigen || "Sin archivo identificado",
+        (record.base || "SIN_BASE").trim() || "SIN_BASE",
+        getRecordPrefix(record.ani),
+        getRecordRange(record.fecha),
+      ].join("|||");
+
+      const anis = result.get(key);
+      if (anis && record.ani && !anis.includes(record.ani)) {
+        anis.push(record.ani);
+      }
+    }
+
+    return result;
+  }, [data.rawRecords, resumenPorBase]);
+
+  const copyAnis = async (key: string, anis: string[]) => {
+    await navigator.clipboard.writeText(anis.join("\n"));
+    setCopiedAlert(key);
+    window.setTimeout(() => setCopiedAlert(null), 1600);
+  };
 
   const resumenPorFranja = useMemo(() => {
     const map = new Map<
@@ -299,9 +419,31 @@ export default function ComparativaMultiarchivoPanel({
 
   if (!comparativa) return null;
 
-  const topBase = resumenPorBase[0];
-  const topFranja = resumenPorFranja[0];
+  const topBaseGlobal = [...(data.baseInsights ?? [])]
+    .filter((base) => base.totalAnis > 10)
+    .sort((a, b) => {
+      if (b.scoreCalidad !== a.scoreCalidad) {
+        return b.scoreCalidad - a.scoreCalidad;
+      }
+
+      return b.totalAnis - a.totalAnis;
+    })[0];
+  const topFranjaGlobal = Object.entries(data.rangoDistribucion ?? {})
+    .map(([franja, stats]) => ({
+      franja,
+      total: stats.total,
+      pctContacto: stats.total > 0 ? (stats.answer / stats.total) * 100 : 0,
+    }))
+    .filter((item) => item.total >= 20 && item.franja !== "Sin hora")
+    .sort((a, b) => {
+      if (b.pctContacto !== a.pctContacto) {
+        return b.pctContacto - a.pctContacto;
+      }
+
+      return b.total - a.total;
+    })[0];
   const topPrefijo = resumenPorPrefijo[0];
+  const isMultiFile = comparativa.totalArchivos > 1;
 
   return (
     <Card className="glass-card soft-cyan-hover border-primary/15">
@@ -310,15 +452,17 @@ export default function ComparativaMultiarchivoPanel({
           <div>
             <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <GitCompareArrows className="h-4 w-4 text-primary" />
-              Comparativa multiarchivo
+              {isMultiFile ? "Comparativa multiarchivo" : "Lectura segmentada del ticket"}
             </div>
 
             <h3 className="text-lg font-bold text-foreground">
-              Bases, horarios y prefijos con mayor impacto comercial
+              Dónde aparece la mejor señal comercial
             </h3>
 
             <p className="mt-1 max-w-4xl text-sm leading-relaxed text-muted-foreground">
-              {comparativa.recomendacionGeneral}
+              {isMultiFile
+                ? comparativa.recomendacionGeneral
+                : "Compara bases, horarios y prefijos dentro del ticket activo. Los resultados son relativos a este archivo y no representan una tendencia mensual."}
             </p>
           </div>
 
@@ -326,6 +470,20 @@ export default function ComparativaMultiarchivoPanel({
             {comparativa.totalArchivos} archivo
             {comparativa.totalArchivos !== 1 ? "s" : ""}
           </Badge>
+        </div>
+
+        <div className="flex gap-3 rounded-xl border border-warning/20 bg-warning/5 p-3">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-warning">
+              Cómo leer este bloque
+            </p>
+            <p className="mt-1 text-sm leading-relaxed text-muted-foreground">
+              "Mejor" significa la señal más favorable dentro del alcance analizado, no
+              necesariamente una base buena. La decisión final debe considerar volumen,
+              contacto efectivo y no contacto.
+            </p>
+          </div>
         </div>
 
         <div className="flex flex-col gap-2 rounded-xl border border-border bg-background/60 p-3 md:flex-row md:items-center md:justify-between">
@@ -355,18 +513,18 @@ export default function ComparativaMultiarchivoPanel({
           <div className="soft-cyan-hover rounded-xl border border-border bg-background/60 p-3 transition-all duration-200">
             <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <Layers3 className="h-3.5 w-3.5 text-success" />
-              Mejor base
+              Mejor base confiable
             </div>
 
             <p className="truncate text-xl font-bold text-foreground">
-              {topBase?.base || "-"}
+              {topBaseGlobal?.base || "-"}
             </p>
 
             <p className="mt-1 text-xs text-muted-foreground">
-              {topBase
-                ? `${formatPercentValue(topBase.pctContacto)} contacto · ${formatNumber(
-                    topBase.totalRegistros
-                  )} registros`
+              {topBaseGlobal
+                ? `${formatPercentValue(
+                    topBaseGlobal.pctContactoEfectivo * 100
+                  )} contacto · ${formatNumber(topBaseGlobal.totalAnis)} ANIs`
                 : "Sin datos suficientes."}
             </p>
           </div>
@@ -374,16 +532,18 @@ export default function ComparativaMultiarchivoPanel({
           <div className="soft-cyan-hover rounded-xl border border-border bg-background/60 p-3 transition-all duration-200">
             <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <Clock3 className="h-3.5 w-3.5 text-primary" />
-              Mejor horario
+              Franja con mayor contacto
             </div>
 
             <p className="truncate text-xl font-bold text-foreground">
-              {topFranja?.franja || comparativa.franjaMasConveniente || "-"}
+              {topFranjaGlobal?.franja || comparativa.franjaMasConveniente || "-"}
             </p>
 
             <p className="mt-1 text-xs text-muted-foreground">
-              {topFranja
-                ? `${formatPercentValue(topFranja.pctContacto)} contacto · ${topFranja.mejorBase}`
+              {topFranjaGlobal
+                ? `${formatPercentValue(
+                    topFranjaGlobal.pctContacto
+                  )} contacto · ${formatNumber(topFranjaGlobal.total)} registros`
                 : "Horario con mejor contacto relativo."}
             </p>
           </div>
@@ -391,7 +551,7 @@ export default function ComparativaMultiarchivoPanel({
           <div className="soft-cyan-hover rounded-xl border border-border bg-background/60 p-3 transition-all duration-200">
             <div className="mb-1 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               <MapPin className="h-3.5 w-3.5 text-warning" />
-              Prefijo estable
+              Prefijo destacado
             </div>
 
             <p className="truncate text-xl font-bold text-foreground">
@@ -401,7 +561,7 @@ export default function ComparativaMultiarchivoPanel({
             <p className="mt-1 text-xs text-muted-foreground">
               {topPrefijo
                 ? `${formatPercentValue(topPrefijo.pctContacto)} contacto · ${topPrefijo.mejorFranja}`
-                : "Mejor señal repetida entre archivos."}
+                : "Sin prefijo destacado en los segmentos evaluados."}
             </p>
           </div>
         </div>
@@ -409,7 +569,13 @@ export default function ComparativaMultiarchivoPanel({
         {enfoque === "base" && (
           <div className="rounded-xl border border-success/20 bg-success/5 p-3">
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-success">
-              Análisis por base
+              Base completa y alertas puntuales
+            </p>
+
+            <p className="mb-3 text-xs text-muted-foreground">
+              La evaluación principal corresponde a la base completa. Las alertas son
+              ejemplos de combinaciones de prefijo y horario con comportamiento extremo;
+              no representan todo lo que debe revisarse o depurarse.
             </p>
 
             <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
@@ -422,13 +588,146 @@ export default function ComparativaMultiarchivoPanel({
                       {base.base}
                     </p>
 
-                    <Badge className={getActionBadgeClass(base.accionSugerida)}>
-                      {getActionLabel(base.accionSugerida)}
+                    <Badge className="border-warning/25 bg-warning/10 text-warning">
+                      {base.segmentosDestacados} alerta
+                      {base.segmentosDestacados !== 1 ? "s" : ""} puntual
+                      {base.segmentosDestacados !== 1 ? "es" : ""}
                     </Badge>
                   </div>
 
+                  <div className="mb-2 grid gap-2 sm:grid-cols-2">
+                    <div className="rounded-md border border-border/70 bg-background/70 p-2">
+                      <p className="text-[10px] font-semibold uppercase text-muted-foreground">
+                        Base completa
+                      </p>
+                      <p className="mt-1 text-xs font-semibold text-foreground">
+                        {formatNumber(base.globalTotalRegistros)} intentos ·{" "}
+                        {formatNumber(base.globalTotalAnis)} ANIs
+                      </p>
+                      {base.globalPctContacto !== null && (
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          {formatPercentValue(base.globalPctContacto)} contacto global
+                        </p>
+                      )}
+                    </div>
+
+                    <button
+                      type="button"
+                      className="rounded-md border border-primary/20 bg-primary/5 p-2 text-left transition-colors hover:border-primary/40 hover:bg-primary/10"
+                      onClick={() =>
+                        setExpandedBase((current) =>
+                          current === base.base ? null : base.base
+                        )
+                      }
+                      aria-expanded={expandedBase === base.base}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className="text-[10px] font-semibold uppercase text-primary">
+                            Alertas puntuales mostradas
+                          </p>
+                          <p className="mt-1 text-xs font-semibold text-foreground">
+                            {formatNumber(base.segmentosDestacados)} segmento
+                            {base.segmentosDestacados !== 1 ? "s" : ""} extremo
+                            {base.segmentosDestacados !== 1 ? "s" : ""}
+                          </p>
+                        </div>
+
+                        <ChevronDown
+                          className={`h-4 w-4 shrink-0 text-primary transition-transform ${
+                            expandedBase === base.base ? "rotate-180" : ""
+                          }`}
+                        />
+                      </div>
+
+                      <p className="mt-1 text-[11px] text-muted-foreground">
+                        {formatNumber(base.segmentosOportunidad)} oportunidad
+                        {base.segmentosOportunidad !== 1 ? "es" : ""} ·{" "}
+                        {formatNumber(base.segmentosRiesgo)} alerta
+                        {base.segmentosRiesgo !== 1 ? "s" : ""} de revisión
+                      </p>
+                    </button>
+                  </div>
+
+                  {expandedBase === base.base && (
+                    <div className="mb-3 space-y-2 rounded-lg border border-primary/20 bg-background/80 p-3">
+                      <p className="text-[10px] font-semibold uppercase text-primary">
+                        Detalle de alertas y ANIs
+                      </p>
+
+                      {base.segmentos.map((segmento) => {
+                        const alertKey = [
+                          segmento.archivoOrigen,
+                          segmento.base,
+                          segmento.prefijo,
+                          segmento.franja,
+                        ].join("|||");
+                        const anis = alertAnis.get(alertKey) ?? [];
+
+                        return (
+                          <div
+                            key={alertKey}
+                            className="rounded-md border border-border/70 bg-card p-3"
+                          >
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                              <div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <Badge
+                                    className={getActionBadgeClass(
+                                      segmento.accionSugerida
+                                    )}
+                                  >
+                                    {getActionLabel(segmento.accionSugerida)}
+                                  </Badge>
+                                  <span className="text-xs font-semibold text-foreground">
+                                    Prefijo {segmento.prefijo} · {segmento.franja}
+                                  </span>
+                                </div>
+
+                                <p className="mt-2 text-xs text-muted-foreground">
+                                  {formatNumber(segmento.totalRegistros)} intentos ·{" "}
+                                  {formatNumber(segmento.totalAnis)} ANIs ·{" "}
+                                  {formatPercentValue(
+                                    segmento.pctContactoEfectivo
+                                  )} contacto
+                                </p>
+
+                                <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                                  {segmento.lectura}
+                                </p>
+                              </div>
+
+                              <button
+                                type="button"
+                                className="inline-flex shrink-0 items-center gap-2 rounded-md border border-border px-2.5 py-1.5 text-xs font-semibold text-muted-foreground transition-colors hover:border-primary/30 hover:text-foreground"
+                                onClick={() => copyAnis(alertKey, anis)}
+                                disabled={anis.length === 0}
+                              >
+                                {copiedAlert === alertKey ? (
+                                  <Check className="h-3.5 w-3.5 text-success" />
+                                ) : (
+                                  <Copy className="h-3.5 w-3.5" />
+                                )}
+                                {copiedAlert === alertKey
+                                  ? "Copiados"
+                                  : `Copiar ${formatNumber(anis.length)} ANIs`}
+                              </button>
+                            </div>
+
+                            <div className="mt-3 max-h-28 overflow-y-auto rounded-md bg-muted/30 p-2 font-mono text-[11px] text-muted-foreground">
+                              {anis.length > 0
+                                ? anis.join(" · ")
+                                : "No se pudieron reconstruir los ANIs de esta alerta."}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
                   <p className="text-xs text-muted-foreground">
-                    Mejor franja {base.mejorFranja} · Prefijo {base.mejorPrefijo}
+                    Ejemplo destacado: {base.mejorFranja} · Prefijo{" "}
+                    {base.mejorPrefijo}
                   </p>
 
                   <p className="mt-2 text-xs text-muted-foreground">
@@ -442,6 +741,12 @@ export default function ComparativaMultiarchivoPanel({
                     </span>{" "}
                     · {base.archivos.length} archivo
                     {base.archivos.length !== 1 ? "s" : ""}
+                  </p>
+
+                  <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+                    Estas alertas sirven para investigar casos concretos. La cantidad
+                    total a revisar se define en el ranking global y en el motor de
+                    depuración, no sumando estos ejemplos.
                   </p>
                 </div>
               ))}

@@ -22,6 +22,7 @@ export class MemStorage implements IStorage {
   }
 
   async storeAnalysis(analysis: AnalysisResult): Promise<AnalysisResult> {
+    this.analyses.clear();
     this.analyses.set(analysis.id, analysis);
     return analysis;
   }
@@ -1596,6 +1597,196 @@ function buildComparativaMultiarchivo(records: CallRecord[]) {
   };
 }
 
+function buildEstrategiaPrefijos(records: CallRecord[]) {
+  const minimoAnisPrefijo = 100;
+  const minimoAnisTurno = 40;
+  const horaInicioTarde = ANALYSIS_CONFIG.horaInicioTarde;
+
+  type AniTurnoState = {
+    manana: boolean;
+    tarde: boolean;
+    contactoManana: boolean;
+    contactoTarde: boolean;
+    buzon: boolean;
+  };
+
+  const prefijos = new Map<string, Map<string, AniTurnoState>>();
+
+  for (const record of records) {
+    if (!record.ani) continue;
+
+    const date = parseTicketDate(record.fecha);
+    if (!date) continue;
+
+    const prefijo = extractPrefijo(record.ani);
+    const anis =
+      prefijos.get(prefijo) || new Map<string, AniTurnoState>();
+    const state =
+      anis.get(record.ani) || {
+        manana: false,
+        tarde: false,
+        contactoManana: false,
+        contactoTarde: false,
+        buzon: false,
+      };
+
+    const esTarde = date.getHours() >= horaInicioTarde;
+
+    if (esTarde) {
+      state.tarde = true;
+      if (isAnswerAgent(record)) state.contactoTarde = true;
+    } else {
+      state.manana = true;
+      if (isAnswerAgent(record)) state.contactoManana = true;
+    }
+
+    if (isAnswerMachine(record)) state.buzon = true;
+
+    anis.set(record.ani, state);
+    prefijos.set(prefijo, anis);
+  }
+
+  let anisMananaGlobal = 0;
+  let anisTardeGlobal = 0;
+  let contactosMananaGlobal = 0;
+  let contactosTardeGlobal = 0;
+
+  const items = Array.from(prefijos.entries()).map(([prefijo, anis]) => {
+    const states = Array.from(anis.values());
+    const totalAnis = states.length;
+    const anisManana = states.filter((state) => state.manana).length;
+    const anisTarde = states.filter((state) => state.tarde).length;
+    const contactosManana = states.filter(
+      (state) => state.contactoManana
+    ).length;
+    const contactosTarde = states.filter(
+      (state) => state.contactoTarde
+    ).length;
+    const buzonesSinContacto = states.filter(
+      (state) =>
+        state.buzon && !state.contactoManana && !state.contactoTarde
+    ).length;
+
+    anisMananaGlobal += anisManana;
+    anisTardeGlobal += anisTarde;
+    contactosMananaGlobal += contactosManana;
+    contactosTardeGlobal += contactosTarde;
+
+    const pctContactoManana =
+      anisManana > 0 ? (contactosManana / anisManana) * 100 : 0;
+    const pctContactoTarde =
+      anisTarde > 0 ? (contactosTarde / anisTarde) * 100 : 0;
+    const diferenciaPp = pctContactoTarde - pctContactoManana;
+    const pctBuzonSinContacto =
+      totalAnis > 0 ? (buzonesSinContacto / totalAnis) * 100 : 0;
+
+    let estrategia:
+      | "PRIORIZAR_TARDE"
+      | "PRIORIZAR_MANANA"
+      | "MANTENER_MIXTO"
+      | "AMPLIAR_PRUEBA_TARDE"
+      | "VALIDAR_MUESTRA" = "VALIDAR_MUESTRA";
+    let motivo =
+      "El prefijo todavía no tiene volumen suficiente para definir un turno.";
+
+    if (totalAnis >= minimoAnisPrefijo) {
+      if (anisManana >= minimoAnisTurno && anisTarde >= minimoAnisTurno) {
+        if (diferenciaPp >= 1.5) {
+          estrategia = "PRIORIZAR_TARDE";
+          motivo = `La tarde mejora ${diferenciaPp.toFixed(
+            1
+          )} puntos porcentuales frente a la mañana.`;
+        } else if (diferenciaPp <= -1.5) {
+          estrategia = "PRIORIZAR_MANANA";
+          motivo = `La mañana supera a la tarde por ${Math.abs(
+            diferenciaPp
+          ).toFixed(1)} puntos porcentuales.`;
+        } else {
+          estrategia = "MANTENER_MIXTO";
+          motivo =
+            "No hay una diferencia suficientemente fuerte entre mañana y tarde.";
+        }
+      } else {
+        estrategia = "AMPLIAR_PRUEBA_TARDE";
+        motivo =
+          anisTarde < minimoAnisTurno
+            ? "Falta muestra suficiente por la tarde para confirmar su rendimiento."
+            : "Falta muestra suficiente por la mañana para comparar ambos turnos.";
+      }
+    }
+
+    return {
+      prefijo,
+      totalAnis,
+      anisManana,
+      anisTarde,
+      pctContactoManana,
+      pctContactoTarde,
+      diferenciaPp,
+      pctBuzonSinContacto,
+      estrategia,
+      motivo,
+    };
+  });
+
+  const pctContactoMananaGlobal =
+    anisMananaGlobal > 0
+      ? (contactosMananaGlobal / anisMananaGlobal) * 100
+      : 0;
+  const pctContactoTardeGlobal =
+    anisTardeGlobal > 0
+      ? (contactosTardeGlobal / anisTardeGlobal) * 100
+      : 0;
+  const diferenciaGlobal =
+    pctContactoTardeGlobal - pctContactoMananaGlobal;
+
+  const recomendacionGeneral =
+    diferenciaGlobal >= 1
+      ? `La tarde mejora ${diferenciaGlobal.toFixed(
+          1
+        )} puntos porcentuales a nivel general. Conviene separar los prefijos con ventaja confirmada y reservar el resto para lotes mixtos o pruebas controladas.`
+      : diferenciaGlobal <= -1
+        ? `La mañana supera a la tarde por ${Math.abs(
+            diferenciaGlobal
+          ).toFixed(
+            1
+          )} puntos porcentuales a nivel general. No conviene mover todo el volumen a la tarde sin segmentar.`
+        : "El rendimiento global es similar entre turnos. Conviene segmentar solo los prefijos que muestran una diferencia consistente.";
+
+  const strategyOrder = {
+    PRIORIZAR_TARDE: 0,
+    PRIORIZAR_MANANA: 1,
+    MANTENER_MIXTO: 2,
+    AMPLIAR_PRUEBA_TARDE: 3,
+    VALIDAR_MUESTRA: 4,
+  } as const;
+
+  items.sort((a, b) => {
+    const strategyDiff =
+      strategyOrder[a.estrategia] - strategyOrder[b.estrategia];
+    if (strategyDiff !== 0) return strategyDiff;
+
+    if (a.estrategia === "PRIORIZAR_TARDE") {
+      return b.diferenciaPp - a.diferenciaPp || b.totalAnis - a.totalAnis;
+    }
+
+    return b.totalAnis - a.totalAnis;
+  });
+
+  return {
+    horaInicioTarde,
+    minimoAnisPrefijo,
+    minimoAnisTurno,
+    totalPrefijosEvaluados: items.filter(
+      (item) => item.totalAnis >= minimoAnisPrefijo
+    ).length,
+    pctContactoMananaGlobal,
+    pctContactoTardeGlobal,
+    recomendacionGeneral,
+    items,
+  };
+}
+
 export function processCallRecords(rawData: Record<string, any>[]): AnalysisResult {
   const columns = rawData.length > 0 ? Object.keys(rawData[0]) : [];
 
@@ -1934,6 +2125,7 @@ aniGroups.forEach((calls, ani) => {
   );
 
   const comparativaMultiarchivo = buildComparativaMultiarchivo(records);
+  const estrategiaPrefijos = buildEstrategiaPrefijos(records);
 
   return {
     id: randomUUID(),
@@ -1962,6 +2154,7 @@ aniGroups.forEach((calls, ani) => {
     resumenEjecutivo,
     recomendacionesOperativas,
     comparativaMultiarchivo,
+    estrategiaPrefijos,
   };
 }
 

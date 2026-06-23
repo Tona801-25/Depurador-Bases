@@ -35,15 +35,18 @@ interface DepuracionTabProps {
     soloSaturados?: boolean;
     scoreMinimo?: number | null;
     busqueda?: string;
+    fileName?: string;
   }) => void;
   onExportNeotel: (filters: {
     aniList?: string[];
+    segmento?: "BUZONES_SIN_CONTACTO";
     tags: string[];
     prioridad?: string;
     accion?: string;
     soloSaturados?: boolean;
     scoreMinimo?: number | null;
     busqueda?: string;
+    fileName?: string;
   }) => void;
   onExportPorAccion: (accion: string) => void;
 }
@@ -56,6 +59,8 @@ const allTags: TagType[] = [
   "NO_ATIENDE",
   "RECHAZA",
 ];
+
+const descartesTags: TagType[] = ["INVALIDO", "SOLO_BUZON", "NO_ATIENDE", "RECHAZA"];
 
 const prioridadOrder = ["ALTA", "MEDIA", "BAJA"];
 
@@ -212,6 +217,12 @@ export function DepuracionTab({
   const reintentarMejorFranja = data.aniSummaries.filter(
     (a) => a.accionSugerida === "REINTENTAR_EN_MEJOR_FRANJA"
   ).length;
+  const descartables = data.aniSummaries.filter((a) =>
+    descartesTags.includes(a.tagTelefono as TagType)
+  ).length;
+  const buzonesSinContacto = data.aniSummaries.filter(
+    (a) => (a.intentosAnsweringMachine || 0) > 0 && (a.intentosAnswerAgent || 0) === 0
+  );
 
   const columns: Column<ANISummary>[] = [
     { key: "ani", header: "ANI", sortable: true },
@@ -567,10 +578,30 @@ export function DepuracionTab({
             <Button
               variant="outline"
               size="sm"
+              disabled={descartables === 0}
+              onClick={() =>
+                onExportBaseFinal({
+                  tags: descartesTags,
+                  prioridad: "TODAS",
+                  accion: "TODAS",
+                  soloSaturados: false,
+                  scoreMinimo: null,
+                  busqueda: "",
+                  fileName: "lineas_descartadas.csv",
+                })
+              }
+              className="gap-2 rounded-lg border-destructive/30 bg-destructive/5 text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Download className="h-4 w-4" />
+              Descartes CSV ({descartables.toLocaleString("es-AR")})
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
               disabled={filteredAnis.length === 0}
               onClick={() =>
                 onExportNeotel({
-                  aniList: filteredAnis.map((item) => item.ani).filter(Boolean),
                   tags: selectedTags,
                   prioridad: selectedPrioridad,
                   accion: selectedAccion,
@@ -583,6 +614,28 @@ export function DepuracionTab({
             >
               <Download className="h-4 w-4" />
               Lote Neotel (.xls)
+            </Button>
+
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={buzonesSinContacto.length === 0}
+              onClick={() =>
+                onExportNeotel({
+                  segmento: "BUZONES_SIN_CONTACTO",
+                  tags: allTags,
+                  prioridad: "TODAS",
+                  accion: "TODAS",
+                  soloSaturados: false,
+                  scoreMinimo: null,
+                  busqueda: "",
+                  fileName: "buzones_sin_contacto_neotel.xls",
+                })
+              }
+              className="gap-2 rounded-lg border-warning/30 bg-warning/5 text-warning hover:bg-warning/10 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Download className="h-4 w-4" />
+              Buzones Neotel ({buzonesSinContacto.length.toLocaleString("es-AR")})
             </Button>
 
             <Button

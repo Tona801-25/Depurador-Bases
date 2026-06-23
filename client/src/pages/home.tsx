@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useRef } from "react";
 import { Header } from "@/components/header";
 import { FileUpload } from "@/components/file-upload";
 import { KPICard } from "@/components/kpi-card";
@@ -46,6 +46,8 @@ import {
   Layers3,
   PieChart,
   Database,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import FilterChips from "@/components/dashboard/filterChips";
 import ExportMenu from "@/components/dashboard/exportMenu";
@@ -76,6 +78,15 @@ type LocalHistoryFile = {
 
 export default function Home() {
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
+  const [hideCallbackBases, setHideCallbackBases] = useState(true);
+  const [baseDecisionFilter, setBaseDecisionFilter] = useState<
+    "TODAS" | "UTILIZAR" | "REVISAR" | "DESCARTAR"
+  >("TODAS");
+  const [activeAnalysis, setActiveAnalysis] = useState<{
+    scope: "upload" | "file" | "history";
+    label: string;
+  } | null>(null);
+  const analysisRequestIdRef = useRef(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [lastUploadInfo, setLastUploadInfo] = useState<{
     count: number;
@@ -95,8 +106,9 @@ export default function Home() {
 
         return response.json();
       },
-      refetchOnWindowFocus: false,
-      retry: false,
+      refetchOnWindowFocus: true,
+      refetchOnReconnect: true,
+      retry: 2,
     });
 
     const historyFilesQuery = useQuery<LocalHistoryFile[]>({
@@ -109,12 +121,14 @@ export default function Home() {
 
       return response.json();
     },
-    refetchOnWindowFocus: false,
-    retry: false,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+    retry: 2,
   });
 
     const analyzeAllHistoryMutation = useMutation({
       mutationFn: async () => {
+        const requestId = ++analysisRequestIdRef.current;
         const response = await fetch("/api/history/analyze-all", {
           method: "POST",
         });
@@ -123,11 +137,20 @@ export default function Home() {
           throw new Error("No se pudo analizar el historial completo");
         }
 
-        return response.json();
+        return {
+          data: await response.json(),
+          requestId,
+        };
       },
-      onSuccess: (data) => {
+      onSuccess: ({ data, requestId }) => {
+        if (requestId !== analysisRequestIdRef.current) return;
+
         setUploadError(null);
         setAnalysisResult(data);
+        setActiveAnalysis({
+          scope: "history",
+          label: "Historial completo",
+        });
 
         toast({
           title: "Historial completo analizado",
@@ -146,8 +169,9 @@ export default function Home() {
     });
 
     const analyzeHistoryFileMutation = useMutation({
-    mutationFn: async (fileId: number) => {
-      const response = await fetch(`/api/history/files/${fileId}/analyze`, {
+    mutationFn: async (file: LocalHistoryFile) => {
+      const requestId = ++analysisRequestIdRef.current;
+      const response = await fetch(`/api/history/files/${file.id}/analyze`, {
         method: "POST",
       });
 
@@ -155,11 +179,21 @@ export default function Home() {
         throw new Error("No se pudo analizar el ticket guardado");
       }
 
-      return response.json();
+      return {
+        data: await response.json(),
+        file,
+        requestId,
+      };
     },
-    onSuccess: (data) => {
+    onSuccess: ({ data, file, requestId }) => {
+      if (requestId !== analysisRequestIdRef.current) return;
+
       setUploadError(null);
       setAnalysisResult(data);
+      setActiveAnalysis({
+        scope: "file",
+        label: `${file.fileName}${file.fechaArchivo ? ` · ${file.fechaArchivo}` : ""}`,
+      });
 
       toast({
         title: "Ticket histórico analizado",
@@ -249,6 +283,7 @@ export default function Home() {
       },
       onSuccess: () => {
         setAnalysisResult(null);
+        setActiveAnalysis(null);
         setUploadError(null);
 
         historyStatsQuery.refetch();
@@ -274,6 +309,7 @@ export default function Home() {
 
     const uploadMutation = useMutation({
     mutationFn: async (files: File[]) => {
+      const requestId = ++analysisRequestIdRef.current;
       const formData = new FormData();
 
       files.forEach((file) => {
@@ -298,11 +334,24 @@ export default function Home() {
       throw new Error(message);
     }
 
-      return response.json() as Promise<AnalysisResult>;
+      return {
+        data: (await response.json()) as AnalysisResult,
+        files,
+        requestId,
+      };
     },
-      onSuccess: (data) => {
+      onSuccess: ({ data, files, requestId }) => {
+        if (requestId !== analysisRequestIdRef.current) return;
+
         setUploadError(null);
         setAnalysisResult(data);
+        setActiveAnalysis({
+          scope: "upload",
+          label:
+            files.length === 1
+              ? files[0].name
+              : `${files.length.toLocaleString("es-AR")} archivos recién cargados`,
+        });
         historyStatsQuery.refetch();
         historyFilesQuery.refetch();
 
@@ -328,6 +377,14 @@ export default function Home() {
 
   const handleFilesSelected = useCallback(
     (files: File[]) => {
+      if (
+        uploadMutation.isPending ||
+        analyzeHistoryFileMutation.isPending ||
+        analyzeAllHistoryMutation.isPending
+      ) {
+        return;
+      }
+
       setUploadError(null);
 
       setLastUploadInfo({
@@ -337,7 +394,7 @@ export default function Home() {
 
       uploadMutation.mutate(files);
     },
-    [uploadMutation]
+    [analyzeAllHistoryMutation.isPending, analyzeHistoryFileMutation.isPending, uploadMutation]
   );
 
   const handleExportResumen = useCallback(async () => {
@@ -407,32 +464,53 @@ export default function Home() {
       soloSaturados?: boolean;
       scoreMinimo?: number | null;
       busqueda?: string;
+      fileName?: string;
     }) => {
       if (!analysisResult) return;
 
       try {
+        const { fileName = "base_final_depurada.csv", ...requestFilters } = filters;
+
         const response = await fetch("/api/export/base-final", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             analysisId: analysisResult.id,
-            ...filters,
+            ...requestFilters,
           }),
         });
+
+        if (!response.ok) {
+          let message = "No se pudo generar la base final depurada";
+
+          try {
+            const errorData = await response.json();
+            if (errorData?.message) {
+              message = errorData.message;
+            }
+          } catch {
+            // Dejamos el mensaje genérico si la respuesta no trae JSON.
+          }
+
+          throw new Error(message);
+        }
 
         const blob = await response.blob();
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement("a");
 
         a.href = url;
-        a.download = "base_final_depurada.csv";
+        a.download = fileName;
         a.click();
 
         window.URL.revokeObjectURL(url);
-      } catch {
+      } catch (error) {
         toast({
           title: "Error al exportar",
-          description: "No se pudo generar la base final depurada",
+          description:
+            error instanceof Error
+              ? error.message
+              : "No se pudo generar la base final depurada",
           variant: "destructive",
         });
       }
@@ -443,22 +521,29 @@ export default function Home() {
   const handleExportNeotel = useCallback(
   async (filters: {
     aniList?: string[];
+    segmento?: "BUZONES_SIN_CONTACTO";
     tags: string[];
     prioridad?: string;
     accion?: string;
     soloSaturados?: boolean;
     scoreMinimo?: number | null;
     busqueda?: string;
+    fileName?: string;
   }) => {
     if (!analysisResult) return;
 
     try {
+      const {
+        fileName = "contactos_neotel_depurados.xls",
+        ...requestFilters
+      } = filters;
+
       const response = await fetch("/api/export/neotel", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           analysisId: analysisResult.id,
-          ...filters,
+          ...requestFilters,
         }),
       });
 
@@ -482,7 +567,7 @@ export default function Home() {
       const a = document.createElement("a");
 
       a.href = url;
-      a.download = "contactos_neotel_depurados.xls";
+      a.download = fileName;
       a.click();
 
       window.URL.revokeObjectURL(url);
@@ -569,13 +654,27 @@ export default function Home() {
     [analysisResult, toast]
   );
 
-  const rankedBases = useMemo(() => {
+  const allRankedBases = useMemo(() => {
     if (!analysisResult?.baseInsights) return [];
 
     return [...analysisResult.baseInsights].sort(
       (a: BaseInsight, b: BaseInsight) => b.scoreCalidad - a.scoreCalidad
     );
   }, [analysisResult]);
+
+  const minimalSampleBases = useMemo(
+    () => allRankedBases.filter((base) => base.totalAnis <= 10),
+    [allRankedBases]
+  );
+  const callbackBasesCount = minimalSampleBases.length;
+
+  const rankedBases = useMemo(
+    () =>
+      hideCallbackBases
+        ? allRankedBases.filter((base) => base.totalAnis > 10)
+        : allRankedBases,
+    [allRankedBases, hideCallbackBases]
+  );
 
   const resumenBases = useMemo(() => {
     const total = rankedBases.length;
@@ -595,6 +694,24 @@ export default function Home() {
       mejorBase: rankedBases[0]?.base ?? "-",
     };
   }, [rankedBases]);
+
+  const discardedBaseNames = useMemo(
+    () =>
+      rankedBases
+        .filter((base) => base.recomendacion === "DESCARTAR")
+        .map((base) => base.base),
+    [rankedBases]
+  );
+
+  const displayedRankedBases = useMemo(
+    () =>
+      baseDecisionFilter === "TODAS"
+        ? rankedBases
+        : rankedBases.filter(
+            (base) => base.recomendacion === baseDecisionFilter
+          ),
+    [baseDecisionFilter, rankedBases]
+  );
 
   const kpiSparklineData = useMemo(() => {
   const empty = {
@@ -673,7 +790,11 @@ export default function Home() {
         <section className="mb-8">
           <FileUpload
             onFilesSelected={handleFilesSelected}
-            isUploading={uploadMutation.isPending}
+            isUploading={
+              uploadMutation.isPending ||
+              analyzeHistoryFileMutation.isPending ||
+              analyzeAllHistoryMutation.isPending
+            }
             uploadError={uploadError}
           />
         </section>
@@ -783,7 +904,12 @@ export default function Home() {
                     <button
                       type="button"
                       className="inline-flex items-center gap-2 rounded-lg border border-primary/25 bg-primary/10 px-3 py-2 text-xs font-semibold text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
-                      disabled={analyzeAllHistoryMutation.isPending || localHistoryFiles.length === 0}
+                      disabled={
+                        analyzeAllHistoryMutation.isPending ||
+                        analyzeHistoryFileMutation.isPending ||
+                        uploadMutation.isPending ||
+                        localHistoryFiles.length === 0
+                      }
                       onClick={() => analyzeAllHistoryMutation.mutate()}>
                       <PlayCircle className="h-4 w-4" />
                       {analyzeAllHistoryMutation.isPending
@@ -859,8 +985,12 @@ export default function Home() {
                         <div className="col-span-1 flex items-center justify-end gap-2">
                           <button type="button"
                             className="rounded-lg border border-primary/20 bg-primary/10 p-2 text-primary transition-colors hover:bg-primary/20 disabled:opacity-50"
-                            disabled={analyzeHistoryFileMutation.isPending}
-                            onClick={() => analyzeHistoryFileMutation.mutate(file.id)}
+                            disabled={
+                              analyzeHistoryFileMutation.isPending ||
+                              analyzeAllHistoryMutation.isPending ||
+                              uploadMutation.isPending
+                            }
+                            onClick={() => analyzeHistoryFileMutation.mutate(file)}
                             title="Analizar ticket guardado">
                             <PlayCircle className="h-4 w-4" />
                           </button>
@@ -882,6 +1012,35 @@ export default function Home() {
             </CardContent>
           </Card>
         </section>
+
+        {analysisResult && activeAnalysis && (
+          <section className="mb-6">
+            <div className="flex flex-col gap-2 rounded-lg border border-primary/25 bg-primary/5 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold uppercase text-primary">
+                  Análisis activo
+                </p>
+                <p className="truncate text-sm font-semibold text-foreground">
+                  {activeAnalysis.label}
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <Badge variant="outline">
+                  {activeAnalysis.scope === "history"
+                    ? "Historial completo"
+                    : activeAnalysis.scope === "file"
+                      ? "Solo este ticket"
+                      : "Carga actual"}
+                </Badge>
+                <span>
+                  {analysisResult.totalRecords.toLocaleString("es-AR")} registros ·{" "}
+                  {analysisResult.totalAnis.toLocaleString("es-AR")} ANIs
+                </span>
+              </div>
+            </div>
+          </section>
+        )}
 
         {uploadMutation.isPending && (
           <div className="space-y-6">
@@ -1020,9 +1179,31 @@ export default function Home() {
                 />
               </div>
 
-              {rankedBases.length > 0 && (
+              {discardedBaseNames.length > 0 && (
+                <div className="flex flex-col gap-2 rounded-lg border border-destructive/25 bg-destructive/5 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-xs font-semibold uppercase text-destructive">
+                      Bases marcadas para descartar
+                    </p>
+                    <p className="mt-1 text-sm font-semibold text-foreground">
+                      {discardedBaseNames.join(", ")}
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="rounded-lg border border-destructive/30 px-3 py-2 text-xs font-semibold text-destructive transition-colors hover:bg-destructive/10"
+                    onClick={() => setBaseDecisionFilter("DESCARTAR")}
+                  >
+                    Ver detalle
+                  </button>
+                </div>
+              )}
+
+              {allRankedBases.length > 0 && (
                 <Card className="glass-card">
-                  <CardHeader className="pb-2">
+                  <CardHeader className="flex flex-col gap-3 pb-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
                     <CardTitle className="flex items-center gap-2 text-sm font-display font-bold">
                       Ranking de calidad de bases
                       <InfoTooltip
@@ -1030,10 +1211,71 @@ export default function Home() {
                         text="Ordena las bases según su calidad operativa. El ranking considera contacto efectivo, volumen de ANIs, buzón, inválidos, intentos promedio y confiabilidad de la muestra. Sirve para decidir qué base priorizar, revisar o descartar."
                       />
                     </CardTitle>
+
+                    {callbackBasesCount > 0 && (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Muestras mínimas (&lt;= 10 ANIs):{" "}
+                        <span className="font-semibold text-foreground">
+                          {hideCallbackBases ? "ocultas" : "incluidas"}
+                        </span>
+                        {" · "}
+                        {minimalSampleBases.map((base) => base.base).join(", ")}
+                      </p>
+                    )}
+                    </div>
+
+                    {callbackBasesCount > 0 && (
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs font-semibold text-muted-foreground transition-colors hover:border-primary/30 hover:bg-primary/5 hover:text-foreground"
+                        onClick={() => setHideCallbackBases((current) => !current)}
+                      >
+                        {hideCallbackBases ? (
+                          <Eye className="h-4 w-4" />
+                        ) : (
+                          <EyeOff className="h-4 w-4" />
+                        )}
+                        {hideCallbackBases
+                          ? `Mostrar ${callbackBasesCount} muestras mínimas`
+                          : `Ocultar ${callbackBasesCount} muestras mínimas`}
+                      </button>
+                    )}
                   </CardHeader>
 
                   <CardContent className="space-y-3">
-                    {rankedBases.slice(0, 5).map((base: BaseInsight) => (
+                    <div className="flex flex-wrap gap-2">
+                      {(
+                        [
+                          ["TODAS", `Todas (${rankedBases.length})`],
+                          ["UTILIZAR", `Utilizables (${resumenBases.utilizables})`],
+                          ["REVISAR", `Revisar (${resumenBases.revisar})`],
+                          ["DESCARTAR", `Descartar (${resumenBases.descartar})`],
+                        ] as const
+                      ).map(([value, label]) => (
+                        <button
+                          key={value}
+                          type="button"
+                          className={
+                            baseDecisionFilter === value
+                              ? "rounded-lg border border-primary/35 bg-primary/10 px-3 py-2 text-xs font-semibold text-primary"
+                              : "rounded-lg border border-border bg-background px-3 py-2 text-xs font-semibold text-muted-foreground transition-colors hover:border-primary/25 hover:text-foreground"
+                          }
+                          onClick={() => setBaseDecisionFilter(value)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {displayedRankedBases.length === 0 && (
+                      <div className="rounded-lg border border-dashed border-border px-4 py-5 text-sm text-muted-foreground">
+                        No hay bases visibles para esta decisión con los filtros actuales.
+                      </div>
+                    )}
+
+                    {displayedRankedBases
+                      .slice(0, baseDecisionFilter === "TODAS" ? 5 : undefined)
+                      .map((base: BaseInsight) => (
                       <div
                         key={base.base}
                         className="soft-cyan-hover flex flex-col gap-3 rounded-xl border border-border bg-card p-4 lg:flex-row lg:items-center lg:justify-between">

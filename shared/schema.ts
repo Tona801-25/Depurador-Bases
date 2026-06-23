@@ -205,6 +205,38 @@ export type ComparativaMultiarchivo = z.infer<
   typeof comparativaMultiarchivoSchema
 >;
 
+export const estrategiaPrefijoItemSchema = z.object({
+  prefijo: z.string(),
+  totalAnis: z.number(),
+  anisManana: z.number(),
+  anisTarde: z.number(),
+  pctContactoManana: z.number(),
+  pctContactoTarde: z.number(),
+  diferenciaPp: z.number(),
+  pctBuzonSinContacto: z.number(),
+  estrategia: z.enum([
+    "PRIORIZAR_TARDE",
+    "PRIORIZAR_MANANA",
+    "MANTENER_MIXTO",
+    "AMPLIAR_PRUEBA_TARDE",
+    "VALIDAR_MUESTRA",
+  ]),
+  motivo: z.string(),
+});
+
+export const estrategiaPrefijosSchema = z.object({
+  horaInicioTarde: z.number(),
+  minimoAnisPrefijo: z.number(),
+  minimoAnisTurno: z.number(),
+  totalPrefijosEvaluados: z.number(),
+  pctContactoMananaGlobal: z.number(),
+  pctContactoTardeGlobal: z.number(),
+  recomendacionGeneral: z.string(),
+  items: z.array(estrategiaPrefijoItemSchema),
+});
+
+export type EstrategiaPrefijos = z.infer<typeof estrategiaPrefijosSchema>;
+
 export type RecomendacionOperativa = z.infer<typeof recomendacionOperativaSchema>;
 
 export const analysisResultSchema = z.object({
@@ -286,6 +318,7 @@ export const analysisResultSchema = z.object({
     resumenEjecutivo: resumenEjecutivoSchema.optional(),
     recomendacionesOperativas: z.array(recomendacionOperativaSchema).optional(),
     comparativaMultiarchivo: comparativaMultiarchivoSchema.optional(),
+    estrategiaPrefijos: estrategiaPrefijosSchema.optional(),
 });
 
 export type AnalysisResult = z.infer<typeof analysisResultSchema>;

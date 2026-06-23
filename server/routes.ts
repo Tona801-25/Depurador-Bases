@@ -59,6 +59,7 @@ function filtrarAniSummariesParaExportar(
   rows: any[],
   options: {
     aniList?: string[];
+    segmento?: "BUZONES_SIN_CONTACTO";
     tags?: string[];
     prioridad?: string;
     accion?: string;
@@ -68,6 +69,14 @@ function filtrarAniSummariesParaExportar(
   }
 ) {
   let filteredRows = [...rows];
+
+  if (options.segmento === "BUZONES_SIN_CONTACTO") {
+    return filteredRows.filter(
+      (item) =>
+        (item.intentosAnsweringMachine || 0) > 0 &&
+        (item.intentosAnswerAgent || 0) === 0
+    );
+  }
 
   if (Array.isArray(options.aniList) && options.aniList.length > 0) {
     const selectedAnis = new Set(
@@ -225,6 +234,57 @@ function extractFechaArchivoFromName(fileName: string): string | undefined {
   return undefined;
 }
 
+function decodeDelimitedFile(buffer: Buffer): string {
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
+    return buffer.subarray(2).toString("utf16le");
+  }
+
+  if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
+    const swapped = Buffer.allocUnsafe(buffer.length - 2);
+
+    for (let index = 2; index + 1 < buffer.length; index += 2) {
+      swapped[index - 2] = buffer[index + 1];
+      swapped[index - 1] = buffer[index];
+    }
+
+    return swapped.toString("utf16le");
+  }
+
+  const sample = buffer.subarray(0, Math.min(buffer.length, 4096));
+  const nullBytes = sample.reduce((total, byte) => total + (byte === 0 ? 1 : 0), 0);
+
+  if (sample.length > 0 && nullBytes / sample.length > 0.15) {
+    return buffer.toString("utf16le");
+  }
+
+  const utf8 = buffer.toString("utf8");
+  const replacementChars = (utf8.match(/\uFFFD/g) || []).length;
+
+  return replacementChars > 2 ? buffer.toString("latin1") : utf8;
+}
+
+function detectDelimiter(content: string): string {
+  const headerLine =
+    content
+      .split(/\r?\n/)
+      .find((line) => line.trim().length > 0) || "";
+
+  return ["\t", ";", ",", "|"]
+    .map((delimiter) => ({
+      delimiter,
+      count: headerLine.split(delimiter).length - 1,
+    }))
+    .sort((a, b) => b.count - a.count)[0]?.delimiter || ",";
+}
+
+function getUsableCallRecords<T extends { ani?: string; estado?: string }>(
+  records: T[]
+): T[] {
+  return records.filter(
+    (record) => String(record.ani ?? "").trim() && String(record.estado ?? "").trim()
+  );
+}
+
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   app.get("/api/health", (_req, res) => res.json({ ok: true }));
   app.get("/health", (_req, res) => res.json({ ok: true }));
@@ -319,11 +379,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
     }
 
-    const records = getRecordsForImportedFile(fileId);
+    const records = getUsableCallRecords(getRecordsForImportedFile(fileId));
 
     if (records.length === 0) {
-      return res.status(404).json({
-        message: "No se encontraron registros para este ticket",
+      return res.status(422).json({
+        message:
+          "El ticket guardado no contiene llamadas válidas. Eliminá este historial y volvé a importar el archivo.",
       });
     }
 
@@ -343,7 +404,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     app.post("/api/history/analyze-all", async (_req, res) => {
     try {
-      const records = getAllHistoryRecords();
+      const records = getUsableCallRecords(getAllHistoryRecords());
 
       if (records.length === 0) {
         return res.status(404).json({
@@ -382,17 +443,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       try {
         if (fileName.endsWith(".csv") || fileName.endsWith(".txt")) {
           // ✅ Intento UTF-8 primero, fallback latin1
-          let content = "";
-          try {
-            content = fs.readFileSync(file.path, { encoding: "utf8" });
-          } catch {
-            content = fs.readFileSync(file.path, { encoding: "latin1" });
-          }
+          const buffer = fs.readFileSync(file.path);
+          const content = decodeDelimitedFile(buffer);
+          const delimiter = detectDelimiter(content);
 
           const result = Papa.parse(content, {
             header: true,
             skipEmptyLines: true,
             dynamicTyping: true,
+            delimiter,
+            transformHeader: (header) => header.replace(/^\uFEFF/, "").trim(),
           });
 
           records = result.data as Record<string, any>[];
@@ -428,7 +488,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         }
 
         const archivoOrigen = file.originalname;
-        const fechaArchivo = extractFechaArchivoFromName(file.originalname);
+        const fechaArchivo =
+          fileName.endsWith(".csv") || fileName.endsWith(".txt")
+            ? undefined
+            : extractFechaArchivoFromName(file.originalname);
 
         const recordsConMetadata = records.map((row) => ({
           ...row,
@@ -451,7 +514,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(400).json({ message: "No se pudieron leer datos" });
     }
 
-  const analysisResult = processCallRecords(allRecords);
+  const initialAnalysis = processCallRecords(allRecords);
+  const usableRecords = initialAnalysis.rawRecords.filter(
+    (record) => record.ani.trim() && record.estado.trim()
+  );
+
+  if (usableRecords.length === 0) {
+    return res.status(400).json({
+      message:
+        "El archivo no parece ser un ticket de llamadas de Neotel. Debe incluir al menos ANI/Teléfono y Estado; para analizar horarios también debe incluir Inicio.",
+    });
+  }
+
+  const analysisResult =
+    usableRecords.length === initialAnalysis.rawRecords.length
+      ? initialAnalysis
+      : processCallRecords(usableRecords);
+
   await storage.storeAnalysis(analysisResult);
 
   try {
@@ -615,10 +694,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
 const textoBusqueda = (busqueda ?? "").trim().toLowerCase();
 
-if (textoBusqueda) {
-  rows = rows.filter((item) =>
-    [
-      item.ani,
+  if (textoBusqueda) {
+    rows = rows.filter((item) =>
+      [
+        item.ani,
       item.basePrincipal,
       item.prefijo,
       item.mejorFranja,
@@ -633,6 +712,12 @@ if (textoBusqueda) {
   );
 }
 
+  if (rows.length === 0) {
+    return res.status(400).json({
+      message: "No hay líneas para exportar con los filtros actuales.",
+    });
+  }
+
   const csv = generateCSV(buildBaseFinalRows(rows));
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", "attachment; filename=base_final_depurada.csv");
@@ -643,6 +728,7 @@ if (textoBusqueda) {
   const {
     analysisId,
     aniList,
+    segmento,
     tags,
     prioridad,
     accion,
@@ -652,6 +738,7 @@ if (textoBusqueda) {
   } = req.body as {
     analysisId: string;
     aniList?: string[];
+    segmento?: "BUZONES_SIN_CONTACTO";
     tags?: string[];
     prioridad?: string;
     accion?: string;
@@ -665,6 +752,7 @@ if (textoBusqueda) {
 
   const filteredRows = filtrarAniSummariesParaExportar(analysis.aniSummaries, {
   aniList,
+  segmento,
   tags,
   prioridad,
   accion,
