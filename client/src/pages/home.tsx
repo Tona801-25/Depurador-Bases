@@ -48,6 +48,7 @@ import {
   Database,
   Eye,
   EyeOff,
+  ClipboardList,
 } from "lucide-react";
 import FilterChips from "@/components/dashboard/filterChips";
 import ExportMenu from "@/components/dashboard/exportMenu";
@@ -76,12 +77,111 @@ type LocalHistoryFile = {
   totalRecords: number;
 };
 
+type OperationLogEntry = {
+  id: string;
+  time: string;
+  kind: "analysis" | "export" | "filter" | "error";
+  title: string;
+  detail: string;
+  count?: number;
+};
+
+type FilterExportMeta = {
+  visibleRows: number;
+  activeFilters: number;
+  selectedBases: string[];
+  selectedEstados: string[];
+  selectedSubestados: string[];
+};
+
+type HistoryPeriodType = "day" | "week" | "month";
+
+type HistoryPeriodOption = {
+  key: string;
+  label: string;
+  fileIds: number[];
+  fileCount: number;
+  totalRecords: number;
+  sortValue: number;
+};
+
+function parseHistoryFileDate(value?: string | null) {
+  if (!value) return null;
+
+  const match = value.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!match) return null;
+
+  const day = Number(match[1]);
+  const month = Number(match[2]);
+  const year = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatShortDate(date: Date) {
+  return date.toLocaleDateString("es-AR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+}
+
+function getMonday(date: Date) {
+  const result = new Date(date);
+  const day = result.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  result.setDate(result.getDate() + diff);
+  result.setHours(0, 0, 0, 0);
+  return result;
+}
+
+function buildHistoryPeriodKey(date: Date, type: HistoryPeriodType) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  if (type === "day") {
+    return {
+      key: `${year}-${month}-${day}`,
+      label: formatShortDate(date),
+      sortValue: date.getTime(),
+    };
+  }
+
+  if (type === "month") {
+    return {
+      key: `${year}-${month}`,
+      label: date.toLocaleDateString("es-AR", {
+        month: "long",
+        year: "numeric",
+      }),
+      sortValue: new Date(year, date.getMonth(), 1).getTime(),
+    };
+  }
+
+  const monday = getMonday(date);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+
+  return {
+    key: `week-${monday.toISOString().slice(0, 10)}`,
+    label: `Semana ${formatShortDate(monday)} al ${formatShortDate(sunday)}`,
+    sortValue: monday.getTime(),
+  };
+}
+
 export default function Home() {
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [hideCallbackBases, setHideCallbackBases] = useState(true);
   const [baseDecisionFilter, setBaseDecisionFilter] = useState<
     "TODAS" | "UTILIZAR" | "REVISAR" | "DESCARTAR"
   >("TODAS");
+  const [workspaceMode, setWorkspaceMode] = useState<"operar" | "analizar">("operar");
+  const [activeDashboardTab, setActiveDashboardTab] = useState("filtros");
+  const [historyPeriodType, setHistoryPeriodType] =
+    useState<HistoryPeriodType>("day");
+  const [selectedHistoryPeriodKey, setSelectedHistoryPeriodKey] = useState("");
   const [activeAnalysis, setActiveAnalysis] = useState<{
     scope: "upload" | "file" | "history";
     label: string;
@@ -92,8 +192,47 @@ export default function Home() {
     count: number;
     names: string[];
   } | null>(null);
+  const [operationLog, setOperationLog] = useState<OperationLogEntry[]>([]);
 
     const { toast } = useToast();
+
+  const pushOperationLog = useCallback(
+    (entry: Omit<OperationLogEntry, "id" | "time">) => {
+      const time = new Date().toLocaleTimeString("es-AR", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+
+      setOperationLog((current) => [
+        {
+          ...entry,
+          id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          time,
+        },
+        ...current,
+      ].slice(0, 12));
+    },
+    []
+  );
+
+  const describeFilterMeta = useCallback((meta?: FilterExportMeta) => {
+    if (!meta) return "Sin detalle de filtros";
+
+    const parts = [
+      meta.selectedBases.length > 0
+        ? `bases ${meta.selectedBases.join(", ")}`
+        : "todas las bases",
+      meta.selectedEstados.length > 0
+        ? `estados ${meta.selectedEstados.join(", ")}`
+        : "todos los estados",
+      meta.selectedSubestados.length > 0
+        ? `subestados ${meta.selectedSubestados.join(", ")}`
+        : "todos los subestados",
+    ];
+
+    return `${parts.join(" · ")} · ${meta.activeFilters} filtros activos`;
+  }, []);
 
     const historyStatsQuery = useQuery<LocalHistoryStats>({
       queryKey: ["local-history-stats"],
@@ -134,7 +273,18 @@ export default function Home() {
         });
 
         if (!response.ok) {
-          throw new Error("No se pudo analizar el historial completo");
+          let message = "No se pudo analizar el historial completo";
+
+          try {
+            const errorData = await response.json();
+            if (errorData?.detail || errorData?.message) {
+              message = errorData.detail || errorData.message;
+            }
+          } catch {
+            // Dejamos el mensaje generico si el backend no responde JSON.
+          }
+
+          throw new Error(message);
         }
 
         return {
@@ -151,6 +301,14 @@ export default function Home() {
           scope: "history",
           label: "Historial completo",
         });
+        setWorkspaceMode("analizar");
+        setActiveDashboardTab("resumen");
+        pushOperationLog({
+          kind: "analysis",
+          title: "Historial completo analizado",
+          detail: `${data.totalAnis.toLocaleString("es-AR")} ANIs · modo resumen`,
+          count: data.totalRecords,
+        });
 
         toast({
           title: "Historial completo analizado",
@@ -159,10 +317,101 @@ export default function Home() {
           )} registros guardados en SQLite.`,
         });
       },
-      onError: () => {
+      onError: (error) => {
+        pushOperationLog({
+          kind: "error",
+          title: "Fallo al analizar historial",
+          detail:
+            error instanceof Error
+              ? error.message
+              : "Error no identificado al analizar SQLite",
+        });
+
         toast({
-          title: "No se pudo analizar el historial",
+          title:
+            error instanceof Error
+              ? error.message
+              : "No se pudo analizar el historial",
           description: "Revisá la terminal o intentá nuevamente.",
+          variant: "destructive",
+        });
+      },
+    });
+
+    const analyzeHistoryPeriodMutation = useMutation({
+      mutationFn: async (period: HistoryPeriodOption) => {
+        const requestId = ++analysisRequestIdRef.current;
+        const response = await fetch("/api/history/analyze-selection", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            fileIds: period.fileIds,
+            label: period.label,
+          }),
+        });
+
+        if (!response.ok) {
+          let message = "No se pudo analizar el periodo seleccionado";
+
+          try {
+            const errorData = await response.json();
+            if (errorData?.detail || errorData?.message) {
+              message = errorData.detail || errorData.message;
+            }
+          } catch {
+            // Dejamos el mensaje generico si el backend no responde JSON.
+          }
+
+          throw new Error(message);
+        }
+
+        return {
+          data: await response.json(),
+          period,
+          requestId,
+        };
+      },
+      onSuccess: ({ data, period, requestId }) => {
+        if (requestId !== analysisRequestIdRef.current) return;
+
+        setUploadError(null);
+        setAnalysisResult(data);
+        setWorkspaceMode(data.rawRecords?.length ? "operar" : "analizar");
+        setActiveDashboardTab(data.rawRecords?.length ? "filtros" : "resumen");
+        setActiveAnalysis({
+          scope: "history",
+          label: period.label,
+        });
+        pushOperationLog({
+          kind: "analysis",
+          title: "Periodo analizado",
+          detail: `${period.label} · ${period.fileCount} ticket${period.fileCount === 1 ? "" : "s"}`,
+          count: data.totalRecords,
+        });
+
+        toast({
+          title: "Periodo analizado",
+          description: `Se analizaron ${data.totalRecords.toLocaleString(
+            "es-AR"
+          )} registros de ${period.label}.`,
+        });
+      },
+      onError: (error) => {
+        pushOperationLog({
+          kind: "error",
+          title: "Fallo al analizar periodo",
+          detail:
+            error instanceof Error
+              ? error.message
+              : "Error no identificado al analizar periodo",
+        });
+
+        toast({
+          title: "No se pudo analizar el periodo",
+          description:
+            error instanceof Error
+              ? error.message
+              : "Revisa la terminal o intenta nuevamente.",
           variant: "destructive",
         });
       },
@@ -190,6 +439,8 @@ export default function Home() {
 
       setUploadError(null);
       setAnalysisResult(data);
+      setWorkspaceMode("operar");
+      setActiveDashboardTab("filtros");
       setActiveAnalysis({
         scope: "file",
         label: `${file.fileName}${file.fechaArchivo ? ` · ${file.fechaArchivo}` : ""}`,
@@ -200,6 +451,12 @@ export default function Home() {
         description: `Se analizaron ${data.totalRecords.toLocaleString(
           "es-AR"
         )} registros desde SQLite.`,
+      });
+      pushOperationLog({
+        kind: "analysis",
+        title: "Ticket analizado",
+        detail: `${file.fileName}${file.fechaArchivo ? ` · ${file.fechaArchivo}` : ""}`,
+        count: data.totalRecords,
       });
     },
     onError: () => {
@@ -354,6 +611,15 @@ export default function Home() {
         });
         historyStatsQuery.refetch();
         historyFilesQuery.refetch();
+        pushOperationLog({
+          kind: "analysis",
+          title: "Carga analizada",
+          detail:
+            files.length === 1
+              ? files[0].name
+              : `${files.length.toLocaleString("es-AR")} archivos cargados`,
+          count: data.totalRecords,
+        });
 
         toast({
           title: "Análisis completado",
@@ -366,6 +632,11 @@ export default function Home() {
     onError: (error: Error) => {
       setAnalysisResult(null);
       setUploadError(error.message);
+      pushOperationLog({
+        kind: "error",
+        title: "Fallo al procesar carga",
+        detail: error.message,
+      });
 
       toast({
         title: "Error al procesar",
@@ -620,10 +891,21 @@ export default function Home() {
   );
 
   const handleExportRecords = useCallback(
-    async (filters: RecordsFilter, format: "csv" | "txt" | "xlsx") => {
+    async (
+      filters: RecordsFilter,
+      format: "csv" | "txt" | "xlsx",
+      meta?: FilterExportMeta
+    ) => {
       if (!analysisResult) return;
 
       try {
+        pushOperationLog({
+          kind: "filter",
+          title: `Filtro listo para ${format.toUpperCase()}`,
+          detail: describeFilterMeta(meta),
+          count: meta?.visibleRows,
+        });
+
         const response = await fetch("/api/export/records", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -634,7 +916,26 @@ export default function Home() {
           }),
         });
 
+        if (!response.ok) {
+          let message = "No se pudo generar el archivo";
+
+          try {
+            const errorData = await response.json();
+            if (errorData?.message) {
+              message = errorData.message;
+            }
+          } catch {
+            // Si el servidor no devuelve JSON, mantenemos el mensaje generico.
+          }
+
+          throw new Error(message);
+        }
+
         const blob = await response.blob();
+        if (blob.size === 0) {
+          throw new Error("La exportacion no genero registros con los filtros actuales");
+        }
+
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement("a");
 
@@ -643,15 +944,46 @@ export default function Home() {
         a.click();
 
         window.URL.revokeObjectURL(url);
-      } catch {
+        pushOperationLog({
+          kind: "export",
+          title: `Descarga ${format.toUpperCase()} generada`,
+          detail: describeFilterMeta(meta),
+          count: meta?.visibleRows,
+        });
+      } catch (error) {
+        pushOperationLog({
+          kind: "error",
+          title: `Fallo descarga ${format.toUpperCase()}`,
+          detail:
+            error instanceof Error
+              ? error.message
+              : "No se pudo generar el archivo",
+          count: meta?.visibleRows,
+        });
+
         toast({
           title: "Error al exportar",
-          description: "No se pudo generar el archivo",
+          description:
+            error instanceof Error
+              ? error.message
+              : "No se pudo generar el archivo",
           variant: "destructive",
         });
       }
     },
-    [analysisResult, toast]
+    [analysisResult, describeFilterMeta, pushOperationLog, toast]
+  );
+
+  const handleRegisterFilterLog = useCallback(
+    (meta: FilterExportMeta) => {
+      pushOperationLog({
+        kind: "filter",
+        title: "Filtro registrado",
+        detail: describeFilterMeta(meta),
+        count: meta.visibleRows,
+      });
+    },
+    [describeFilterMeta, pushOperationLog]
   );
 
   const allRankedBases = useMemo(() => {
@@ -755,6 +1087,38 @@ export default function Home() {
 
   const localHistoryStats = historyStatsQuery.data;
   const localHistoryFiles = historyFilesQuery.data ?? [];
+
+  const historyPeriodOptions = useMemo<HistoryPeriodOption[]>(() => {
+    const groups = new Map<string, HistoryPeriodOption>();
+
+    for (const file of localHistoryFiles) {
+      const date = parseHistoryFileDate(file.fechaArchivo);
+      if (!date) continue;
+
+      const period = buildHistoryPeriodKey(date, historyPeriodType);
+      const current =
+        groups.get(period.key) ??
+        {
+          key: period.key,
+          label: period.label,
+          fileIds: [],
+          fileCount: 0,
+          totalRecords: 0,
+          sortValue: period.sortValue,
+        };
+
+      current.fileIds.push(file.id);
+      current.fileCount += 1;
+      current.totalRecords += file.totalRecords;
+      groups.set(period.key, current);
+    }
+
+    return Array.from(groups.values()).sort((a, b) => b.sortValue - a.sortValue);
+  }, [historyPeriodType, localHistoryFiles]);
+
+  const selectedHistoryPeriod =
+    historyPeriodOptions.find((option) => option.key === selectedHistoryPeriodKey) ??
+    historyPeriodOptions[0];
 
 
 
@@ -906,6 +1270,7 @@ export default function Home() {
                       className="inline-flex items-center gap-2 rounded-lg border border-primary/25 bg-primary/10 px-3 py-2 text-xs font-semibold text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
                       disabled={
                         analyzeAllHistoryMutation.isPending ||
+                        analyzeHistoryPeriodMutation.isPending ||
                         analyzeHistoryFileMutation.isPending ||
                         uploadMutation.isPending ||
                         localHistoryFiles.length === 0
@@ -920,7 +1285,11 @@ export default function Home() {
                     <button
                       type="button"
                       className="inline-flex items-center gap-2 rounded-lg border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs font-semibold text-destructive transition-colors hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-50"
-                      disabled={deleteAllHistoryMutation.isPending || localHistoryFiles.length === 0}
+                      disabled={
+                        deleteAllHistoryMutation.isPending ||
+                        analyzeHistoryPeriodMutation.isPending ||
+                        localHistoryFiles.length === 0
+                      }
                       onClick={() => deleteAllHistoryMutation.mutate()}>
                       <Trash2 className="h-4 w-4" />
                       {deleteAllHistoryMutation.isPending
@@ -933,6 +1302,69 @@ export default function Home() {
                     </Badge>
                   </div>
                 </div>
+
+                {localHistoryFiles.length > 0 && (
+                  <div className="mb-4 rounded-xl border border-primary/20 bg-primary/5 p-3">
+                    <div className="mb-3 flex flex-col gap-1">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-primary">
+                        Analizar por periodo
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Elegi si queres mirar un dia, una semana o un mes sin mezclar todo el historial.
+                      </p>
+                    </div>
+
+                    <div className="grid gap-2 md:grid-cols-[160px_1fr_auto]">
+                      <select
+                        value={historyPeriodType}
+                        onChange={(event) => {
+                          setHistoryPeriodType(event.target.value as HistoryPeriodType);
+                          setSelectedHistoryPeriodKey("");
+                        }}
+                        className="h-10 rounded-lg border border-border bg-background px-3 text-sm text-foreground"
+                      >
+                        <option value="day">Dia</option>
+                        <option value="week">Semana</option>
+                        <option value="month">Mes</option>
+                      </select>
+
+                      <select
+                        value={selectedHistoryPeriod?.key ?? ""}
+                        onChange={(event) => setSelectedHistoryPeriodKey(event.target.value)}
+                        className="h-10 rounded-lg border border-border bg-background px-3 text-sm text-foreground"
+                        disabled={historyPeriodOptions.length === 0}
+                      >
+                        {historyPeriodOptions.map((option) => (
+                          <option key={option.key} value={option.key}>
+                            {option.label} · {option.fileCount} ticket{option.fileCount === 1 ? "" : "s"} · {option.totalRecords.toLocaleString("es-AR")} registros
+                          </option>
+                        ))}
+                      </select>
+
+                      <button
+                        type="button"
+                        className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-primary/25 bg-primary/10 px-3 text-xs font-semibold text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+                        disabled={
+                          !selectedHistoryPeriod ||
+                          analyzeHistoryPeriodMutation.isPending ||
+                          analyzeAllHistoryMutation.isPending ||
+                          analyzeHistoryFileMutation.isPending ||
+                          uploadMutation.isPending
+                        }
+                        onClick={() => {
+                          if (selectedHistoryPeriod) {
+                            analyzeHistoryPeriodMutation.mutate(selectedHistoryPeriod);
+                          }
+                        }}
+                      >
+                        <PlayCircle className="h-4 w-4" />
+                        {analyzeHistoryPeriodMutation.isPending
+                          ? "Analizando..."
+                          : "Analizar periodo"}
+                      </button>
+                    </div>
+                  </div>
+                )}
 
               {historyFilesQuery.isLoading ? (
                 <div className="rounded-xl border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
@@ -1042,6 +1474,89 @@ export default function Home() {
           </section>
         )}
 
+        {(analysisResult || operationLog.length > 0) && (
+          <section className="mb-6">
+            <Card className="glass-card border-glass-border">
+              <CardHeader className="pb-3">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <CardTitle className="text-sm font-display font-bold flex items-center gap-2">
+                    <ClipboardList className="h-4 w-4 text-primary" />
+                    Log operativo
+                  </CardTitle>
+
+                  {analysisResult ? (
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                      <Badge variant="outline">
+                        {activeAnalysis?.label || "Analisis activo"}
+                      </Badge>
+                      <span>
+                        {analysisResult.totalRecords.toLocaleString("es-AR")} registros ·{" "}
+                        {analysisResult.totalAnis.toLocaleString("es-AR")} ANIs
+                      </span>
+                    </div>
+                  ) : null}
+                </div>
+              </CardHeader>
+
+              <CardContent>
+                {operationLog.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    Todavia no hay eventos registrados. Analiza un ticket o registra un filtro para verlo aca.
+                  </p>
+                ) : (
+                  <div className="max-h-56 space-y-2 overflow-auto pr-1">
+                    {operationLog.map((entry) => (
+                      <div
+                        key={entry.id}
+                        className="grid gap-2 rounded-lg border border-border/60 bg-secondary/20 px-3 py-2 text-xs sm:grid-cols-[82px_1fr_auto]"
+                      >
+                        <span className="font-mono text-muted-foreground">
+                          {entry.time}
+                        </span>
+
+                        <div className="min-w-0">
+                          <p className="truncate font-semibold text-foreground">
+                            {entry.title}
+                          </p>
+                          <p className="truncate text-muted-foreground">
+                            {entry.detail}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-2 sm:justify-end">
+                          <Badge
+                            variant={
+                              entry.kind === "error"
+                                ? "destructive"
+                                : entry.kind === "export"
+                                  ? "default"
+                                  : "outline"
+                            }
+                          >
+                            {entry.kind === "analysis"
+                              ? "analisis"
+                              : entry.kind === "export"
+                                ? "descarga"
+                                : entry.kind === "filter"
+                                  ? "filtro"
+                                  : "error"}
+                          </Badge>
+
+                          {typeof entry.count === "number" ? (
+                            <span className="whitespace-nowrap font-semibold text-foreground">
+                              {entry.count.toLocaleString("es-AR")}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </section>
+        )}
+
         {uploadMutation.isPending && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-5">
@@ -1069,15 +1584,83 @@ export default function Home() {
         )}
 
         {analysisResult && !uploadMutation.isPending && (
-          <Tabs defaultValue="resumen" className="space-y-6">
+          <Tabs
+            value={activeDashboardTab}
+            onValueChange={setActiveDashboardTab}
+            className="space-y-6"
+          >
+            <section className="grid gap-3 md:grid-cols-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkspaceMode("operar");
+                  setActiveDashboardTab("filtros");
+                }}
+                className={
+                  workspaceMode === "operar"
+                    ? "rounded-2xl border border-primary/40 bg-primary/10 p-4 text-left shadow-sm"
+                    : "rounded-2xl border border-border bg-card p-4 text-left transition-colors hover:border-primary/30 hover:bg-primary/5"
+                }
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-primary">
+                      Modo operativo
+                    </p>
+                    <h3 className="mt-1 text-base font-display font-bold text-foreground">
+                      Operar / Descargar
+                    </h3>
+                  </div>
+                  <Filter className="h-5 w-5 text-primary" />
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Filtros, depuracion, lotes Neotel y exportables.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkspaceMode("analizar");
+                  setActiveDashboardTab("resumen");
+                }}
+                className={
+                  workspaceMode === "analizar"
+                    ? "rounded-2xl border border-primary/40 bg-primary/10 p-4 text-left shadow-sm"
+                    : "rounded-2xl border border-border bg-card p-4 text-left transition-colors hover:border-primary/30 hover:bg-primary/5"
+                }
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-primary">
+                      Modo analisis
+                    </p>
+                    <h3 className="mt-1 text-base font-display font-bold text-foreground">
+                      Analizar / Entender
+                    </h3>
+                  </div>
+                  <BarChart3 className="h-5 w-5 text-primary" />
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Resumen ejecutivo, graficos, simulador y lectura historica.
+                </p>
+              </button>
+            </section>
+
             <div className="sticky top-[65px] z-40 -mx-1 rounded-2xl bg-background/80 px-1 py-2 backdrop-blur-xl supports-[backdrop-filter]:bg-background/65">
-              <TabsList className="grid h-auto w-full grid-cols-3 gap-1 p-1 lg:grid-cols-8">
-                <TabsTrigger value="resumen" className="flex items-center gap-2 py-2">
+              <TabsList className="grid h-auto w-full grid-cols-2 gap-1 p-1 lg:grid-cols-5">
+                <TabsTrigger
+                  value="resumen"
+                  className={workspaceMode === "analizar" ? "flex items-center gap-2 py-2" : "hidden"}
+                >
                   <BarChart3 className="h-4 w-4" />
                   <span className="hidden sm:inline">Resumen ejecutivo</span>
                 </TabsTrigger>
 
-                <TabsTrigger value="graficos" className="flex items-center gap-2 py-2">
+                <TabsTrigger
+                  value="graficos"
+                  className={workspaceMode === "analizar" ? "flex items-center gap-2 py-2" : "hidden"}
+                >
                   <PieChart className="h-4 w-4" />
                   <span className="hidden sm:inline">Gráficos</span>
                 </TabsTrigger>
@@ -1087,27 +1670,42 @@ export default function Home() {
                   <span className="hidden sm:inline">Turnos y prefijos</span>
                 </TabsTrigger>
 
-                <TabsTrigger value="prefijos-hora" className="flex items-center gap-2 py-2">
+                <TabsTrigger
+                  value="prefijos-hora"
+                  className={workspaceMode === "operar" ? "flex items-center gap-2 py-2" : "hidden"}
+                >
                   <Clock className="h-4 w-4" />
                   <span className="hidden sm:inline">Prefijos por hora</span>
                 </TabsTrigger>
 
-                <TabsTrigger value="depuracion" className="flex items-center gap-2 py-2">
+                <TabsTrigger
+                  value="depuracion"
+                  className={workspaceMode === "operar" ? "flex items-center gap-2 py-2" : "hidden"}
+                >
                   <Trash2 className="h-4 w-4" />
                   <span className="hidden sm:inline">Motor de depuración</span>
                 </TabsTrigger>
 
-                <TabsTrigger value="filtros" className="flex items-center gap-2 py-2">
+                <TabsTrigger
+                  value="filtros"
+                  className={workspaceMode === "operar" ? "flex items-center gap-2 py-2" : "hidden"}
+                >
                   <Filter className="h-4 w-4" />
                   <span className="hidden sm:inline">Filtro detallado</span>
                 </TabsTrigger>
 
-                <TabsTrigger value="simulador" className="flex items-center gap-2 py-2">
+                <TabsTrigger
+                  value="simulador"
+                  className={workspaceMode === "analizar" ? "flex items-center gap-2 py-2" : "hidden"}
+                >
                   <Settings className="h-4 w-4" />
                   <span className="hidden sm:inline">Simulador</span>
                 </TabsTrigger>
                 
-                <TabsTrigger value="catalogo" className="flex items-center gap-2 py-2">
+                <TabsTrigger
+                  value="catalogo"
+                  className={workspaceMode === "analizar" ? "flex items-center gap-2 py-2" : "hidden"}
+                >
                   <BookOpen className="h-4 w-4" />
                   <span className="hidden sm:inline">Catálogo de prefijos</span>
                 </TabsTrigger>
@@ -1430,7 +2028,11 @@ export default function Home() {
             </TabsContent>
 
             <TabsContent value="filtros" className="space-y-6">
-              <FiltrosTab data={analysisResult} onExportFiltrado={handleExportRecords} />
+              <FiltrosTab
+                data={analysisResult}
+                onExportFiltrado={handleExportRecords}
+                onRegisterLog={handleRegisterFilterLog}
+              />
             </TabsContent>
 
             <TabsContent value="catalogo" className="space-y-6">

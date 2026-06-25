@@ -14,9 +14,10 @@ import {
   getImportedFiles,
   getLocalHistoryStats,
   getRecordsForImportedFile,
+  getRecordsForImportedFiles,
   saveAnalysisToLocalDb,
 } from "./localDb";
-import type { RecordsFilter } from "@shared/schema";
+import type { AnalysisResult, RecordsFilter } from "@shared/schema";
 
 // Guardamos archivos temporales en disco para no cargar todo en RAM.
 const UPLOAD_TMP_DIR = path.resolve(process.cwd(), "uploads_tmp");
@@ -33,6 +34,17 @@ const upload = multer({
     },
   }),
 });
+
+function toHistoryClientAnalysis(analysis: AnalysisResult): AnalysisResult & {
+  clientDataMode: "summary";
+} {
+  return {
+    ...analysis,
+    aniSummaries: [],
+    rawRecords: [],
+    clientDataMode: "summary",
+  };
+}
 
 function buildBaseFinalRows(rows: any[]) {
   return rows.map((s) => ({
@@ -402,6 +414,52 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   }
   });
 
+    app.post("/api/history/analyze-selection", async (req, res) => {
+    try {
+      const fileIds = Array.isArray(req.body?.fileIds)
+        ? req.body.fileIds.map((id: unknown) => Number(id))
+        : [];
+      const label =
+        typeof req.body?.label === "string" && req.body.label.trim()
+          ? req.body.label.trim()
+          : "Seleccion de historial";
+
+      if (fileIds.length === 0) {
+        return res.status(400).json({
+          message: "Selecciona al menos un ticket para analizar",
+        });
+      }
+
+      const records = getUsableCallRecords(getRecordsForImportedFiles(fileIds));
+
+      if (records.length === 0) {
+        return res.status(404).json({
+          message: "No hay registros guardados para el periodo seleccionado",
+        });
+      }
+
+      const analysisResult = processCallRecords(records);
+      await storage.storeAnalysis(analysisResult);
+
+      const clientResult =
+        records.length > 300000
+          ? toHistoryClientAnalysis(analysisResult)
+          : analysisResult;
+
+      res.json({
+        ...clientResult,
+        fileName: label,
+      });
+    } catch (error) {
+      console.error("Error analizando seleccion historica:", error);
+
+      res.status(500).json({
+        message: "Error al analizar la seleccion historica",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
     app.post("/api/history/analyze-all", async (_req, res) => {
     try {
       const records = getUsableCallRecords(getAllHistoryRecords());
@@ -415,7 +473,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const analysisResult = processCallRecords(records);
       await storage.storeAnalysis(analysisResult);
 
-      res.json(analysisResult);
+      res.json(toHistoryClientAnalysis(analysisResult));
     } catch (error) {
       console.error("Error analizando historial completo:", error);
 
@@ -595,6 +653,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     const filteredRecords = applyRecordFilters(analysis.rawRecords, filters);
 
+    if (filteredRecords.length === 0) {
+      return res.status(422).json({
+        message: "No hay registros para exportar con los filtros actuales",
+      });
+    }
+
     const data = filteredRecords.map((r) => ({
       Fecha: r.fecha || "",
       Estado: r.estado || "",
@@ -606,12 +670,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }));
 
     if (format === "xlsx") {
-      const worksheet = XLSX.utils.json_to_sheet(data);
+      const header = ["Fecha", "Estado", "SubEstado", "ANI", "Base", "Duracion", "Direccion"];
+      const worksheet = XLSX.utils.json_to_sheet(data, { header });
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, worksheet, "Registros");
-      const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+      const buffer = XLSX.write(workbook, {
+        type: "buffer",
+        bookType: "xlsx",
+        compression: true,
+      });
       res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       res.setHeader("Content-Disposition", "attachment; filename=registros_filtrados.xlsx");
+      res.setHeader("Content-Length", String(buffer.length));
       return res.send(buffer);
     }
 

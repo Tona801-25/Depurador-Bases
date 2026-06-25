@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { MapPin } from "lucide-react";
 import type { AnalysisResult } from "@shared/schema";
+import { extractPrefijoArgentina } from "@shared/prefijos";
 
 interface MiniMapaArgentinaProps {
   data: AnalysisResult;
@@ -59,32 +60,13 @@ const argentinaPath = `
   L 110 90 L 130 70 L 150 55 Z
 `;
 
-function normalizarAni(value?: unknown) {
-  return String(value ?? "").replace(/\D/g, "");
+function extractPrefijo(ani?: unknown) {
+  const prefijo = extractPrefijoArgentina(ani);
+  return REGION_BY_PREFIX[prefijo] ? prefijo : "";
 }
 
-function extractPrefijo(ani?: unknown) {
-  let digits = normalizarAni(ani);
-
-  if (!digits) return "";
-
-  if (digits.startsWith("54")) {
-    digits = digits.slice(2);
-  }
-
-  if (digits.startsWith("9") && digits.length > 10) {
-    digits = digits.slice(1);
-  }
-
-  for (const len of [4, 3, 2]) {
-    const candidate = digits.slice(0, len);
-
-    if (REGION_BY_PREFIX[candidate]) {
-      return candidate;
-    }
-  }
-
-  return "";
+function normalizarAni(value?: unknown) {
+  return String(value ?? "").replace(/\D/g, "");
 }
 
 function isContactoEfectivo(record: AnalysisResult["rawRecords"][number]) {

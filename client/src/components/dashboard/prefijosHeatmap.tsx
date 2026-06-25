@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import type { AnalysisResult } from "@shared/schema";
+import { extractPrefijoArgentina } from "@shared/prefijos";
 import { cn } from "@/lib/utils";
 
 interface PrefijoHeatmapProps {
@@ -87,40 +88,6 @@ function parseDateValue(value?: unknown): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function extractPrefijo(ani?: string) {
-  const digits = String(ani || "").replace(/\D/g, "");
-
-  if (!digits) return "00";
-
-  if (digits.startsWith("54")) {
-    const rest = digits.slice(2);
-
-    if (rest.startsWith("9")) {
-      const afterNine = rest.slice(1);
-
-      if (afterNine.startsWith("11")) return "11";
-
-      for (const len of [4, 3, 2]) {
-        if (afterNine.length >= len) return afterNine.slice(0, len);
-      }
-    }
-
-    if (rest.startsWith("11")) return "11";
-
-    for (const len of [4, 3, 2]) {
-      if (rest.length >= len) return rest.slice(0, len);
-    }
-  }
-
-  if (digits.startsWith("11")) return "11";
-
-  for (const len of [4, 3, 2]) {
-    if (digits.length >= len) return digits.slice(0, len);
-  }
-
-  return digits.slice(0, 2) || "00";
-}
-
 function isContactoEfectivo(record: AnalysisResult["rawRecords"][number]) {
   const estado = String(record.estado || "").toUpperCase().trim();
   const subestado = String(record.subestado || "").toUpperCase().trim();
@@ -165,7 +132,7 @@ const PrefijoHeatmap = ({ data }: PrefijoHeatmapProps) => {
       if (!date) continue;
 
       const hora = date.getHours();
-      const prefijo = extractPrefijo(record.ani);
+      const prefijo = extractPrefijoArgentina(record.ani);
       const key = `${prefijo}-${hora}`;
 
       hoursSet.add(hora);

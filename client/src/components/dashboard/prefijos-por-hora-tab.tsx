@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { DataTable, type Column } from "@/components/data-table";
 import type { AnalysisResult } from "@shared/schema";
+import { extractPrefijoArgentina } from "@shared/prefijos";
 import HourlyAreaChart from "@/components/dashboard/hourlyAreaChart";
 import PrefijoHeatmap from "@/components/dashboard/prefijosHeatmap";
 
@@ -148,23 +149,6 @@ const tableData = useMemo(() => {
     return isNaN(d.getTime()) ? null : d;
   };
 
-  const extractPrefijo = (ani: string) => {
-    const digits = (ani || "").replace(/\D/g, "");
-    if (digits.startsWith("54")) {
-      const rest = digits.slice(2);
-      if (rest.startsWith("9")) {
-        const afterNine = rest.slice(1);
-        if (afterNine.startsWith("11")) return "11";
-        for (const len of [4, 3, 2]) if (afterNine.length >= len) return afterNine.slice(0, len);
-      }
-      if (rest.startsWith("11")) return "11";
-      for (const len of [4, 3, 2]) if (rest.length >= len) return rest.slice(0, len);
-    }
-    if (digits.startsWith("11")) return "11";
-    for (const len of [4, 3, 2]) if (digits.length >= len) return digits.slice(0, len);
-    return digits.slice(0, 2) || "00";
-  };
-
   const prefijoPorHoraMap: Record<number, Record<string, number>> = {};
 
   for (const r of raw) {
@@ -172,7 +156,7 @@ const tableData = useMemo(() => {
     if (!d) continue;
 
     const hour = d.getHours();
-    const prefijo = extractPrefijo(r.ani);
+    const prefijo = extractPrefijoArgentina(r.ani);
 
     if (!prefijoPorHoraMap[hour]) prefijoPorHoraMap[hour] = {};
     prefijoPorHoraMap[hour][prefijo] = (prefijoPorHoraMap[hour][prefijo] || 0) + 1;

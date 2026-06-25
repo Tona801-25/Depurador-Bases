@@ -4,6 +4,7 @@ import fs from "fs";
 import path from "path";
 
 import type { AnalysisResult, CallRecord } from "@shared/schema";
+import { extractPrefijoArgentina } from "@shared/prefijos";
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const DB_PATH = path.join(DATA_DIR, "depurador-bases.sqlite");
@@ -264,13 +265,8 @@ function inferFechaArchivo(records: CallRecord[]): string | undefined {
 }
 
 function getPrefijo(ani?: string): string {
-  const clean = String(ani ?? "").replace(/\D/g, "");
-
-  if (clean.startsWith("549")) return clean.slice(3, 6);
-  if (clean.startsWith("54")) return clean.slice(2, 5);
-  if (clean.length >= 3) return clean.slice(0, 3);
-
-  return "";
+  const prefijo = extractPrefijoArgentina(ani);
+  return prefijo === "00" ? "" : prefijo;
 }
 
 function buildRecordHash(record: CallRecord): string {
@@ -775,10 +771,9 @@ function rowToCallRecord(row: StoredCallRecordRow): CallRecord {
       typeof parsed.base === "string" && parsed.base.trim()
         ? parsed.base
         : row.base ?? undefined,
-    prefijo:
-      typeof parsed.prefijo === "string" && parsed.prefijo.trim()
-        ? parsed.prefijo
-        : row.prefijo ?? undefined,
+    prefijo: getPrefijo(
+      typeof parsed.ani === "string" && parsed.ani.trim() ? parsed.ani : row.ani,
+    ),
     duracion:
       typeof parsed.duracion === "number"
         ? parsed.duracion
@@ -811,6 +806,46 @@ export function getRecordsForImportedFile(fileId: number): CallRecord[] {
       ORDER BY call_records.id ASC
     `)
     .all(fileId) as StoredCallRecordRow[];
+
+  return rows.map(rowToCallRecord);
+}
+
+export function getRecordsForImportedFiles(fileIds: number[]): CallRecord[] {
+  initLocalDb();
+
+  const normalizedIds = Array.from(
+    new Set(
+      fileIds
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id) && id > 0),
+    ),
+  );
+
+  if (normalizedIds.length === 0) return [];
+
+  const placeholders = normalizedIds.map(() => "?").join(",");
+  const rows = db
+    .prepare(`
+      SELECT
+        call_records.raw_json,
+        call_records.fecha,
+        call_records.archivo_origen,
+        COALESCE(
+          NULLIF(call_records.fecha_archivo, ''),
+          imported_files.fecha_archivo
+        ) AS fecha_archivo,
+        call_records.ani,
+        call_records.estado,
+        call_records.subestado,
+        call_records.base,
+        call_records.prefijo,
+        call_records.duracion
+      FROM call_records
+      LEFT JOIN imported_files ON imported_files.id = call_records.file_id
+      WHERE call_records.file_id IN (${placeholders})
+      ORDER BY call_records.id ASC
+    `)
+    .all(...normalizedIds) as StoredCallRecordRow[];
 
   return rows.map(rowToCallRecord);
 }

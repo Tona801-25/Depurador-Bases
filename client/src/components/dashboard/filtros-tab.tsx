@@ -15,9 +15,19 @@ interface FiltrosTabProps {
   data: AnalysisResult;
   onExportFiltrado: (
     filters: RecordsFilter,
-    format: "csv" | "txt" | "xlsx"
+    format: "csv" | "txt" | "xlsx",
+    meta?: FilterExportMeta
   ) => void;
+  onRegisterLog?: (meta: FilterExportMeta) => void;
 }
+
+type FilterExportMeta = {
+  visibleRows: number;
+  activeFilters: number;
+  selectedBases: string[];
+  selectedEstados: string[];
+  selectedSubestados: string[];
+};
 
 type OperationalPreset = {
   label: string;
@@ -121,8 +131,13 @@ const operationalPresets: OperationalPreset[] = [
   },
 ];
 
-export function FiltrosTab({ data, onExportFiltrado }: FiltrosTabProps) {
+export function FiltrosTab({ data, onExportFiltrado, onRegisterLog }: FiltrosTabProps) {
   const rawRecords = data.rawRecords ?? [];
+  const isSummaryOnly =
+    rawRecords.length === 0 &&
+    data.totalRecords > 0 &&
+    (data as AnalysisResult & { clientDataMode?: string }).clientDataMode ===
+      "summary";
 
   const [selectedEstados, setSelectedEstados] = useState<string[]>([]);
   const [selectedSubestados, setSelectedSubestados] = useState<string[]>([]);
@@ -307,6 +322,34 @@ export function FiltrosTab({ data, onExportFiltrado }: FiltrosTabProps) {
     durMin: duracionRange[0],
     durMax: duracionRange[1],
   };
+
+  const exportMeta: FilterExportMeta = {
+    visibleRows: filteredRecords.length,
+    activeFilters: activeFiltersCount,
+    selectedBases,
+    selectedEstados,
+    selectedSubestados,
+  };
+
+  if (isSummaryOnly) {
+    return (
+      <Card className="glass-card border-glass-border">
+        <CardHeader>
+          <CardTitle className="text-sm font-display font-bold flex items-center gap-2">
+            <Filter className="h-4 w-4 text-primary" />
+            Filtro detallado no disponible en historial completo
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            El historial completo se analiza en modo resumen para no cargar
+            millones de filas en el navegador. Para filtrar y descargar
+            registros puntuales, analizá un ticket individual desde el historial.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -613,12 +656,25 @@ export function FiltrosTab({ data, onExportFiltrado }: FiltrosTabProps) {
 
         <CardContent className="space-y-4">
           <div className="flex flex-wrap gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onRegisterLog?.(exportMeta)}
+              disabled={filteredRecords.length === 0}
+              className="gap-2 rounded-lg font-display text-xs"
+              data-testid="button-register-filter-log"
+            >
+              <Search className="h-4 w-4" />
+              Registrar en log
+            </Button>
+
             {(["csv", "txt", "xlsx"] as const).map((fmt) => (
               <Button
                 key={fmt}
                 variant={fmt === "xlsx" ? "default" : "outline"}
                 size="sm"
-                onClick={() => onExportFiltrado(exportFilters, fmt)}
+                onClick={() => onExportFiltrado(exportFilters, fmt, exportMeta)}
+                disabled={filteredRecords.length === 0}
                 className="gap-2 rounded-lg font-display text-xs"
                 data-testid={`button-export-${fmt}`}
               >

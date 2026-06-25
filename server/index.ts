@@ -49,7 +49,8 @@ app.use((req, res, next) => {
     if (path.startsWith("/api")) {
       let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
       if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+        const summary = summarizeResponseForLog(capturedJsonResponse);
+        logLine += ` :: ${summary}`;
       }
       log(logLine);
     }
@@ -57,6 +58,26 @@ app.use((req, res, next) => {
 
   next();
 });
+
+function summarizeResponseForLog(body: Record<string, any>) {
+  const summary: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(body)) {
+    if (Array.isArray(value)) {
+      summary[key] = `[array:${value.length}]`;
+      continue;
+    }
+
+    if (value && typeof value === "object") {
+      summary[key] = "[object]";
+      continue;
+    }
+
+    summary[key] = value;
+  }
+
+  return JSON.stringify(summary);
+}
 
 (async () => {
   await registerRoutes(httpServer, app);
