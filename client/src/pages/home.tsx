@@ -23,6 +23,7 @@ import { FiltrosTab } from "@/components/dashboard/filtros-tab";
 import { CatalogoPrefijosTab } from "@/components/dashboard/catalogo-prefijos";
 import { SimuladorCortesTab } from "@/components/dashboard/simulador-cortes";
 import { PrefijosPorHoraTab } from "@/components/dashboard/prefijos-por-hora-tab";
+import { FuzzionTab } from "@/components/dashboard/fuzzion-tab";
 import EffectivenessRadial from "@/components/dashboard/effectivenessRadial";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -187,6 +188,8 @@ export default function Home() {
     label: string;
   } | null>(null);
   const analysisRequestIdRef = useRef(0);
+  const uploadAbortControllerRef = useRef<AbortController | null>(null);
+  const uploadCancelledByUserRef = useRef(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [lastUploadInfo, setLastUploadInfo] = useState<{
     count: number;
@@ -567,6 +570,9 @@ export default function Home() {
     const uploadMutation = useMutation({
     mutationFn: async (files: File[]) => {
       const requestId = ++analysisRequestIdRef.current;
+      const controller = new AbortController();
+      uploadAbortControllerRef.current = controller;
+      uploadCancelledByUserRef.current = false;
       const formData = new FormData();
 
       files.forEach((file) => {
@@ -576,6 +582,7 @@ export default function Home() {
       const response = await fetch("/api/upload", {
         method: "POST",
         body: formData,
+        signal: controller.signal,
       });
 
     if (!response.ok) {
@@ -630,8 +637,26 @@ export default function Home() {
       },
 
     onError: (error: Error) => {
+      if (error.name === "AbortError" && uploadCancelledByUserRef.current) {
+        setUploadError(null);
+        setLastUploadInfo(null);
+        pushOperationLog({
+          kind: "filter",
+          title: "Carga cancelada",
+          detail: "El procesamiento se detuvo por solicitud del usuario.",
+        });
+
+        toast({
+          title: "Carga cancelada",
+          description: "Los archivos temporales fueron descartados.",
+        });
+        return;
+      }
+
       setAnalysisResult(null);
       setUploadError(error.message);
+      historyStatsQuery.refetch();
+      historyFilesQuery.refetch();
       pushOperationLog({
         kind: "error",
         title: "Fallo al procesar carga",
@@ -644,7 +669,19 @@ export default function Home() {
         variant: "destructive",
       });
     },
+    onSettled: () => {
+      uploadAbortControllerRef.current = null;
+      uploadCancelledByUserRef.current = false;
+    },
   });
+
+  const handleCancelUpload = useCallback(() => {
+    if (!uploadMutation.isPending || !uploadAbortControllerRef.current) return;
+
+    uploadCancelledByUserRef.current = true;
+    analysisRequestIdRef.current += 1;
+    uploadAbortControllerRef.current.abort();
+  }, [uploadMutation.isPending]);
 
   const handleFilesSelected = useCallback(
     (files: File[]) => {
@@ -1154,6 +1191,7 @@ export default function Home() {
         <section className="mb-8">
           <FileUpload
             onFilesSelected={handleFilesSelected}
+            onCancelUpload={handleCancelUpload}
             isUploading={
               uploadMutation.isPending ||
               analyzeHistoryFileMutation.isPending ||
@@ -1445,6 +1483,10 @@ export default function Home() {
           </Card>
         </section>
 
+        <section className="mb-6">
+          <FuzzionTab onLog={pushOperationLog} />
+        </section>
+
         {analysisResult && activeAnalysis && (
           <section className="mb-6">
             <div className="flex flex-col gap-2 rounded-lg border border-primary/25 bg-primary/5 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1648,7 +1690,13 @@ export default function Home() {
             </section>
 
             <div className="sticky top-[65px] z-40 -mx-1 rounded-2xl bg-background/80 px-1 py-2 backdrop-blur-xl supports-[backdrop-filter]:bg-background/65">
-              <TabsList className="grid h-auto w-full grid-cols-2 gap-1 p-1 lg:grid-cols-5">
+              <TabsList
+                className={
+                  workspaceMode === "operar"
+                    ? "grid h-auto w-full grid-cols-2 gap-1 p-1"
+                    : "grid h-auto w-full grid-cols-2 gap-1 p-1 lg:grid-cols-6"
+                }
+              >
                 <TabsTrigger
                   value="resumen"
                   className={workspaceMode === "analizar" ? "flex items-center gap-2 py-2" : "hidden"}
@@ -1665,14 +1713,17 @@ export default function Home() {
                   <span className="hidden sm:inline">Gráficos</span>
                 </TabsTrigger>
 
-                <TabsTrigger value="turnos" className="flex items-center gap-2 py-2">
+                <TabsTrigger
+                  value="turnos"
+                  className={workspaceMode === "analizar" ? "flex items-center gap-2 py-2" : "hidden"}
+                >
                   <TrendingUp className="h-4 w-4" />
                   <span className="hidden sm:inline">Turnos y prefijos</span>
                 </TabsTrigger>
 
                 <TabsTrigger
                   value="prefijos-hora"
-                  className={workspaceMode === "operar" ? "flex items-center gap-2 py-2" : "hidden"}
+                  className={workspaceMode === "analizar" ? "flex items-center gap-2 py-2" : "hidden"}
                 >
                   <Clock className="h-4 w-4" />
                   <span className="hidden sm:inline">Prefijos por hora</span>
@@ -1680,7 +1731,7 @@ export default function Home() {
 
                 <TabsTrigger
                   value="depuracion"
-                  className={workspaceMode === "operar" ? "flex items-center gap-2 py-2" : "hidden"}
+                  className={workspaceMode === "operar" ? "order-2 flex items-center gap-2 py-2" : "hidden"}
                 >
                   <Trash2 className="h-4 w-4" />
                   <span className="hidden sm:inline">Motor de depuración</span>
@@ -1688,7 +1739,7 @@ export default function Home() {
 
                 <TabsTrigger
                   value="filtros"
-                  className={workspaceMode === "operar" ? "flex items-center gap-2 py-2" : "hidden"}
+                  className={workspaceMode === "operar" ? "order-1 flex items-center gap-2 py-2" : "hidden"}
                 >
                   <Filter className="h-4 w-4" />
                   <span className="hidden sm:inline">Filtro detallado</span>

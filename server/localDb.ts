@@ -3,8 +3,8 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 
-import type { AnalysisResult, CallRecord } from "@shared/schema";
-import { extractPrefijoArgentina } from "@shared/prefijos";
+import type { AnalysisResult, CallRecord } from "../shared/schema.ts";
+import { extractPrefijoArgentina } from "../shared/prefijos.ts";
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const DB_PATH = path.join(DATA_DIR, "depurador-bases.sqlite");
@@ -17,6 +17,22 @@ const db = new Database(DB_PATH);
 
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
+
+export type LocalAniHistorySummary = {
+  ani: string;
+  intentosTotales: number;
+  intentosAnswerAgent: number;
+  intentosAnsweringMachine: number;
+  intentosNoAnswer: number;
+  intentosBusy: number;
+  intentosUnallocated: number;
+  intentosRejected: number;
+  ultimoLlamado: string;
+  ultimoEstado: string;
+  ultimoSubestado: string;
+  bases: string[];
+  prefijos: string[];
+};
 
 function sha256(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
@@ -876,6 +892,114 @@ export function getAllHistoryRecords(): CallRecord[] {
     .all() as StoredCallRecordRow[];
 
   return rows.map(rowToCallRecord);
+}
+
+export function getHistorySummaryForAnis(anis: string[]) {
+  initLocalDb();
+
+  const normalizedAnis = Array.from(
+    new Set(
+      anis
+        .map((ani) => String(ani ?? "").replace(/\D/g, "").trim())
+        .filter(Boolean),
+    ),
+  );
+
+  const result = new Map<string, LocalAniHistorySummary>();
+  if (normalizedAnis.length === 0) return result;
+
+  const chunkSize = 500;
+
+  for (let index = 0; index < normalizedAnis.length; index += chunkSize) {
+    const chunk = normalizedAnis.slice(index, index + chunkSize);
+    const placeholders = chunk.map(() => "?").join(",");
+    const rows = db
+      .prepare(`
+        SELECT
+          ani,
+          fecha,
+          estado,
+          subestado,
+          base,
+          prefijo
+        FROM call_records
+        WHERE ani IN (${placeholders})
+        ORDER BY ani ASC, fecha ASC, id ASC
+      `)
+      .all(...chunk) as Array<{
+        ani: string;
+        fecha: string | null;
+        estado: string | null;
+        subestado: string | null;
+        base: string | null;
+        prefijo: string | null;
+      }>;
+
+    for (const row of rows) {
+      const ani = String(row.ani ?? "").replace(/\D/g, "").trim();
+      if (!ani) continue;
+
+      let summary = result.get(ani);
+      if (!summary) {
+        summary = {
+          ani,
+          intentosTotales: 0,
+          intentosAnswerAgent: 0,
+          intentosAnsweringMachine: 0,
+          intentosNoAnswer: 0,
+          intentosBusy: 0,
+          intentosUnallocated: 0,
+          intentosRejected: 0,
+          ultimoLlamado: "",
+          ultimoEstado: "",
+          ultimoSubestado: "",
+          bases: [],
+          prefijos: [],
+        };
+        result.set(ani, summary);
+      }
+
+      const estado = normalizeEstado(row.estado ?? undefined);
+      const subestado = normalizeSubestado(row.subestado ?? undefined);
+
+      summary.intentosTotales += 1;
+      if (estado === "answer" && subestado.includes("agent")) {
+        summary.intentosAnswerAgent += 1;
+      } else if (
+        estado === "answer" &&
+        (subestado.includes("machine") ||
+          subestado.includes("answering") ||
+          subestado.includes("buzon") ||
+          subestado.includes("voicemail"))
+      ) {
+        summary.intentosAnsweringMachine += 1;
+      } else if (estado === "noanswer") {
+        summary.intentosNoAnswer += 1;
+      } else if (estado === "busy") {
+        summary.intentosBusy += 1;
+      } else if (estado === "unallocated") {
+        summary.intentosUnallocated += 1;
+      } else if (estado === "rejected") {
+        summary.intentosRejected += 1;
+      }
+
+      const base = String(row.base ?? "").trim();
+      if (base && !summary.bases.includes(base)) summary.bases.push(base);
+
+      const prefijo = String(row.prefijo ?? "").trim();
+      if (prefijo && !summary.prefijos.includes(prefijo)) {
+        summary.prefijos.push(prefijo);
+      }
+
+      if (row.fecha) {
+        summary.ultimoLlamado = row.fecha;
+        summary.ultimoEstado = row.estado ?? "";
+        summary.ultimoSubestado = row.subestado ?? "";
+      }
+    }
+  }
+
+  return result;
 }
 
 export function deleteAllLocalHistory() {

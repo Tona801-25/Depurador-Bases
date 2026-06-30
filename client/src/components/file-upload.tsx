@@ -8,12 +8,14 @@ import {
   CheckCircle2,
   AlertCircle,
   ChevronDown,
+  XCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 interface FileUploadProps {
   onFilesSelected: (files: File[]) => void;
+  onCancelUpload?: () => void;
   isUploading?: boolean;
   uploadError?: string | null;
   acceptedFormats?: string[];
@@ -22,6 +24,7 @@ interface FileUploadProps {
 
 export function FileUpload({
   onFilesSelected,
+  onCancelUpload,
   isUploading = false,
   uploadError = null,
   acceptedFormats = [".csv", ".txt", ".xls", ".xlsx", ".xlsm", ".xlsb"],
@@ -30,6 +33,14 @@ export function FileUpload({
   const [isDragging, setIsDragging] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [showFileList, setShowFileList] = useState(false);
+
+  const handleCancelUpload = useCallback(() => {
+    if (!isUploading || !onCancelUpload) return;
+
+    onCancelUpload();
+    setSelectedFiles([]);
+    setShowFileList(false);
+  }, [isUploading, onCancelUpload]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -141,7 +152,7 @@ export function FileUpload({
     >
       <div className="pointer-events-none absolute -right-20 -top-20 h-60 w-60 rounded-full bg-primary/5 blur-3xl" />
 
-      <div className="relative flex items-center justify-between gap-4">
+      <div className="relative flex flex-wrap items-center justify-between gap-4">
         <h2 className="flex items-center gap-2 text-base font-semibold text-foreground sm:text-lg">
           <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
             <Upload className="h-4 w-4" />
@@ -150,18 +161,48 @@ export function FileUpload({
         </h2>
 
         {hasFiles && (
-          <span
-            className={cn(
-              "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium",
-              fileStatus.chipClass
-            )}
-          >
-            <FileStatusIcon className={cn("h-3.5 w-3.5", fileStatus.iconClass)} />
-            {selectedFiles.length} archivo
-            {selectedFiles.length !== 1 ? "s" : ""} · {fileStatus.label}
-          </span>
+          <div className="flex items-center gap-2">
+            <span
+              className={cn(
+                "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium",
+                fileStatus.chipClass
+              )}
+            >
+              <FileStatusIcon className={cn("h-3.5 w-3.5", fileStatus.iconClass)} />
+              {selectedFiles.length} archivo
+              {selectedFiles.length !== 1 ? "s" : ""} · {fileStatus.label}
+            </span>
+
+            {isUploading && onCancelUpload ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                onClick={handleCancelUpload}
+              >
+                <XCircle className="mr-1.5 h-4 w-4" />
+                Cancelar carga
+              </Button>
+            ) : null}
+          </div>
         )}
       </div>
+
+      {uploadError ? (
+        <div
+          role="alert"
+          className="relative mt-4 flex items-start gap-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-3 text-sm text-destructive"
+        >
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="min-w-0">
+            <p className="font-semibold">Error al procesar la carga</p>
+            <p className="mt-0.5 break-words text-xs text-destructive/90">
+              {uploadError}
+            </p>
+          </div>
+        </div>
+      ) : null}
 
       {!hasFiles ? (
         <div

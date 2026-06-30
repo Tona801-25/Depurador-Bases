@@ -5,19 +5,22 @@ import * as XLSX from "xlsx";
 import Papa from "papaparse";
 import fs from "fs";
 import path from "path";
+import { Worker } from "node:worker_threads";
 
 import { storage, processCallRecords, generateCSV, applyRecordFilters, computeAnalysisMeta } from "./storage";
 import {
   deleteAllLocalHistory,
   deleteImportedFile,
   getAllHistoryRecords,
+  getHistorySummaryForAnis,
   getImportedFiles,
   getLocalHistoryStats,
   getRecordsForImportedFile,
   getRecordsForImportedFiles,
-  saveAnalysisToLocalDb,
 } from "./localDb";
 import type { AnalysisResult, RecordsFilter } from "@shared/schema";
+import type { LocalAniHistorySummary } from "./localDb";
+import { randomUUID } from "crypto";
 
 // Guardamos archivos temporales en disco para no cargar todo en RAM.
 const UPLOAD_TMP_DIR = path.resolve(process.cwd(), "uploads_tmp");
@@ -34,6 +37,102 @@ const upload = multer({
     },
   }),
 });
+
+class UploadCancelledError extends Error {
+  constructor() {
+    super("Carga cancelada por el usuario");
+    this.name = "UploadCancelledError";
+  }
+}
+
+type UploadWorkerResult = {
+  analysisResult: AnalysisResult;
+  sqliteResult?: {
+    insertedFiles: number;
+    duplicatedFiles: number;
+    insertedRecords: number;
+    duplicatedRecords: number;
+  };
+  sqliteError?: string;
+};
+
+function runUploadWorker(
+  files: Express.Multer.File[],
+  signal: AbortSignal,
+): Promise<UploadWorkerResult> {
+  const workerPath =
+    process.env.NODE_ENV === "production"
+      ? path.resolve(process.cwd(), "dist", "upload-worker.cjs")
+      : path.resolve(process.cwd(), "server", "upload-worker.ts");
+
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(workerPath, {
+      workerData: {
+        files: files.map((file) => ({
+          path: file.path,
+          originalName: file.originalname,
+        })),
+      },
+      ...(process.env.NODE_ENV === "production"
+        ? {}
+        : { execArgv: ["--import", "tsx"] }),
+    });
+
+    let settled = false;
+
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", handleAbort);
+      callback();
+    };
+
+    const handleAbort = () => {
+      void worker.terminate();
+      finish(() => reject(new UploadCancelledError()));
+    };
+
+    signal.addEventListener("abort", handleAbort, { once: true });
+
+    worker.on("message", (message) => {
+      if (message?.type === "success") {
+        finish(() =>
+          resolve({
+            analysisResult: message.analysisResult,
+            sqliteResult: message.sqliteResult,
+            sqliteError: message.sqliteError,
+          }),
+        );
+        return;
+      }
+
+      finish(() =>
+        reject(new Error(message?.message || "Falló el procesamiento de la carga")),
+      );
+    });
+
+    worker.on("error", (error) => finish(() => reject(error)));
+    worker.on("exit", (code) => {
+      if (!settled && code !== 0) {
+        finish(() =>
+          reject(new Error(`El proceso de carga terminó con código ${code}`)),
+        );
+      }
+    });
+
+    if (signal.aborted) handleAbort();
+  });
+}
+
+function removeTemporaryUploads(files: Express.Multer.File[]) {
+  for (const file of files) {
+    try {
+      if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
+    } catch (error) {
+      console.warn(`No se pudo eliminar el temporal ${file.path}:`, error);
+    }
+  }
+}
 
 function toHistoryClientAnalysis(analysis: AnalysisResult): AnalysisResult & {
   clientDataMode: "summary";
@@ -218,6 +317,171 @@ function buildNeotelWorksheet(rows: any[]) {
   return worksheet;
 }
 
+type FuzzionCategory =
+  | "TODOS"
+  | "NUNCA_TRABAJADO"
+  | "CONTACTADO"
+  | "BUZON_SIN_CONTACTO"
+  | "NO_SATURADO"
+  | "REINTENTAR_MEJOR_FRANJA"
+  | "DESCARTAR";
+
+type FuzzionLead = {
+  rowNumber: number;
+  linea: string;
+  razonSocial: string;
+  documento: string;
+  mercadoActual: string;
+  planActual: string;
+  planSugerido: string;
+  localidad: string;
+  originalRow: Record<string, unknown>;
+  intentosTotales: number;
+  contactosEfectivos: number;
+  buzones: number;
+  noAnswer: number;
+  invalidos: number;
+  rechazados: number;
+  ultimoLlamado: string;
+  ultimoEstado: string;
+  ultimoSubestado: string;
+  bases: string[];
+  categorias: FuzzionCategory[];
+};
+
+type FuzzionSession = {
+  id: string;
+  fileName: string;
+  leads: FuzzionLead[];
+  createdAt: number;
+};
+
+const fuzzionSessions = new Map<string, FuzzionSession>();
+
+function normalizeHeader(value: unknown) {
+  return String(value ?? "")
+    .trim()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+}
+
+function getFuzzionValue(
+  row: Record<string, unknown>,
+  candidates: string[],
+): unknown {
+  const candidateSet = new Set(candidates.map(normalizeHeader));
+
+  for (const [key, value] of Object.entries(row)) {
+    if (candidateSet.has(normalizeHeader(key))) return value;
+  }
+
+  return "";
+}
+
+function getFuzzionText(
+  row: Record<string, unknown>,
+  candidates: string[],
+) {
+  return String(getFuzzionValue(row, candidates) ?? "").trim();
+}
+
+function classifyFuzzionLead(summary?: LocalAniHistorySummary) {
+  const categories: FuzzionCategory[] = [];
+
+  if (!summary || summary.intentosTotales === 0) {
+    categories.push("NUNCA_TRABAJADO", "NO_SATURADO");
+    return categories;
+  }
+
+  const contactado = summary.intentosAnswerAgent > 0;
+  const descartar =
+    summary.intentosUnallocated >= 3 ||
+    (summary.intentosRejected >= 3 && !contactado);
+  const saturado =
+    summary.intentosTotales >= 9 ||
+    summary.intentosNoAnswer >= 6 ||
+    summary.intentosAnsweringMachine >= 5;
+
+  if (contactado) categories.push("CONTACTADO");
+  if (summary.intentosAnsweringMachine > 0 && !contactado) {
+    categories.push("BUZON_SIN_CONTACTO");
+  }
+  if (!saturado) categories.push("NO_SATURADO");
+  if (
+    !contactado &&
+    !descartar &&
+    !saturado &&
+    summary.intentosTotales > 0
+  ) {
+    categories.push("REINTENTAR_MEJOR_FRANJA");
+  }
+  if (descartar) categories.push("DESCARTAR");
+
+  return categories;
+}
+
+function filterFuzzionLeads(
+  leads: FuzzionLead[],
+  category: FuzzionCategory,
+  search = "",
+) {
+  const query = search.trim().toLowerCase();
+
+  return leads.filter((lead) => {
+    if (category !== "TODOS" && !lead.categorias.includes(category)) {
+      return false;
+    }
+
+    if (!query) return true;
+
+    return [
+      lead.linea,
+      lead.razonSocial,
+      lead.documento,
+      lead.mercadoActual,
+      lead.planActual,
+      lead.planSugerido,
+      lead.localidad,
+      ...lead.bases,
+    ].some((value) => String(value).toLowerCase().includes(query));
+  });
+}
+
+function buildFuzzionNeotelRows(leads: FuzzionLead[]) {
+  const seen = new Set<string>();
+
+  return leads
+    .filter((lead) => {
+      if (!lead.linea || seen.has(lead.linea)) return false;
+      seen.add(lead.linea);
+      return true;
+    })
+    .map((lead) => ({
+      LINEA: lead.linea,
+      "RAZON SOCIAL": lead.razonSocial,
+      DOCUMENTO: lead.documento,
+      "DIRECCION del CLIENTE": getFuzzionText(lead.originalRow, [
+        "DIRECCION del CLIENTE",
+        "DIRECCION",
+      ]),
+      "FECHA DE NACIMIENTO": getFuzzionText(lead.originalRow, [
+        "FECHA DE NACIMIENTO",
+        "FECHA NACIMIENTO",
+      ]),
+      "MERCADO ACTUAL": lead.mercadoActual,
+      "PLAN ACTUAL": lead.planActual,
+      "PLAN SUGERIDO": lead.planSugerido,
+      PRECIO: getFuzzionText(lead.originalRow, ["PRECIO"]),
+      "FUENTE DE SOLICITUD": getFuzzionText(lead.originalRow, [
+        "FUENTE DE SOLICITUD",
+      ]),
+      LOCALIDAD: lead.localidad,
+      CP: getFuzzionText(lead.originalRow, ["CP", "CODIGO POSTAL"]),
+    }));
+}
+
 function extractFechaArchivoFromName(fileName: string): string | undefined {
   const normalized = fileName.trim();
 
@@ -300,6 +564,202 @@ function getUsableCallRecords<T extends { ani?: string; estado?: string }>(
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   app.get("/api/health", (_req, res) => res.json({ ok: true }));
   app.get("/health", (_req, res) => res.json({ ok: true }));
+
+  app.post("/api/fuzzion/preview", upload.single("file"), async (req, res) => {
+    const uploadedFile = req.file;
+
+    if (!uploadedFile) {
+      return res.status(400).json({ message: "Seleccioná un archivo de Fuzzión." });
+    }
+
+    try {
+      const extension = path.extname(uploadedFile.originalname).toLowerCase();
+      let rows: Record<string, unknown>[] = [];
+
+      if (extension === ".csv" || extension === ".txt") {
+        const content = decodeDelimitedFile(fs.readFileSync(uploadedFile.path));
+        const parsed = Papa.parse<Record<string, unknown>>(content, {
+          header: true,
+          skipEmptyLines: true,
+          delimiter: detectDelimiter(content),
+        });
+        rows = parsed.data;
+      } else {
+        const workbook = XLSX.read(fs.readFileSync(uploadedFile.path), {
+          type: "buffer",
+          cellDates: false,
+          raw: false,
+        });
+        const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+        rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(firstSheet, {
+          defval: "",
+          raw: false,
+        });
+      }
+
+      const parsedRows = rows
+        .map((row, index) => ({
+          row,
+          rowNumber: index + 2,
+          linea: limpiarLineaNeotel(
+            getFuzzionValue(row, [
+              "LINEA",
+              "ANI",
+              "ANIS",
+              "TELEFONO",
+              "TELÉFONO",
+              "DNI/TELEFONO",
+            ]),
+          ),
+        }))
+        .filter((item) => item.linea.length >= 7);
+
+      if (parsedRows.length === 0) {
+        return res.status(422).json({
+          message:
+            "No se encontró una columna LINEA o Ani con teléfonos válidos.",
+        });
+      }
+
+      const history = getHistorySummaryForAnis(
+        parsedRows.map((item) => item.linea),
+      );
+
+      const leads: FuzzionLead[] = parsedRows.map(({ row, rowNumber, linea }) => {
+        const summary = history.get(linea);
+
+        return {
+          rowNumber,
+          linea,
+          razonSocial: getFuzzionText(row, [
+            "RAZON SOCIAL",
+            "NOMBRE",
+            "APELLIDO Y NOMBRE",
+          ]),
+          documento: getFuzzionText(row, ["DOCUMENTO", "DNI"]),
+          mercadoActual: getFuzzionText(row, [
+            "MERCADO ACTUAL",
+            "COMPAÑIA",
+            "COMPANIA",
+          ]),
+          planActual: getFuzzionText(row, [
+            "PLAN ACTUAL",
+            "DEUDA/LINEAS/FECHA DE PORTACION",
+            "DEUDA LINEAS FECHA DE PORTACION",
+          ]),
+          planSugerido: getFuzzionText(row, [
+            "PLAN SUGERIDO",
+            "PODES VENDER PLAN CORPORATIVO",
+          ]),
+          localidad: getFuzzionText(row, ["LOCALIDAD"]),
+          originalRow: row,
+          intentosTotales: summary?.intentosTotales ?? 0,
+          contactosEfectivos: summary?.intentosAnswerAgent ?? 0,
+          buzones: summary?.intentosAnsweringMachine ?? 0,
+          noAnswer: summary?.intentosNoAnswer ?? 0,
+          invalidos: summary?.intentosUnallocated ?? 0,
+          rechazados: summary?.intentosRejected ?? 0,
+          ultimoLlamado: summary?.ultimoLlamado ?? "",
+          ultimoEstado: summary?.ultimoEstado ?? "",
+          ultimoSubestado: summary?.ultimoSubestado ?? "",
+          bases: summary?.bases ?? [],
+          categorias: classifyFuzzionLead(summary),
+        };
+      });
+
+      const session: FuzzionSession = {
+        id: randomUUID(),
+        fileName: uploadedFile.originalname,
+        leads,
+        createdAt: Date.now(),
+      };
+      fuzzionSessions.set(session.id, session);
+
+      if (fuzzionSessions.size > 10) {
+        const oldest = Array.from(fuzzionSessions.values()).sort(
+          (a, b) => a.createdAt - b.createdAt,
+        )[0];
+        if (oldest) fuzzionSessions.delete(oldest.id);
+      }
+
+      const countCategory = (category: FuzzionCategory) =>
+        leads.filter((lead) => lead.categorias.includes(category)).length;
+
+      return res.json({
+        id: session.id,
+        fileName: session.fileName,
+        totalRows: rows.length,
+        validRows: leads.length,
+        uniqueAnis: new Set(leads.map((lead) => lead.linea)).size,
+        stats: {
+          nuncaTrabajados: countCategory("NUNCA_TRABAJADO"),
+          contactados: countCategory("CONTACTADO"),
+          buzonesSinContacto: countCategory("BUZON_SIN_CONTACTO"),
+          noSaturados: countCategory("NO_SATURADO"),
+          reintentarMejorFranja: countCategory("REINTENTAR_MEJOR_FRANJA"),
+          descartar: countCategory("DESCARTAR"),
+        },
+        preview: leads.slice(0, 250).map(({ originalRow, ...lead }) => lead),
+      });
+    } catch (error) {
+      console.error("Error procesando base Fuzzión:", error);
+      return res.status(500).json({
+        message: "No se pudo procesar la base Fuzzión.",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      fs.rmSync(uploadedFile.path, { force: true });
+    }
+  });
+
+  app.post("/api/fuzzion/:id/export", async (req, res) => {
+    const session = fuzzionSessions.get(req.params.id);
+    if (!session) {
+      return res.status(404).json({
+        message: "La base Fuzzión ya no está disponible. Volvé a cargarla.",
+      });
+    }
+
+    const category = String(req.body?.category || "TODOS") as FuzzionCategory;
+    const search = String(req.body?.search || "");
+    const allowedCategories: FuzzionCategory[] = [
+      "TODOS",
+      "NUNCA_TRABAJADO",
+      "CONTACTADO",
+      "BUZON_SIN_CONTACTO",
+      "NO_SATURADO",
+      "REINTENTAR_MEJOR_FRANJA",
+      "DESCARTAR",
+    ];
+
+    if (!allowedCategories.includes(category)) {
+      return res.status(400).json({ message: "Filtro Fuzzión no válido." });
+    }
+
+    const filtered = filterFuzzionLeads(session.leads, category, search);
+    const neotelRows = buildFuzzionNeotelRows(filtered);
+
+    if (neotelRows.length === 0) {
+      return res.status(422).json({
+        message: "No hay líneas para exportar con este filtro.",
+      });
+    }
+
+    const worksheet = buildNeotelWorksheet(neotelRows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Contactos");
+    const buffer = XLSX.write(workbook, {
+      type: "buffer",
+      bookType: "biff8",
+    });
+
+    res.setHeader("Content-Type", "application/vnd.ms-excel");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=fuzzion_${category.toLowerCase()}.xls`,
+    );
+    return res.send(buffer);
+  });
 
   app.get("/api/history/stats", (_req, res) => {
     try {
@@ -484,132 +944,74 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  // 1) Upload a disco + parseo + store (DEVOLVEMOS FULL)
+  // 1) Upload a disco + procesamiento cancelable en worker + store.
   app.post("/api/upload", upload.array("files"), async (req, res) => {
-  try {
-    const files = req.files as Express.Multer.File[];
-    if (!files || files.length === 0) {
-      return res.status(400).json({ message: "No se recibieron archivos" });
-    }
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+    const cancellationController = new AbortController();
 
-    const allRecords: Record<string, any>[] = [];
+    const cancelProcessing = () => {
+      if (!res.writableEnded) cancellationController.abort();
+    };
 
-    for (const file of files) {
-      const fileName = file.originalname.toLowerCase();
-      let records: Record<string, any>[] = [];
+    req.once("aborted", cancelProcessing);
+    res.once("close", cancelProcessing);
 
-      try {
-        if (fileName.endsWith(".csv") || fileName.endsWith(".txt")) {
-          // ✅ Intento UTF-8 primero, fallback latin1
-          const buffer = fs.readFileSync(file.path);
-          const content = decodeDelimitedFile(buffer);
-          const delimiter = detectDelimiter(content);
-
-          const result = Papa.parse(content, {
-            header: true,
-            skipEmptyLines: true,
-            dynamicTyping: true,
-            delimiter,
-            transformHeader: (header) => header.replace(/^\uFEFF/, "").trim(),
-          });
-
-          records = result.data as Record<string, any>[];
-} else if (fileName.endsWith(".xlsx") || fileName.endsWith(".xls")) {
-  const buf = fs.readFileSync(file.path);
-  const workbook = XLSX.read(buf, {
-    type: "buffer",
-    cellDates: true,
-  });
-
-  records = workbook.SheetNames.flatMap((sheetName) => {
-    const worksheet = workbook.Sheets[sheetName];
-    if (!worksheet) return [];
-    const sheetRows = XLSX.utils.sheet_to_json<Record<string, any>>(worksheet, {
-      defval: "",
-      raw: false,
-    });
-    const cleanRows = sheetRows.filter((row) =>
-      Object.values(row).some((value) => String(value ?? "").trim() !== "")
-    );
-    console.log(
-      `Hoja "${sheetName}" leída: ${cleanRows.length.toLocaleString("es-AR")} registros`
-    );
-    return cleanRows;
-  });
-
-  console.log(
-    `Archivo "${file.originalname}" procesado completo: ${workbook.SheetNames.length} hoja(s), ${records.length.toLocaleString("es-AR")} registros totales`
-  );
-} else {
-          console.warn(`Formato no soportado: ${fileName}`);
-          continue;
-        }
-
-        const archivoOrigen = file.originalname;
-        const fechaArchivo =
-          fileName.endsWith(".csv") || fileName.endsWith(".txt")
-            ? undefined
-            : extractFechaArchivoFromName(file.originalname);
-
-        const recordsConMetadata = records.map((row) => ({
-          ...row,
-          __archivoOrigen: archivoOrigen,
-          __fechaArchivo: fechaArchivo || "",
-        }));
-
-        for (const record of recordsConMetadata) {
-          allRecords.push(record);
-        }
-      } finally {
-        // Limpieza
-        try {
-          if (file.path && fs.existsSync(file.path)) fs.unlinkSync(file.path);
-        } catch {}
+    try {
+      if (files.length === 0) {
+        return res.status(400).json({ message: "No se recibieron archivos" });
       }
+
+      const { analysisResult, sqliteResult, sqliteError } =
+        await runUploadWorker(files, cancellationController.signal);
+
+      if (cancellationController.signal.aborted) {
+        throw new UploadCancelledError();
+      }
+
+      await storage.storeAnalysis(analysisResult);
+
+      if (sqliteResult) {
+        console.log("Historial SQLite actualizado:", {
+          archivosNuevos: sqliteResult.insertedFiles,
+          archivosDuplicados: sqliteResult.duplicatedFiles,
+          registrosNuevos: sqliteResult.insertedRecords,
+          registrosDuplicados: sqliteResult.duplicatedRecords,
+        });
+      }
+
+      if (sqliteError) {
+        console.error(
+          "No se pudo guardar en SQLite, pero el análisis sigue funcionando:",
+          sqliteError,
+        );
+      }
+
+      return res.json(analysisResult);
+    } catch (error) {
+      if (error instanceof UploadCancelledError) {
+        console.log("Carga cancelada; se detuvo el worker y se limpiaron los temporales.");
+
+        if (!res.headersSent && !res.destroyed) {
+          return res.status(499).json({ message: error.message });
+        }
+
+        return;
+      }
+
+      console.error(error);
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Error interno al procesar archivos";
+
+      if (!res.headersSent && !res.destroyed) {
+        return res.status(500).json({ message });
+      }
+    } finally {
+      req.off("aborted", cancelProcessing);
+      res.off("close", cancelProcessing);
+      removeTemporaryUploads(files);
     }
-
-    if (allRecords.length === 0) {
-      return res.status(400).json({ message: "No se pudieron leer datos" });
-    }
-
-  const initialAnalysis = processCallRecords(allRecords);
-  const usableRecords = initialAnalysis.rawRecords.filter(
-    (record) => record.ani.trim() && record.estado.trim()
-  );
-
-  if (usableRecords.length === 0) {
-    return res.status(400).json({
-      message:
-        "El archivo no parece ser un ticket de llamadas de Neotel. Debe incluir al menos ANI/Teléfono y Estado; para analizar horarios también debe incluir Inicio.",
-    });
-  }
-
-  const analysisResult =
-    usableRecords.length === initialAnalysis.rawRecords.length
-      ? initialAnalysis
-      : processCallRecords(usableRecords);
-
-  await storage.storeAnalysis(analysisResult);
-
-  try {
-    const sqliteResult = saveAnalysisToLocalDb(analysisResult);
-
-    console.log("Historial SQLite actualizado:", {
-      archivosNuevos: sqliteResult.insertedFiles,
-      archivosDuplicados: sqliteResult.duplicatedFiles,
-      registrosNuevos: sqliteResult.insertedRecords,
-      registrosDuplicados: sqliteResult.duplicatedRecords,
-    });
-  } catch (sqliteError) {
-    console.error("No se pudo guardar en SQLite, pero el análisis sigue funcionando:", sqliteError);
-  }
-
-  // ✅ DEVOLVEMOS FULL (incluye rawRecords + prefijoPorHora)
-  res.json(analysisResult);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Error interno al procesar archivos" });
-  }
   });
 
   // 2) Meta para poblar filtros del frontend

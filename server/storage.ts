@@ -5,8 +5,8 @@ import type {
   CallRecord,
   RecordsFilter,
   TagType,
-} from "@shared/schema";
-import { extractPrefijoArgentina } from "@shared/prefijos";
+} from "../shared/schema.ts";
+import { extractPrefijoArgentina } from "../shared/prefijos.ts";
 import { randomUUID } from "crypto";
 
 export interface IStorage {
