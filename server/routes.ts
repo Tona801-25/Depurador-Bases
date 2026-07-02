@@ -6,24 +6,44 @@ import Papa from "papaparse";
 import fs from "fs";
 import path from "path";
 import { Worker } from "node:worker_threads";
+import { Readable } from "node:stream";
 
 import { storage, processCallRecords, generateCSV, applyRecordFilters, computeAnalysisMeta } from "./storage";
 import {
   deleteAllLocalHistory,
   deleteImportedFile,
+  deleteTicketHistory,
   getAllHistoryRecords,
   getHistorySummaryForAnis,
   getImportedFiles,
+  getGestionAnisForCatalog,
+  getGestionCatalog,
   getLocalHistoryStats,
+  getNeotelReportStats,
   getRecordsForImportedFile,
   getRecordsForImportedFiles,
+  saveNeotelReport,
 } from "./localDb";
 import type { AnalysisResult, RecordsFilter } from "@shared/schema";
 import type { LocalAniHistorySummary } from "./localDb";
 import { randomUUID } from "crypto";
+import { parseNeotelReport } from "./neotelReports.ts";
+import {
+  getNeotelFtpPublicStatus,
+  syncNeotelReportsFromFtp,
+} from "./neotelFtp.ts";
 
 // Guardamos archivos temporales en disco para no cargar todo en RAM.
 const UPLOAD_TMP_DIR = path.resolve(process.cwd(), "uploads_tmp");
+const DEFAULT_NEOTEL_LOCAL_REPORTS_DIR =
+  "C:\\Users\\Osar\\Desktop\\ANTONELLA\\BASES\\PRUEBAS APP ANTO";
+const NEOTEL_REPORT_FILE_PATTERN =
+  /^(Gestiones_todas|Productividad_Usuarios)_20\d{2}-\d{2}-\d{2}\.csv$/i;
+const NEOTEL_TICKET_FILE_PATTERN = /\.(xls|xlsx)$/i;
+const NEOTEL_LOCAL_REPORTS_DIR = path.resolve(
+  process.env.NEOTEL_LOCAL_REPORTS_DIR || DEFAULT_NEOTEL_LOCAL_REPORTS_DIR,
+);
+
 if (!fs.existsSync(UPLOAD_TMP_DIR)) {
   fs.mkdirSync(UPLOAD_TMP_DIR, { recursive: true });
 }
@@ -561,9 +581,388 @@ function getUsableCallRecords<T extends { ani?: string; estado?: string }>(
   );
 }
 
+function importNeotelReportBuffer(
+  buffer: Buffer,
+  fileName: string,
+  source: "MANUAL" | "FTP",
+  remotePath?: string,
+) {
+  const report = parseNeotelReport(buffer, fileName);
+  const saved = saveNeotelReport(report, { source, remotePath });
+
+  return {
+    fileName,
+    status: saved.duplicate ? "DUPLICADO" : "IMPORTADO",
+    reportType: saved.reportType,
+    importedRows: saved.importedRows,
+    rejectedRows: saved.rejectedRows,
+    warnings: report.warnings,
+  };
+}
+
+function listFilesRecursive(dir: string): string[] {
+  return fs
+    .readdirSync(dir, { withFileTypes: true })
+    .flatMap((entry) => {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) return listFilesRecursive(fullPath);
+      return entry.isFile() ? [fullPath] : [];
+    });
+}
+
+function toLocalRelativePath(fullPath: string) {
+  return path.relative(NEOTEL_LOCAL_REPORTS_DIR, fullPath).split(path.sep).join("/");
+}
+
+function toLocalUploadFile(fullPath: string): Express.Multer.File {
+  return {
+    fieldname: "localFile",
+    originalname: toLocalRelativePath(fullPath),
+    encoding: "7bit",
+    mimetype: "application/vnd.ms-excel",
+    destination: path.dirname(fullPath),
+    filename: path.basename(fullPath),
+    path: fullPath,
+    size: fs.statSync(fullPath).size,
+    stream: Readable.from([]),
+    buffer: Buffer.alloc(0),
+  } as Express.Multer.File;
+}
+
+function getLocalCompatibleFiles() {
+  const allFiles = listFilesRecursive(NEOTEL_LOCAL_REPORTS_DIR).sort();
+  const files = allFiles.flatMap((filePath) => {
+    const name = path.basename(filePath);
+    const isReport = NEOTEL_REPORT_FILE_PATTERN.test(name);
+    const isTicket = NEOTEL_TICKET_FILE_PATTERN.test(filePath);
+    if (!isReport && !isTicket) return [];
+
+    const stat = fs.statSync(filePath);
+    return [
+      {
+        relativePath: toLocalRelativePath(filePath),
+        name,
+        type: isReport ? "REPORT" : "TICKET",
+        size: stat.size,
+        modifiedAt: stat.mtime.toISOString(),
+      },
+    ];
+  });
+
+  return {
+    files,
+    skippedFiles: allFiles.length - files.length,
+    reportFiles: files.filter((file) => file.type === "REPORT").length,
+    ticketFiles: files.filter((file) => file.type === "TICKET").length,
+  };
+}
+
+function resolveLocalCompatibleFile(relativePath: string) {
+  const normalizedRelativePath = relativePath.replace(/\\/g, "/");
+  const fullPath = path.resolve(NEOTEL_LOCAL_REPORTS_DIR, normalizedRelativePath);
+  const rootWithSeparator = `${NEOTEL_LOCAL_REPORTS_DIR}${path.sep}`;
+
+  if (
+    fullPath !== NEOTEL_LOCAL_REPORTS_DIR &&
+    !fullPath.startsWith(rootWithSeparator)
+  ) {
+    throw new Error("Ruta local fuera de la carpeta configurada.");
+  }
+
+  if (!fs.existsSync(fullPath) || !fs.statSync(fullPath).isFile()) {
+    throw new Error("El archivo local no existe.");
+  }
+
+  const name = path.basename(fullPath);
+  const isReport = NEOTEL_REPORT_FILE_PATTERN.test(name);
+  const isTicket = NEOTEL_TICKET_FILE_PATTERN.test(fullPath);
+  if (!isReport && !isTicket) {
+    throw new Error("El archivo no es compatible con la importacion local.");
+  }
+
+  return {
+    fullPath,
+    relativePath: toLocalRelativePath(fullPath),
+    type: isReport ? "REPORT" : "TICKET",
+  };
+}
+
+async function importLocalCompatibleFile(relativePath: string) {
+  const file = resolveLocalCompatibleFile(relativePath);
+
+  if (file.type === "REPORT") {
+    return importNeotelReportBuffer(
+      fs.readFileSync(file.fullPath),
+      path.basename(file.fullPath),
+      "MANUAL",
+      file.fullPath,
+    );
+  }
+
+  const cancellationController = new AbortController();
+  const { sqliteResult, sqliteError } = await runUploadWorker(
+    [toLocalUploadFile(file.fullPath)],
+    cancellationController.signal,
+  );
+
+  return {
+    fileName: file.relativePath,
+    status:
+      (sqliteResult?.insertedFiles ?? 0) > 0 ? "IMPORTADO" : "DUPLICADO",
+    reportType: "TICKET",
+    insertedFiles: sqliteResult?.insertedFiles ?? 0,
+    duplicatedFiles: sqliteResult?.duplicatedFiles ?? 0,
+    insertedRecords: sqliteResult?.insertedRecords ?? 0,
+    duplicatedRecords: sqliteResult?.duplicatedRecords ?? 0,
+    sqliteError,
+  };
+}
+
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   app.get("/api/health", (_req, res) => res.json({ ok: true }));
   app.get("/health", (_req, res) => res.json({ ok: true }));
+
+  app.get("/api/neotel-sync/status", (_req, res) => {
+    try {
+      return res.json({
+        ftp: getNeotelFtpPublicStatus(),
+        localReportsDir: NEOTEL_LOCAL_REPORTS_DIR,
+        stats: getNeotelReportStats(),
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: "No se pudo leer el estado de las fuentes Neotel.",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  app.get("/api/neotel-reports/local-files", (_req, res) => {
+    try {
+      if (!fs.existsSync(NEOTEL_LOCAL_REPORTS_DIR)) {
+        return res.status(404).json({
+          message: "No se encontro la carpeta local configurada.",
+          detail: NEOTEL_LOCAL_REPORTS_DIR,
+        });
+      }
+
+      return res.json({
+        sourcePath: NEOTEL_LOCAL_REPORTS_DIR,
+        ...getLocalCompatibleFiles(),
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: "No se pudo leer la carpeta local.",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  app.post("/api/neotel-reports/import-local-file", async (req, res) => {
+    const relativePath = String(req.body?.relativePath ?? "").trim();
+    if (!relativePath) {
+      return res.status(400).json({ message: "Falta indicar el archivo local." });
+    }
+
+    try {
+      const result = await importLocalCompatibleFile(relativePath);
+      return res.json({
+        result,
+        historyStats: getLocalHistoryStats(),
+        stats: getNeotelReportStats(),
+      });
+    } catch (error) {
+      return res.status(422).json({
+        message: "No se pudo importar el archivo local.",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  app.post("/api/neotel-reports/import-local", async (_req, res) => {
+    try {
+      if (!fs.existsSync(NEOTEL_LOCAL_REPORTS_DIR)) {
+        return res.status(404).json({
+          message: "No se encontro la carpeta local de reportes Neotel.",
+          detail: NEOTEL_LOCAL_REPORTS_DIR,
+        });
+      }
+
+      const localFiles = getLocalCompatibleFiles();
+      const reportFiles = localFiles.files.filter((file) => file.type === "REPORT");
+      const ticketFiles = localFiles.files.filter((file) => file.type === "TICKET");
+      const { skippedFiles } = localFiles;
+
+      if (reportFiles.length === 0 && ticketFiles.length === 0) {
+        return res.status(422).json({
+          message: "No hay reportes o tickets compatibles para importar.",
+          detail: NEOTEL_LOCAL_REPORTS_DIR,
+        });
+      }
+
+      const results: Array<Record<string, unknown>> = [];
+      for (const file of localFiles.files) {
+        try {
+          results.push(await importLocalCompatibleFile(file.relativePath));
+        } catch (error) {
+          results.push({
+            fileName: file.relativePath,
+            status: "ERROR",
+            reportType: file.type,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
+      const imported = results.filter((result) => result.status === "IMPORTADO").length;
+      const duplicates = results.filter((result) => result.status === "DUPLICADO").length;
+      const errors = results.filter((result) => result.status === "ERROR").length;
+      const insertedRecords = results.reduce(
+        (total, result) => total + Number(result.insertedRecords ?? 0),
+        0,
+      );
+      const duplicatedRecords = results.reduce(
+        (total, result) => total + Number(result.duplicatedRecords ?? 0),
+        0,
+      );
+
+      return res.status(errors === results.length ? 422 : 200).json({
+        imported,
+        duplicates,
+        errors,
+        reportFiles: reportFiles.length,
+        ticketFiles: ticketFiles.length,
+        skippedFiles,
+        insertedRecords,
+        duplicatedRecords,
+        sourcePath: NEOTEL_LOCAL_REPORTS_DIR,
+        results,
+        historyStats: getLocalHistoryStats(),
+        stats: getNeotelReportStats(),
+      });
+    } catch (error) {
+      return res.status(500).json({
+        message: "No se pudieron importar los reportes locales.",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  app.get("/api/neotel-reports/catalog", (_req, res) => {
+    try {
+      return res.json(getGestionCatalog());
+    } catch (error) {
+      return res.status(500).json({
+        message: "No se pudo leer el catálogo de gestiones.",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  app.post(
+    "/api/neotel-reports/upload",
+    upload.array("files", 20),
+    async (req, res) => {
+      const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+      if (files.length === 0) {
+        return res.status(400).json({ message: "Seleccioná al menos un reporte." });
+      }
+
+      const results: Array<Record<string, unknown>> = [];
+
+      try {
+        for (const file of files) {
+          try {
+            results.push(importNeotelReportBuffer(
+              fs.readFileSync(file.path),
+              file.originalname,
+              "MANUAL",
+            ));
+          } catch (error) {
+            results.push({
+              fileName: file.originalname,
+              status: "ERROR",
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+
+        const imported = results.filter((result) => result.status === "IMPORTADO").length;
+        const duplicates = results.filter((result) => result.status === "DUPLICADO").length;
+        const errors = results.filter((result) => result.status === "ERROR").length;
+
+        return res.status(errors === results.length ? 422 : 200).json({
+          imported,
+          duplicates,
+          errors,
+          results,
+          stats: getNeotelReportStats(),
+        });
+      } finally {
+        removeTemporaryUploads(files);
+      }
+    },
+  );
+
+  app.post("/api/neotel-sync/run", async (_req, res) => {
+    try {
+      const result = await syncNeotelReportsFromFtp(UPLOAD_TMP_DIR);
+      return res.json({ ...result, stats: getNeotelReportStats() });
+    } catch (error) {
+      return res.status(503).json({
+        message: "No se pudo sincronizar el FTP de Neotel.",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  app.post("/api/neotel-reports/catalog/export", (req, res) => {
+    try {
+      const rows = getGestionAnisForCatalog({
+        resultado: String(req.body?.resultado ?? "").trim() || undefined,
+        subresultado: String(req.body?.subresultado ?? "").trim() || undefined,
+        accionComercial:
+          String(req.body?.accionComercial ?? "").trim() || undefined,
+      });
+
+      if (rows.length === 0) {
+        return res.status(422).json({
+          message: "No hay ANIs para exportar con esa catalogación.",
+        });
+      }
+
+      const neotelRows = rows.map((row) => ({
+        LINEA: row.ani ?? "",
+        "RAZON SOCIAL": row.titular ?? "",
+        DOCUMENTO: row.dniCuit ?? "",
+        "DIRECCION del CLIENTE": "",
+        "FECHA DE NACIMIENTO": "",
+        "MERCADO ACTUAL": "",
+        "PLAN ACTUAL": "",
+        "PLAN SUGERIDO": "",
+        PRECIO: "",
+        "FUENTE DE SOLICITUD": `${row.resultado ?? ""} - ${row.subresultado ?? ""}`,
+        LOCALIDAD: row.localidad ?? "",
+        CP: "",
+      }));
+      const worksheet = buildNeotelWorksheet(neotelRows);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Contactos");
+      const buffer = XLSX.write(workbook, { type: "buffer", bookType: "biff8" });
+
+      res.setHeader("Content-Type", "application/vnd.ms-excel");
+      res.setHeader(
+        "Content-Disposition",
+        "attachment; filename=catalogacion_neotel.xls",
+      );
+      return res.send(buffer);
+    } catch (error) {
+      return res.status(500).json({
+        message: "No se pudo exportar la catalogación.",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
 
   app.post("/api/fuzzion/preview", upload.single("file"), async (req, res) => {
     const uploadedFile = req.file;
@@ -775,6 +1174,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  const clearTicketHistoryHandler = (_req: Request, res: Response) => {
+    try {
+      const result = deleteTicketHistory();
+      res.json({ ok: true, ...result });
+    } catch (error) {
+      console.error("Error eliminando tickets locales:", error);
+      res.status(500).json({
+        ok: false,
+        message: "Error al eliminar los tickets locales",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  app.delete("/api/history/clear-tickets", clearTicketHistoryHandler);
   const clearAllHistoryHandler = (_req: Request, res: Response) => {
     try {
       const result = deleteAllLocalHistory();

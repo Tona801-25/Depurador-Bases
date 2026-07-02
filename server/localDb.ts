@@ -5,6 +5,7 @@ import path from "path";
 
 import type { AnalysisResult, CallRecord } from "../shared/schema.ts";
 import { extractPrefijoArgentina } from "../shared/prefijos.ts";
+import type { ParsedNeotelReport } from "./neotelReports.ts";
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const DB_PATH = path.join(DATA_DIR, "depurador-bases.sqlite");
@@ -358,12 +359,81 @@ export function initLocalDb() {
       applied_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS neotel_report_imports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      file_name TEXT NOT NULL,
+      file_hash TEXT NOT NULL UNIQUE,
+      report_type TEXT NOT NULL,
+      report_date TEXT,
+      source TEXT NOT NULL DEFAULT 'MANUAL',
+      remote_path TEXT,
+      total_rows INTEGER NOT NULL DEFAULT 0,
+      imported_rows INTEGER NOT NULL DEFAULT 0,
+      rejected_rows INTEGER NOT NULL DEFAULT 0,
+      warnings_json TEXT NOT NULL DEFAULT '[]',
+      imported_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS gestion_records (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      record_hash TEXT NOT NULL UNIQUE,
+      import_id INTEGER NOT NULL,
+      ts TEXT NOT NULL,
+      report_date TEXT,
+      base TEXT,
+      id_lote TEXT,
+      descripcion TEXT,
+      id_contacto TEXT,
+      titular TEXT,
+      dni_cuit TEXT,
+      ani TEXT NOT NULL,
+      usuario TEXT,
+      resultado TEXT,
+      subresultado TEXT,
+      cant_llamados INTEGER,
+      precio TEXT,
+      localidad TEXT,
+      observaciones TEXT,
+      duracion_llamadas TEXT,
+      accion_comercial TEXT NOT NULL,
+      motivo_accion TEXT NOT NULL,
+      raw_json TEXT NOT NULL,
+      FOREIGN KEY (import_id) REFERENCES neotel_report_imports(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_productivity_records (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      record_hash TEXT NOT NULL UNIQUE,
+      import_id INTEGER NOT NULL,
+      report_date TEXT,
+      usuario TEXT NOT NULL,
+      usuario_id TEXT,
+      login_seconds INTEGER NOT NULL DEFAULT 0,
+      descanso_seconds INTEGER NOT NULL DEFAULT 0,
+      administrative_seconds INTEGER NOT NULL DEFAULT 0,
+      conversation_inbound_seconds INTEGER NOT NULL DEFAULT 0,
+      conversation_outbound_seconds INTEGER NOT NULL DEFAULT 0,
+      dialing_seconds INTEGER NOT NULL DEFAULT 0,
+      idle_seconds INTEGER NOT NULL DEFAULT 0,
+      connected_inbound INTEGER NOT NULL DEFAULT 0,
+      connected_outbound INTEGER NOT NULL DEFAULT 0,
+      not_connected_outbound INTEGER NOT NULL DEFAULT 0,
+      metrics_json TEXT NOT NULL,
+      FOREIGN KEY (import_id) REFERENCES neotel_report_imports(id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_call_records_fecha ON call_records(fecha);
     CREATE INDEX IF NOT EXISTS idx_call_records_ani ON call_records(ani);
     CREATE INDEX IF NOT EXISTS idx_call_records_base ON call_records(base);
     CREATE INDEX IF NOT EXISTS idx_call_records_estado_subestado ON call_records(estado, subestado);
     CREATE INDEX IF NOT EXISTS idx_call_records_prefijo ON call_records(prefijo);
     CREATE INDEX IF NOT EXISTS idx_imported_files_fecha_archivo ON imported_files(fecha_archivo);
+    CREATE INDEX IF NOT EXISTS idx_neotel_report_imports_type_date ON neotel_report_imports(report_type, report_date);
+    CREATE INDEX IF NOT EXISTS idx_gestion_records_ani ON gestion_records(ani);
+    CREATE INDEX IF NOT EXISTS idx_gestion_records_ts ON gestion_records(ts);
+    CREATE INDEX IF NOT EXISTS idx_gestion_records_catalog ON gestion_records(resultado, subresultado);
+    CREATE INDEX IF NOT EXISTS idx_gestion_records_action ON gestion_records(accion_comercial);
+    CREATE INDEX IF NOT EXISTS idx_productivity_report_user ON agent_productivity_records(report_date, usuario_id);
   `);
 
   const migrationId = "backfill_imported_file_dates_v1";
@@ -1002,7 +1072,266 @@ export function getHistorySummaryForAnis(anis: string[]) {
   return result;
 }
 
-export function deleteAllLocalHistory() {
+export function saveNeotelReport(
+  report: ParsedNeotelReport,
+  options?: { source?: "FTP" | "MANUAL"; remotePath?: string },
+) {
+  initLocalDb();
+
+  const existing = db
+    .prepare(`SELECT id FROM neotel_report_imports WHERE file_hash = ?`)
+    .get(report.fileHash) as { id: number } | undefined;
+
+  if (existing) {
+    return {
+      duplicate: true,
+      importId: existing.id,
+      reportType: report.type,
+      importedRows: 0,
+      rejectedRows: report.rejectedRows,
+    };
+  }
+
+  const insertImport = db.prepare(`
+    INSERT INTO neotel_report_imports (
+      file_name, file_hash, report_type, report_date, source, remote_path,
+      total_rows, imported_rows, rejected_rows, warnings_json, imported_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+  `);
+
+  const updateImport = db.prepare(`
+    UPDATE neotel_report_imports
+    SET imported_rows = ?
+    WHERE id = ?
+  `);
+
+  const insertGestion = db.prepare(`
+    INSERT OR IGNORE INTO gestion_records (
+      record_hash, import_id, ts, report_date, base, id_lote, descripcion,
+      id_contacto, titular, dni_cuit, ani, usuario, resultado, subresultado,
+      cant_llamados, precio, localidad, observaciones, duracion_llamadas,
+      accion_comercial, motivo_accion, raw_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const insertProductivity = db.prepare(`
+    INSERT OR IGNORE INTO agent_productivity_records (
+      record_hash, import_id, report_date, usuario, usuario_id,
+      login_seconds, descanso_seconds, administrative_seconds,
+      conversation_inbound_seconds, conversation_outbound_seconds,
+      dialing_seconds, idle_seconds, connected_inbound, connected_outbound,
+      not_connected_outbound, metrics_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  return db.transaction(() => {
+    const importResult = insertImport.run(
+      report.fileName,
+      report.fileHash,
+      report.type,
+      report.reportDate || null,
+      options?.source ?? "MANUAL",
+      options?.remotePath ?? null,
+      report.totalRows,
+      report.rejectedRows,
+      JSON.stringify(report.warnings),
+      new Date().toISOString(),
+    );
+    const importId = Number(importResult.lastInsertRowid);
+    let importedRows = 0;
+
+    if (report.type === "GESTIONES") {
+      for (const record of report.records) {
+        importedRows += insertGestion.run(
+          record.recordHash,
+          importId,
+          record.ts,
+          record.reportDate || null,
+          record.base || null,
+          record.idLote || null,
+          record.descripcion || null,
+          record.idContacto || null,
+          record.titular || null,
+          record.dniCuit || null,
+          record.ani,
+          record.usuario || null,
+          record.resultado || null,
+          record.subresultado || null,
+          record.cantLlamados,
+          record.precio || null,
+          record.localidad || null,
+          record.observaciones || null,
+          record.duracionLlamadas || null,
+          record.accionComercial,
+          record.motivoAccion,
+          record.rawJson,
+        ).changes;
+      }
+    } else {
+      for (const record of report.records) {
+        importedRows += insertProductivity.run(
+          record.recordHash,
+          importId,
+          record.reportDate || null,
+          record.usuario,
+          record.usuarioId || null,
+          record.loginSeconds,
+          record.descansoSeconds,
+          record.administrativeSeconds,
+          record.conversationInboundSeconds,
+          record.conversationOutboundSeconds,
+          record.dialingSeconds,
+          record.idleSeconds,
+          record.connectedInbound,
+          record.connectedOutbound,
+          record.notConnectedOutbound,
+          record.metricsJson,
+        ).changes;
+      }
+    }
+
+    updateImport.run(importedRows, importId);
+
+    return {
+      duplicate: false,
+      importId,
+      reportType: report.type,
+      importedRows,
+      rejectedRows: report.rejectedRows,
+    };
+  })();
+}
+
+export function getNeotelReportStats() {
+  initLocalDb();
+
+  const imports = db.prepare(`
+    SELECT
+      COUNT(*) AS totalImports,
+      SUM(CASE WHEN report_type = 'GESTIONES' THEN 1 ELSE 0 END) AS gestionImports,
+      SUM(CASE WHEN report_type = 'PRODUCTIVIDAD' THEN 1 ELSE 0 END) AS productivityImports,
+      MAX(CASE WHEN report_type = 'GESTIONES' THEN report_date END) AS latestGestionDate,
+      MAX(CASE WHEN report_type = 'PRODUCTIVIDAD' THEN report_date END) AS latestProductivityDate
+    FROM neotel_report_imports
+  `).get() as Record<string, number | string | null>;
+
+  const gestion = db.prepare(`
+    SELECT
+      COUNT(*) AS totalGestiones,
+      COUNT(DISTINCT ani) AS totalAnis,
+      COUNT(DISTINCT CASE WHEN accion_comercial = 'EXCLUIR' THEN ani END) AS excludedAnis,
+      COUNT(DISTINCT CASE WHEN accion_comercial = 'BUZON' THEN ani END) AS mailboxAnis
+    FROM gestion_records
+  `).get() as Record<string, number>;
+
+  const productivity = db.prepare(`
+    SELECT
+      COUNT(*) AS totalRows,
+      COUNT(DISTINCT usuario_id) AS totalAgents
+    FROM agent_productivity_records
+  `).get() as Record<string, number>;
+
+  return {
+    totalImports: Number(imports.totalImports ?? 0),
+    gestionImports: Number(imports.gestionImports ?? 0),
+    productivityImports: Number(imports.productivityImports ?? 0),
+    latestGestionDate: imports.latestGestionDate ?? null,
+    latestProductivityDate: imports.latestProductivityDate ?? null,
+    totalGestiones: Number(gestion.totalGestiones ?? 0),
+    totalGestionAnis: Number(gestion.totalAnis ?? 0),
+    excludedAnis: Number(gestion.excludedAnis ?? 0),
+    mailboxAnis: Number(gestion.mailboxAnis ?? 0),
+    productivityRows: Number(productivity.totalRows ?? 0),
+    totalAgents: Number(productivity.totalAgents ?? 0),
+  };
+}
+
+export function getGestionCatalog() {
+  initLocalDb();
+
+  return db.prepare(`
+    SELECT
+      COALESCE(resultado, '') AS resultado,
+      COALESCE(subresultado, '') AS subresultado,
+      accion_comercial AS accionComercial,
+      motivo_accion AS motivoAccion,
+      COUNT(*) AS totalGestiones,
+      COUNT(DISTINCT ani) AS totalAnis,
+      MAX(ts) AS ultimaGestion
+    FROM gestion_records
+    GROUP BY resultado, subresultado, accion_comercial, motivo_accion
+    ORDER BY totalGestiones DESC, resultado, subresultado
+  `).all();
+}
+
+export function getGestionAnisForCatalog(options: {
+  resultado?: string;
+  subresultado?: string;
+  accionComercial?: string;
+}) {
+  initLocalDb();
+
+  const conditions: string[] = [];
+  const params: string[] = [];
+
+  if (options.resultado) {
+    conditions.push("resultado = ?");
+    params.push(options.resultado);
+  }
+  if (options.subresultado) {
+    conditions.push("subresultado = ?");
+    params.push(options.subresultado);
+  }
+  if (options.accionComercial) {
+    conditions.push("accion_comercial = ?");
+    params.push(options.accionComercial);
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const rows = db.prepare(`
+    SELECT
+      ani, titular, dni_cuit AS dniCuit, localidad, resultado, subresultado,
+      accion_comercial AS accionComercial, motivo_accion AS motivoAccion,
+      ts, base, id_lote AS idLote, usuario
+    FROM gestion_records
+    ${where}
+    ORDER BY ts DESC
+  `).all(...params) as Array<Record<string, unknown>>;
+
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const ani = String(row.ani ?? "");
+    if (!ani || seen.has(ani)) return false;
+    seen.add(ani);
+    return true;
+  });
+}
+
+export function getImportedNeotelReportNames() {
+  initLocalDb();
+  return new Set(
+    (
+      db.prepare(`SELECT file_name FROM neotel_report_imports`).all() as Array<{
+        file_name: string;
+      }>
+    ).map((row) => row.file_name),
+  );
+}
+
+export function getExcludedGestionAniSet() {
+  initLocalDb();
+  return new Set(
+    (
+      db.prepare(`
+        SELECT DISTINCT ani
+        FROM gestion_records
+        WHERE accion_comercial = 'EXCLUIR'
+      `).all() as Array<{ ani: string }>
+    ).map((row) => row.ani),
+  );
+}
+
+export function deleteTicketHistory() {
   initLocalDb();
 
   const transaction = db.transaction(() => {
@@ -1010,14 +1339,53 @@ export function deleteAllLocalHistory() {
     const deletedFiles = db.prepare(`DELETE FROM imported_files`).run();
     const deletedAnalyses = db.prepare(`DELETE FROM analysis_runs`).run();
 
-    // Reinicia los IDs autoincrementales para que el historial arranque limpio.
-    db.prepare(`DELETE FROM sqlite_sequence WHERE name IN ('call_records', 'imported_files')`).run();
+    db.prepare(`
+      DELETE FROM sqlite_sequence
+      WHERE name IN ('call_records', 'imported_files')
+    `).run();
 
     return {
       deleted: true,
       deletedRecords: deletedRecords.changes,
       deletedFiles: deletedFiles.changes,
       deletedAnalyses: deletedAnalyses.changes,
+    };
+  });
+
+  return transaction();
+}
+export function deleteAllLocalHistory() {
+  initLocalDb();
+
+  const transaction = db.transaction(() => {
+    const deletedRecords = db.prepare(`DELETE FROM call_records`).run();
+    const deletedFiles = db.prepare(`DELETE FROM imported_files`).run();
+    const deletedAnalyses = db.prepare(`DELETE FROM analysis_runs`).run();
+    const deletedGestiones = db.prepare(`DELETE FROM gestion_records`).run();
+    const deletedProductivity = db
+      .prepare(`DELETE FROM agent_productivity_records`)
+      .run();
+    const deletedReportImports = db
+      .prepare(`DELETE FROM neotel_report_imports`)
+      .run();
+
+    // Reinicia los IDs autoincrementales para que el historial arranque limpio.
+    db.prepare(`
+      DELETE FROM sqlite_sequence
+      WHERE name IN (
+        'call_records', 'imported_files', 'gestion_records',
+        'agent_productivity_records', 'neotel_report_imports'
+      )
+    `).run();
+
+    return {
+      deleted: true,
+      deletedRecords: deletedRecords.changes,
+      deletedFiles: deletedFiles.changes,
+      deletedAnalyses: deletedAnalyses.changes,
+      deletedGestiones: deletedGestiones.changes,
+      deletedProductivity: deletedProductivity.changes,
+      deletedReportImports: deletedReportImports.changes,
     };
   });
 

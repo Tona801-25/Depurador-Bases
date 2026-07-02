@@ -43,6 +43,7 @@
     "@tanstack/react-query": "^5.60.5",
     "@types/multer": "^2.0.0",
     "@types/papaparse": "^5.5.1",
+    "basic-ftp": "^5.2.1",
     "better-sqlite3": "^12.10.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

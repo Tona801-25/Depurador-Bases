@@ -20,6 +20,9 @@ interface FileUploadProps {
   uploadError?: string | null;
   acceptedFormats?: string[];
   className?: string;
+  compact?: boolean;
+  title?: string;
+  description?: string;
 }
 
 export function FileUpload({
@@ -29,6 +32,9 @@ export function FileUpload({
   uploadError = null,
   acceptedFormats = [".csv", ".txt", ".xls", ".xlsx", ".xlsm", ".xlsb"],
   className,
+  compact = false,
+  title = "Carga de archivos",
+  description,
 }: FileUploadProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -157,7 +163,7 @@ export function FileUpload({
           <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
             <Upload className="h-4 w-4" />
           </span>
-          Carga de archivos
+          {title}
         </h2>
 
         {hasFiles && (
@@ -204,7 +210,35 @@ export function FileUpload({
         </div>
       ) : null}
 
-      {!hasFiles ? (
+      {description && !hasFiles ? (
+        <p className="relative mt-2 text-xs text-muted-foreground">{description}</p>
+      ) : null}
+
+      {!hasFiles && compact ? (
+        <label
+          className={cn(
+            "relative mt-4 flex h-11 cursor-pointer items-center justify-center gap-2 rounded-lg border border-primary/25 bg-primary/10 px-4 text-sm font-semibold text-primary",
+            "transition-colors hover:bg-primary/15",
+            isUploading && "pointer-events-none opacity-60",
+          )}
+        >
+          <input
+            type="file"
+            multiple
+            accept={acceptedFormats.join(",")}
+            onChange={handleFileInput}
+            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+            disabled={isUploading}
+            data-testid="input-file-upload"
+          />
+          {isUploading ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Plus className="h-4 w-4" />
+          )}
+          {isUploading ? "Procesando..." : "Seleccionar tickets"}
+        </label>
+      ) : !hasFiles ? (
         <div
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}

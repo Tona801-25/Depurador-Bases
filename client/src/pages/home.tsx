@@ -24,8 +24,9 @@ import { CatalogoPrefijosTab } from "@/components/dashboard/catalogo-prefijos";
 import { SimuladorCortesTab } from "@/components/dashboard/simulador-cortes";
 import { PrefijosPorHoraTab } from "@/components/dashboard/prefijos-por-hora-tab";
 import { FuzzionTab } from "@/components/dashboard/fuzzion-tab";
+import { NeotelSourcesPanel } from "@/components/dashboard/neotel-sources-panel";
 import EffectivenessRadial from "@/components/dashboard/effectivenessRadial";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import type { AnalysisResult, RecordsFilter, BaseInsight } from "@shared/schema";
 import {
@@ -120,6 +121,35 @@ function parseHistoryFileDate(value?: string | null) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+const historyNameCollator = new Intl.Collator("es", {
+  numeric: true,
+  sensitivity: "base",
+});
+
+function compareHistoryFiles(a: LocalHistoryFile, b: LocalHistoryFile) {
+  const getParts = (file: LocalHistoryFile) => {
+    const normalized = file.fileName.replace(/\\/g, "/");
+    const separator = normalized.lastIndexOf("/");
+    const directory = separator >= 0 ? normalized.slice(0, separator) : "";
+    const baseName = separator >= 0 ? normalized.slice(separator + 1) : normalized;
+    const dateNamed = /^\d{1,2}[-_.]\d{1,2}(?:[-_.]\d{2,4})?\.(?:xls|xlsx)$/i.test(baseName);
+    const date = parseHistoryFileDate(file.fechaArchivo);
+
+    return { directory, baseName, dateNamed, timestamp: date?.getTime() ?? 0 };
+  };
+
+  const left = getParts(a);
+  const right = getParts(b);
+  const directoryOrder = historyNameCollator.compare(left.directory, right.directory);
+  if (directoryOrder !== 0) return directoryOrder;
+
+  if (left.dateNamed && right.dateNamed && left.timestamp !== right.timestamp) {
+    return right.timestamp - left.timestamp;
+  }
+  if (left.dateNamed !== right.dateNamed) return left.dateNamed ? -1 : 1;
+
+  return historyNameCollator.compare(left.baseName, right.baseName);
+}
 function formatShortDate(date: Date) {
   return date.toLocaleDateString("es-AR", {
     day: "2-digit",
@@ -198,6 +228,7 @@ export default function Home() {
   const [operationLog, setOperationLog] = useState<OperationLogEntry[]>([]);
 
     const { toast } = useToast();
+    const queryClient = useQueryClient();
 
   const pushOperationLog = useCallback(
     (entry: Omit<OperationLogEntry, "id" | "time">) => {
@@ -516,7 +547,7 @@ export default function Home() {
     const deleteAllHistoryMutation = useMutation({
       mutationFn: async () => {
         const confirmed = window.confirm(
-          "¿Querés eliminar TODO el historial local SQLite? Esta acción borra todos los tickets y registros guardados, pero no elimina tus archivos Excel originales."
+          "¿Querés eliminar los tickets guardados? Los reportes FTP y sus gestiones se conservarán."
         );
 
         if (!confirmed) {
@@ -524,14 +555,14 @@ export default function Home() {
         }
 
         const secondConfirmed = window.confirm(
-          "Confirmación final: se va a vaciar todo el historial local. Después vas a tener que volver a cargar los tickets."
+          "Confirmación final: se eliminarán solamente los tickets y sus análisis. Los datos sincronizados desde el FTP no se borrarán."
         );
 
         if (!secondConfirmed) {
           throw new Error("Eliminación cancelada");
         }
         
-        const response = await fetch("/api/history/clear-all", {
+        const response = await fetch("/api/history/clear-tickets", {
           method: "DELETE",
         });
 
@@ -551,7 +582,7 @@ export default function Home() {
 
         toast({
           title: "Historial eliminado",
-          description: "Se eliminaron todos los tickets y registros guardados en SQLite.",
+          description: "Se eliminaron los tickets y análisis locales. Los reportes FTP siguen disponibles.",
         });
       },
       onError: (error) => {
@@ -1124,6 +1155,10 @@ export default function Home() {
 
   const localHistoryStats = historyStatsQuery.data;
   const localHistoryFiles = historyFilesQuery.data ?? [];
+  const sortedLocalHistoryFiles = useMemo(
+    () => [...localHistoryFiles].sort(compareHistoryFiles),
+    [localHistoryFiles],
+  );
 
   const historyPeriodOptions = useMemo<HistoryPeriodOption[]>(() => {
     const groups = new Map<string, HistoryPeriodOption>();
@@ -1188,10 +1223,24 @@ export default function Home() {
       <Header />
 
       <main className="mx-auto w-full max-w-[1320px] px-5 py-6" data-export-root>
-        <section className="mb-8">
+        <section className="mb-8 grid gap-4 lg:grid-cols-[minmax(0,1.7fr)_minmax(320px,0.7fr)]">
+          <NeotelSourcesPanel
+            onLog={pushOperationLog}
+            onLocalImportComplete={() => {
+              void queryClient.invalidateQueries({
+                queryKey: ["local-history-stats"],
+              });
+              void queryClient.invalidateQueries({
+                queryKey: ["local-history-files"],
+              });
+            }}
+          />
           <FileUpload
             onFilesSelected={handleFilesSelected}
             onCancelUpload={handleCancelUpload}
+            compact
+            title="Carga puntual de tickets"
+            description="Conservá esta opción para analizar en el momento uno o varios tickets descargados manualmente."
             isUploading={
               uploadMutation.isPending ||
               analyzeHistoryFileMutation.isPending ||
@@ -1332,7 +1381,7 @@ export default function Home() {
                       <Trash2 className="h-4 w-4" />
                       {deleteAllHistoryMutation.isPending
                         ? "Eliminando..."
-                        : "Eliminar historial"}
+                        : "Eliminar tickets"}
                     </button>
 
                     <Badge variant="outline" className="w-fit">
@@ -1427,7 +1476,7 @@ export default function Home() {
                   </div>
 
                   <div className="divide-y divide-border/60">
-                    {localHistoryFiles.map((file) => (
+                    {sortedLocalHistoryFiles.map((file) => (
                       <div
                         key={file.id}
                         className="grid grid-cols-12 gap-3 px-4 py-3 text-sm transition-colors hover:bg-muted/20">

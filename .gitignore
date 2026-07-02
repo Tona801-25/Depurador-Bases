@@ -7,3 +7,4 @@ vite.config.ts.*
 data/
 uploads_tmp/
 .local/
+.env.local
