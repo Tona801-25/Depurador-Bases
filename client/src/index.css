@@ -292,12 +292,20 @@
   background: transparent;
   box-shadow: none;
   backdrop-filter: none;
+  transition:
+    border-color 180ms ease,
+    background-color 180ms ease,
+    box-shadow 220ms ease;
 }
 
 .operational-workspace .glass-card:hover {
   transform: none;
-  border-color: hsl(var(--border));
-  box-shadow: none;
+  border-color: hsl(var(--primary) / 0.48);
+  background: hsl(var(--primary) / 0.018);
+  box-shadow:
+    0 0 0 1px hsl(var(--primary) / 0.16),
+    0 0 24px hsl(var(--primary) / 0.13),
+    inset 0 0 22px hsl(var(--primary) / 0.035);
 }
 
 .operational-workspace [data-radix-tabs-content] {
