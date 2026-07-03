@@ -72,6 +72,7 @@ type NeotelSourcesPanelProps = {
     count?: number;
   }) => void;
   onLocalImportComplete?: () => void;
+  sidebar?: boolean;
 };
 
 function actionLabel(action: CatalogItem["accionComercial"]) {
@@ -95,6 +96,7 @@ function downloadName(header: string | null) {
 export function NeotelSourcesPanel({
   onLog,
   onLocalImportComplete,
+  sidebar = false,
 }: NeotelSourcesPanelProps) {
   const reportInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
@@ -408,9 +410,9 @@ export function NeotelSourcesPanel({
     : stats;
 
   return (
-    <Card className="glass-card border-primary/15 bg-background/70">
-      <CardContent className="p-4">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+    <Card className={cn(sidebar ? "h-full rounded-none border-0 bg-transparent shadow-none" : "glass-card border-primary/15 bg-background/70")}>
+      <CardContent className={sidebar ? "p-3" : "p-4"}>
+        <div className={cn("flex gap-4", sidebar ? "flex-col" : "flex-col lg:flex-row lg:items-start lg:justify-between")}>
           <div className="flex min-w-0 items-start gap-3">
             <div className="rounded-lg border border-primary/20 bg-primary/10 p-2.5 text-primary">
               <Database className="h-5 w-5" />
@@ -437,7 +439,7 @@ export function NeotelSourcesPanel({
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2">
+          <div className={cn("gap-2", sidebar ? "grid grid-cols-1 sm:grid-cols-2" : "flex flex-wrap")}>
             <input
               ref={reportInputRef}
               type="file"
@@ -452,6 +454,7 @@ export function NeotelSourcesPanel({
               disabled={!status?.ftp.configured || syncing}
               onClick={handleSync}
               title="Leer todos los reportes nuevos del FTP"
+              className={sidebar ? "min-w-0 w-full" : undefined}
             >
               {syncing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
               Sincronizar FTP
@@ -473,6 +476,7 @@ export function NeotelSourcesPanel({
               disabled={importingLocal}
               onClick={handleLocalFolderImport}
               title={status?.localReportsDir || "Carpeta local de respaldo"}
+              className={sidebar ? "w-full sm:col-span-2" : undefined}
             >
               {importingLocal ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileSpreadsheet className="mr-2 h-4 w-4" />}
               {localImportProgress
@@ -486,7 +490,7 @@ export function NeotelSourcesPanel({
           La sincronizacion recorre todos los reportes compatibles del FTP y guarda en SQLite
           solamente los archivos nuevos. Los duplicados no se vuelven a cargar.
         </p>
-        <div className="mt-4 grid grid-cols-2 gap-3 border-t border-border/60 pt-4 md:grid-cols-5">
+        <div className={cn("mt-4 grid grid-cols-2 gap-3 border-t border-border/60 pt-4", !sidebar && "md:grid-cols-5")}>
           {[
             ["Gestiones", displayedStats?.totalGestiones ?? 0],
             ["ANIs gestionados", displayedStats?.totalGestionAnis ?? 0],
@@ -547,7 +551,7 @@ export function NeotelSourcesPanel({
               </select>
 
               {selectedDateSummary ? (
-                <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-5">
+                <div className={cn("grid grid-cols-2 gap-x-4 gap-y-2 text-xs", !sidebar && "sm:grid-cols-5")}>
                   <span><strong>{selectedDateSummary.totalGestiones.toLocaleString("es-AR")}</strong> gestiones</span>
                   <span><strong>{selectedDateSummary.totalAnis.toLocaleString("es-AR")}</strong> ANIs</span>
                   <span><strong>{selectedDateSummary.mailboxAnis.toLocaleString("es-AR")}</strong> buzones</span>
@@ -588,7 +592,7 @@ export function NeotelSourcesPanel({
 
           {catalogOpen ? (
             <div className="mt-3 space-y-3">
-              <div className="grid gap-2 sm:grid-cols-[1fr_180px]">
+              <div className={cn("grid gap-2", !sidebar && "sm:grid-cols-[1fr_180px]")}>
                 <div className="relative">
                   <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
                   <Input
@@ -619,7 +623,7 @@ export function NeotelSourcesPanel({
                     {visibleCatalog.map((item) => {
                       const key = `${item.resultado}|${item.subresultado}`;
                       return (
-                        <div key={key} className="grid gap-3 px-3 py-2.5 text-xs sm:grid-cols-[1fr_auto_auto] sm:items-center">
+                        <div key={key} className={cn("grid gap-3 px-3 py-2.5 text-xs", !sidebar && "sm:grid-cols-[1fr_auto_auto] sm:items-center")}>
                           <div className="min-w-0">
                             <p className="truncate font-semibold text-foreground">
                               {item.resultado || "Sin resultado"} · {item.subresultado || "Sin subresultado"}

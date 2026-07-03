@@ -28,6 +28,7 @@ import { NeotelSourcesPanel } from "@/components/dashboard/neotel-sources-panel"
 import EffectivenessRadial from "@/components/dashboard/effectivenessRadial";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
+import { cn } from "@/lib/utils";
 import type { AnalysisResult, RecordsFilter, BaseInsight } from "@shared/schema";
 import {
   BarChart3,
@@ -1219,38 +1220,49 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="min-h-screen overflow-x-hidden bg-background text-foreground">
       <Header />
 
-      <main className="mx-auto w-full max-w-[1320px] px-5 py-6" data-export-root>
-        <section className="mb-8 grid gap-4 lg:grid-cols-[minmax(0,1.7fr)_minmax(320px,0.7fr)]">
-          <NeotelSourcesPanel
-            onLog={pushOperationLog}
-            onLocalImportComplete={() => {
-              void queryClient.invalidateQueries({
-                queryKey: ["local-history-stats"],
-              });
-              void queryClient.invalidateQueries({
-                queryKey: ["local-history-files"],
-              });
-            }}
-          />
-          <FileUpload
-            onFilesSelected={handleFilesSelected}
-            onCancelUpload={handleCancelUpload}
-            compact
-            title="Carga puntual de tickets"
-            description="Conservá esta opción para analizar en el momento uno o varios tickets descargados manualmente."
-            isUploading={
-              uploadMutation.isPending ||
-              analyzeHistoryFileMutation.isPending ||
-              analyzeAllHistoryMutation.isPending
-            }
-            uploadError={uploadError}
-          />
-        </section>
+      <main className="operational-workspace w-full" data-export-root>
+        <div className="min-h-[calc(100vh-3rem)] lg:grid lg:grid-cols-[250px_minmax(0,1fr)]">
+          <aside className="border-b border-border bg-card/20 lg:sticky lg:top-12 lg:h-[calc(100vh-3rem)] lg:border-b-0 lg:border-r">
+            <div className="border-b border-border px-3 py-3">
+              <p className="mb-2 text-[10px] font-semibold uppercase text-muted-foreground">
+                Carga secundaria
+              </p>
+              <FileUpload
+                onFilesSelected={handleFilesSelected}
+                onCancelUpload={handleCancelUpload}
+                compact
+                className="rounded-none border-0 bg-transparent p-0 shadow-none backdrop-blur-none hover:shadow-none"
+                title="Carga manual"
+                description="Archivos externos al FTP."
+                isUploading={
+                  uploadMutation.isPending ||
+                  analyzeHistoryFileMutation.isPending ||
+                  analyzeAllHistoryMutation.isPending
+                }
+                uploadError={uploadError}
+              />
+            </div>
+          </aside>
 
-        <section className="mb-8">
+          <div className="min-w-0 px-4 py-4 lg:pr-16 xl:pl-5">
+            <section className="mb-4">
+              <NeotelSourcesPanel
+                onLog={pushOperationLog}
+                onLocalImportComplete={() => {
+                  void queryClient.invalidateQueries({
+                    queryKey: ["local-history-stats"],
+                  });
+                  void queryClient.invalidateQueries({
+                    queryKey: ["local-history-files"],
+                  });
+                }}
+              />
+            </section>
+
+        <section className="hidden">
           <Card className="glass-card overflow-hidden border-primary/15 bg-background/70">
             <CardContent className="p-4">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -1338,7 +1350,7 @@ export default function Home() {
           </Card>
         </section>
 
-        <section className="mb-8">
+        <section className="mb-4">
           <Card className="glass-card overflow-hidden border-border/70 bg-background/70">
             <CardContent className="p-4">
                 <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1680,70 +1692,47 @@ export default function Home() {
             onValueChange={setActiveDashboardTab}
             className="space-y-6"
           >
-            <section className="grid gap-3 md:grid-cols-2">
+            <section className="mb-2 grid grid-cols-2 overflow-hidden rounded-md border border-border bg-card/40">
               <button
                 type="button"
                 onClick={() => {
                   setWorkspaceMode("operar");
                   setActiveDashboardTab("filtros");
                 }}
-                className={
+                className={cn(
+                  "flex h-10 items-center justify-center gap-2 border-r border-border px-3 text-xs font-semibold transition-colors",
                   workspaceMode === "operar"
-                    ? "rounded-2xl border border-primary/40 bg-primary/10 p-4 text-left shadow-sm"
-                    : "rounded-2xl border border-border bg-card p-4 text-left transition-colors hover:border-primary/30 hover:bg-primary/5"
-                }
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                )}
               >
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-primary">
-                      Modo operativo
-                    </p>
-                    <h3 className="mt-1 text-base font-display font-bold text-foreground">
-                      Operar / Descargar
-                    </h3>
-                  </div>
-                  <Filter className="h-5 w-5 text-primary" />
-                </div>
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Filtros, depuracion, lotes Neotel y exportables.
-                </p>
+                <Filter className="h-4 w-4" />
+                Operar / Descargar
               </button>
-
               <button
                 type="button"
                 onClick={() => {
                   setWorkspaceMode("analizar");
                   setActiveDashboardTab("resumen");
                 }}
-                className={
+                className={cn(
+                  "flex h-10 items-center justify-center gap-2 px-3 text-xs font-semibold transition-colors",
                   workspaceMode === "analizar"
-                    ? "rounded-2xl border border-primary/40 bg-primary/10 p-4 text-left shadow-sm"
-                    : "rounded-2xl border border-border bg-card p-4 text-left transition-colors hover:border-primary/30 hover:bg-primary/5"
-                }
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
+                )}
               >
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-semibold uppercase tracking-wide text-primary">
-                      Modo analisis
-                    </p>
-                    <h3 className="mt-1 text-base font-display font-bold text-foreground">
-                      Analizar / Entender
-                    </h3>
-                  </div>
-                  <BarChart3 className="h-5 w-5 text-primary" />
-                </div>
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Resumen ejecutivo, graficos, simulador y lectura historica.
-                </p>
+                <BarChart3 className="h-4 w-4" />
+                Analizar / Entender
               </button>
             </section>
 
-            <div className="sticky top-[65px] z-40 -mx-1 rounded-2xl bg-background/80 px-1 py-2 backdrop-blur-xl supports-[backdrop-filter]:bg-background/65">
+            <div className="sticky top-12 z-40 mb-2 rounded-md bg-background/90 py-1 backdrop-blur lg:fixed lg:right-2 lg:top-14 lg:mb-0 lg:bg-transparent lg:p-0">
               <TabsList
                 className={
                   workspaceMode === "operar"
-                    ? "grid h-auto w-full grid-cols-2 gap-1 p-1"
-                    : "grid h-auto w-full grid-cols-2 gap-1 p-1 lg:grid-cols-6"
+                    ? "grid h-auto w-full grid-cols-2 gap-1 p-1 lg:flex lg:w-11 lg:flex-col"
+                    : "grid h-auto w-full grid-cols-6 gap-1 p-1 lg:flex lg:w-11 lg:flex-col"
                 }
               >
                 <TabsTrigger
@@ -1751,7 +1740,7 @@ export default function Home() {
                   className={workspaceMode === "analizar" ? "flex items-center gap-2 py-2" : "hidden"}
                 >
                   <BarChart3 className="h-4 w-4" />
-                  <span className="hidden sm:inline">Resumen ejecutivo</span>
+                  <span className="sr-only">Resumen ejecutivo</span>
                 </TabsTrigger>
 
                 <TabsTrigger
@@ -1759,7 +1748,7 @@ export default function Home() {
                   className={workspaceMode === "analizar" ? "flex items-center gap-2 py-2" : "hidden"}
                 >
                   <PieChart className="h-4 w-4" />
-                  <span className="hidden sm:inline">Gráficos</span>
+                  <span className="sr-only">Gráficos</span>
                 </TabsTrigger>
 
                 <TabsTrigger
@@ -1767,7 +1756,7 @@ export default function Home() {
                   className={workspaceMode === "analizar" ? "flex items-center gap-2 py-2" : "hidden"}
                 >
                   <TrendingUp className="h-4 w-4" />
-                  <span className="hidden sm:inline">Turnos y prefijos</span>
+                  <span className="sr-only">Turnos y prefijos</span>
                 </TabsTrigger>
 
                 <TabsTrigger
@@ -1775,7 +1764,7 @@ export default function Home() {
                   className={workspaceMode === "analizar" ? "flex items-center gap-2 py-2" : "hidden"}
                 >
                   <Clock className="h-4 w-4" />
-                  <span className="hidden sm:inline">Prefijos por hora</span>
+                  <span className="sr-only">Prefijos por hora</span>
                 </TabsTrigger>
 
                 <TabsTrigger
@@ -1783,7 +1772,7 @@ export default function Home() {
                   className={workspaceMode === "operar" ? "order-2 flex items-center gap-2 py-2" : "hidden"}
                 >
                   <Trash2 className="h-4 w-4" />
-                  <span className="hidden sm:inline">Motor de depuración</span>
+                  <span className="sr-only">Motor de depuración</span>
                 </TabsTrigger>
 
                 <TabsTrigger
@@ -1791,7 +1780,7 @@ export default function Home() {
                   className={workspaceMode === "operar" ? "order-1 flex items-center gap-2 py-2" : "hidden"}
                 >
                   <Filter className="h-4 w-4" />
-                  <span className="hidden sm:inline">Filtro detallado</span>
+                  <span className="sr-only">Filtro detallado</span>
                 </TabsTrigger>
 
                 <TabsTrigger
@@ -1799,7 +1788,7 @@ export default function Home() {
                   className={workspaceMode === "analizar" ? "flex items-center gap-2 py-2" : "hidden"}
                 >
                   <Settings className="h-4 w-4" />
-                  <span className="hidden sm:inline">Simulador</span>
+                  <span className="sr-only">Simulador</span>
                 </TabsTrigger>
                 
                 <TabsTrigger
@@ -1807,7 +1796,7 @@ export default function Home() {
                   className={workspaceMode === "analizar" ? "flex items-center gap-2 py-2" : "hidden"}
                 >
                   <BookOpen className="h-4 w-4" />
-                  <span className="hidden sm:inline">Catálogo de prefijos</span>
+                  <span className="sr-only">Catálogo de prefijos</span>
                 </TabsTrigger>
               </TabsList>
             </div>
@@ -2211,6 +2200,8 @@ export default function Home() {
             </CardContent>
           </Card>
         )}
+          </div>
+        </div>
       </main>
     </div>
   );

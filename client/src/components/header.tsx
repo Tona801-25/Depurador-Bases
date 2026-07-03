@@ -3,36 +3,27 @@ import { ThemeToggle } from "@/components/theme-toggle";
 
 export function Header() {
   return (
-    <header className="sticky top-0 z-50 w-full bg-background/70 backdrop-blur-2xl supports-[backdrop-filter]:bg-background/50">
-      {/* Borde inferior con gradiente */}
-      <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-primary/40 to-transparent" />
-
-      <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
-        {/* Izquierda: ícono + título */}
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 ring-1 ring-primary/20">
-            {/* halo pulsante */}
-            <span className="absolute inset-0 rounded-xl bg-primary/20 blur-md animate-pulse-glow" />
-            <Database className="relative h-5 w-5 text-primary" />
+    <header className="sticky top-0 z-50 h-12 border-b border-primary/20 bg-background/95 backdrop-blur-xl">
+      <div className="flex h-full w-full items-center justify-between px-4">
+        <div className="flex min-w-0 items-center gap-2.5">
+          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-primary/30 bg-primary/10">
+            <Database className="h-4 w-4 text-primary" />
           </div>
-
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h1
-                className="truncate text-lg font-display font-extrabold tracking-tight gradient-text"
-                data-testid="text-app-title"
-              >
-                Depurador de Bases
-              </h1>
-            </div>
-              <p className="text-sm text-muted-foreground">
-                Analizá, depurá y priorizá bases de llamadas para operar con mejor calidad.
-              </p>
+          <div className="min-w-0 leading-none">
+            <h1 className="truncate text-xs font-extrabold uppercase text-foreground" data-testid="text-app-title">
+              Depurador de Bases
+            </h1>
+            <p className="mt-1 truncate text-[10px] text-muted-foreground">
+              Propósito de limpieza v4.2 · Neotel
+            </p>
           </div>
         </div>
 
-        {/* Derecha */}
-        <div className="flex items-center justify-end">
+        <div className="flex items-center gap-3">
+          <span className="hidden items-center gap-1.5 text-[10px] font-bold uppercase text-primary sm:flex">
+            <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+            Sistema operativo
+          </span>
           <ThemeToggle />
         </div>
       </div>
