@@ -433,6 +433,8 @@ export function initLocalDb() {
     CREATE INDEX IF NOT EXISTS idx_gestion_records_ts ON gestion_records(ts);
     CREATE INDEX IF NOT EXISTS idx_gestion_records_catalog ON gestion_records(resultado, subresultado);
     CREATE INDEX IF NOT EXISTS idx_gestion_records_action ON gestion_records(accion_comercial);
+    CREATE INDEX IF NOT EXISTS idx_gestion_records_report_date ON gestion_records(report_date);
+    CREATE INDEX IF NOT EXISTS idx_gestion_records_date_catalog ON gestion_records(report_date, resultado, subresultado);
     CREATE INDEX IF NOT EXISTS idx_productivity_report_user ON agent_productivity_records(report_date, usuario_id);
   `);
 
@@ -1246,8 +1248,51 @@ export function getNeotelReportStats() {
   };
 }
 
-export function getGestionCatalog() {
+export function getNeotelReportDates() {
   initLocalDb();
+
+  return db.prepare(`
+    WITH gestion AS (
+      SELECT
+        report_date,
+        COUNT(*) AS totalGestiones,
+        COUNT(DISTINCT ani) AS totalAnis,
+        COUNT(DISTINCT CASE WHEN accion_comercial = 'EXCLUIR' THEN ani END) AS excludedAnis,
+        COUNT(DISTINCT CASE WHEN accion_comercial = 'BUZON' THEN ani END) AS mailboxAnis
+      FROM gestion_records
+      WHERE report_date <> ''
+      GROUP BY report_date
+    ),
+    productivity AS (
+      SELECT report_date, COUNT(DISTINCT usuario_id) AS totalAgents
+      FROM agent_productivity_records
+      WHERE report_date <> ''
+      GROUP BY report_date
+    ),
+    dates AS (
+      SELECT report_date FROM gestion
+      UNION
+      SELECT report_date FROM productivity
+    )
+    SELECT
+      dates.report_date AS reportDate,
+      COALESCE(gestion.totalGestiones, 0) AS totalGestiones,
+      COALESCE(gestion.totalAnis, 0) AS totalAnis,
+      COALESCE(gestion.excludedAnis, 0) AS excludedAnis,
+      COALESCE(gestion.mailboxAnis, 0) AS mailboxAnis,
+      COALESCE(productivity.totalAgents, 0) AS totalAgents
+    FROM dates
+    LEFT JOIN gestion USING (report_date)
+    LEFT JOIN productivity USING (report_date)
+    ORDER BY dates.report_date DESC
+  `).all();
+}
+
+export function getGestionCatalog(options: { reportDate?: string } = {}) {
+  initLocalDb();
+
+  const where = options.reportDate ? "WHERE report_date = ?" : "";
+  const params = options.reportDate ? [options.reportDate] : [];
 
   return db.prepare(`
     SELECT
@@ -1259,15 +1304,17 @@ export function getGestionCatalog() {
       COUNT(DISTINCT ani) AS totalAnis,
       MAX(ts) AS ultimaGestion
     FROM gestion_records
+    ${where}
     GROUP BY resultado, subresultado, accion_comercial, motivo_accion
     ORDER BY totalGestiones DESC, resultado, subresultado
-  `).all();
+  `).all(...params);
 }
 
 export function getGestionAnisForCatalog(options: {
   resultado?: string;
   subresultado?: string;
   accionComercial?: string;
+  reportDate?: string;
 }) {
   initLocalDb();
 
@@ -1285,6 +1332,10 @@ export function getGestionAnisForCatalog(options: {
   if (options.accionComercial) {
     conditions.push("accion_comercial = ?");
     params.push(options.accionComercial);
+  }
+  if (options.reportDate) {
+    conditions.push("report_date = ?");
+    params.push(options.reportDate);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";

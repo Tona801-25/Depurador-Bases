@@ -20,6 +20,7 @@ import {
   getGestionCatalog,
   getLocalHistoryStats,
   getNeotelReportStats,
+  getNeotelReportDates,
   getRecordsForImportedFile,
   getRecordsForImportedFiles,
   saveNeotelReport,
@@ -848,9 +849,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
-  app.get("/api/neotel-reports/catalog", (_req, res) => {
+  app.get("/api/neotel-reports/dates", (_req, res) => {
     try {
-      return res.json(getGestionCatalog());
+      return res.json(getNeotelReportDates());
+    } catch (error) {
+      return res.status(500).json({
+        message: "No se pudieron leer las fechas sincronizadas.",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+
+  app.get("/api/neotel-reports/catalog", (req, res) => {
+    try {
+      const reportDate = String(req.query.reportDate ?? "").trim() || undefined;
+      return res.json(getGestionCatalog({ reportDate }));
     } catch (error) {
       return res.status(500).json({
         message: "No se pudo leer el catálogo de gestiones.",
@@ -918,11 +931,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   app.post("/api/neotel-reports/catalog/export", (req, res) => {
     try {
+      const reportDate = String(req.body?.reportDate ?? "").trim() || undefined;
       const rows = getGestionAnisForCatalog({
         resultado: String(req.body?.resultado ?? "").trim() || undefined,
         subresultado: String(req.body?.subresultado ?? "").trim() || undefined,
         accionComercial:
           String(req.body?.accionComercial ?? "").trim() || undefined,
+        reportDate,
       });
 
       if (rows.length === 0) {
@@ -953,7 +968,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.setHeader("Content-Type", "application/vnd.ms-excel");
       res.setHeader(
         "Content-Disposition",
-        "attachment; filename=catalogacion_neotel.xls",
+        `attachment; filename=catalogacion_neotel_${reportDate ?? "historial"}.xls`,
       );
       return res.send(buffer);
     } catch (error) {

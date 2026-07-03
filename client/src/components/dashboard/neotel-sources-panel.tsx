@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  CalendarDays,
   ChevronDown,
   Database,
   Download,
@@ -32,6 +33,14 @@ type NeotelSourceStats = {
   totalAgents: number;
 };
 
+type NeotelReportDate = {
+  reportDate: string;
+  totalGestiones: number;
+  totalAnis: number;
+  excludedAnis: number;
+  mailboxAnis: number;
+  totalAgents: number;
+};
 type NeotelSourceStatus = {
   ftp: {
     configured: boolean;
@@ -91,6 +100,9 @@ export function NeotelSourcesPanel({
   const { toast } = useToast();
   const [status, setStatus] = useState<NeotelSourceStatus | null>(null);
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
+  const [reportDates, setReportDates] = useState<NeotelReportDate[]>([]);
+  const [datesOpen, setDatesOpen] = useState(false);
+  const [selectedReportDate, setSelectedReportDate] = useState("");
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [importingLocal, setImportingLocal] = useState(false);
@@ -105,17 +117,38 @@ export function NeotelSourcesPanel({
   const [exportingKey, setExportingKey] = useState("");
 
   async function refresh() {
-    const [statusResponse, catalogResponse] = await Promise.all([
+    const dateQuery = selectedReportDate
+      ? `?reportDate=${encodeURIComponent(selectedReportDate)}`
+      : "";
+    const [statusResponse, catalogResponse, datesResponse] = await Promise.all([
       fetch("/api/neotel-sync/status"),
-      fetch("/api/neotel-reports/catalog"),
+      fetch(`/api/neotel-reports/catalog${dateQuery}`),
+      fetch("/api/neotel-reports/dates"),
     ]);
 
-    if (!statusResponse.ok || !catalogResponse.ok) {
+    if (!statusResponse.ok || !catalogResponse.ok || !datesResponse.ok) {
       throw new Error("No se pudo leer el estado de las fuentes Neotel.");
     }
 
     setStatus(await statusResponse.json());
     setCatalog(await catalogResponse.json());
+    setReportDates(await datesResponse.json());
+  }
+
+  async function handleReportDateChange(reportDate: string) {
+    setSelectedReportDate(reportDate);
+    const query = reportDate ? `?reportDate=${encodeURIComponent(reportDate)}` : "";
+    const response = await fetch(`/api/neotel-reports/catalog${query}`);
+    if (!response.ok) {
+      throw new Error("No se pudieron leer las catalogaciones de esa fecha.");
+    }
+    setCatalog(await response.json());
+    setCatalogOpen(true);
+    onLog?.({
+      kind: "filter",
+      title: reportDate ? "Fecha FTP seleccionada" : "Historial FTP completo",
+      detail: reportDate || "Todas las fechas sincronizadas",
+    });
   }
 
   useEffect(() => {
@@ -324,6 +357,7 @@ export function NeotelSourcesPanel({
         body: JSON.stringify({
           resultado: item.resultado,
           subresultado: item.subresultado,
+          reportDate: selectedReportDate || undefined,
         }),
       });
 
@@ -360,6 +394,18 @@ export function NeotelSourcesPanel({
   }
 
   const stats = status?.stats;
+  const selectedDateSummary = reportDates.find(
+    (item) => item.reportDate === selectedReportDate,
+  );
+  const displayedStats = selectedDateSummary
+    ? {
+        totalGestiones: selectedDateSummary.totalGestiones,
+        totalGestionAnis: selectedDateSummary.totalAnis,
+        excludedAnis: selectedDateSummary.excludedAnis,
+        mailboxAnis: selectedDateSummary.mailboxAnis,
+        totalAgents: selectedDateSummary.totalAgents,
+      }
+    : stats;
 
   return (
     <Card className="glass-card border-primary/15 bg-background/70">
@@ -442,11 +488,11 @@ export function NeotelSourcesPanel({
         </p>
         <div className="mt-4 grid grid-cols-2 gap-3 border-t border-border/60 pt-4 md:grid-cols-5">
           {[
-            ["Gestiones", stats?.totalGestiones ?? 0],
-            ["ANIs gestionados", stats?.totalGestionAnis ?? 0],
-            ["Excluir", stats?.excludedAnis ?? 0],
-            ["Buzones", stats?.mailboxAnis ?? 0],
-            ["Asesores", stats?.totalAgents ?? 0],
+            ["Gestiones", displayedStats?.totalGestiones ?? 0],
+            ["ANIs gestionados", displayedStats?.totalGestionAnis ?? 0],
+            ["Excluir", displayedStats?.excludedAnis ?? 0],
+            ["Buzones", displayedStats?.mailboxAnis ?? 0],
+            ["Asesores", displayedStats?.totalAgents ?? 0],
           ].map(([label, value]) => (
             <div key={String(label)}>
               <p className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</p>
@@ -461,6 +507,69 @@ export function NeotelSourcesPanel({
           <button
             type="button"
             className="flex w-full items-center justify-between gap-3 text-left"
+            onClick={() => setDatesOpen((current) => !current)}
+            aria-expanded={datesOpen}
+          >
+            <span className="flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">
+              <CalendarDays className="h-4 w-4 text-primary" />
+              Fechas sincronizadas
+              <Badge variant="outline">{reportDates.length}</Badge>
+              {selectedReportDate ? (
+                <Badge className="border-primary/25 bg-primary/10 text-primary">
+                  {new Date(`${selectedReportDate}T12:00:00`).toLocaleDateString("es-AR")}
+                </Badge>
+              ) : null}
+            </span>
+            <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", datesOpen && "rotate-180")} />
+          </button>
+
+          {datesOpen ? (
+            <div className="mt-3 space-y-3">
+              <select
+                value={selectedReportDate}
+                onChange={(event) => {
+                  void handleReportDateChange(event.target.value).catch((error) => {
+                    toast({
+                      title: "No se pudo aplicar la fecha",
+                      description: error instanceof Error ? error.message : String(error),
+                      variant: "destructive",
+                    });
+                  });
+                }}
+                className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm"
+              >
+                <option value="">Todas las fechas sincronizadas</option>
+                {reportDates.map((item) => (
+                  <option key={item.reportDate} value={item.reportDate}>
+                    {new Date(`${item.reportDate}T12:00:00`).toLocaleDateString("es-AR")} · {item.totalGestiones.toLocaleString("es-AR")} gestiones · {item.totalAnis.toLocaleString("es-AR")} ANIs
+                  </option>
+                ))}
+              </select>
+
+              {selectedDateSummary ? (
+                <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs sm:grid-cols-5">
+                  <span><strong>{selectedDateSummary.totalGestiones.toLocaleString("es-AR")}</strong> gestiones</span>
+                  <span><strong>{selectedDateSummary.totalAnis.toLocaleString("es-AR")}</strong> ANIs</span>
+                  <span><strong>{selectedDateSummary.mailboxAnis.toLocaleString("es-AR")}</strong> buzones</span>
+                  <span><strong>{selectedDateSummary.excludedAnis.toLocaleString("es-AR")}</strong> para excluir</span>
+                  <span><strong>{selectedDateSummary.totalAgents.toLocaleString("es-AR")}</strong> asesores</span>
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Seleccioná un día para ver y descargar únicamente sus catalogaciones.
+                </p>
+              )}
+
+              <p className="text-xs text-muted-foreground">
+                La fecha elegida también filtra las catalogaciones comerciales y cada lote Neotel descargado.
+              </p>
+            </div>
+          ) : null}
+        </div>
+        <div className="mt-4 border-t border-border/60 pt-3">
+          <button
+            type="button"
+            className="flex w-full items-center justify-between gap-3 text-left"
             onClick={() => setCatalogOpen((current) => !current)}
             aria-expanded={catalogOpen}
           >
@@ -468,6 +577,11 @@ export function NeotelSourcesPanel({
               <Tags className="h-4 w-4 text-primary" />
               Catalogaciones comerciales
               <Badge variant="outline">{catalog.length}</Badge>
+              {selectedReportDate ? (
+                <span className="text-xs font-normal text-primary">
+                  Solo {new Date(`${selectedReportDate}T12:00:00`).toLocaleDateString("es-AR")}
+                </span>
+              ) : null}
             </span>
             <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", catalogOpen && "rotate-180")} />
           </button>
