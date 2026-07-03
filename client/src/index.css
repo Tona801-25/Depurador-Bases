@@ -285,15 +285,21 @@
 
 .recharts-tooltip-wrapper {
   outline: none !important;
+}
 
-  .operational-workspace .glass-card {
-    border-radius: 6px;
-    background: hsl(var(--card) / 0.42);
-    box-shadow: none;
-    backdrop-filter: none;
-  }
+.operational-workspace .glass-card {
+  border-radius: 4px;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
 
-  .operational-workspace .glass-card:hover {
-    transform: none;
-    box-shadow: none;
-  }}
+.operational-workspace .glass-card:hover {
+  transform: none;
+  border-color: hsl(var(--border));
+  box-shadow: none;
+}
+
+.operational-workspace [data-radix-tabs-content] {
+  outline: none;
+}
