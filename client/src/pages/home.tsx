@@ -7,6 +7,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   DashboardTabs,
   EstadoDistribucionChart,
   EstadoBarrasChart,
@@ -52,6 +58,7 @@ import {
   Eye,
   EyeOff,
   ClipboardList,
+  MoreVertical,
 } from "lucide-react";
 import FilterChips from "@/components/dashboard/filterChips";
 import ExportMenu from "@/components/dashboard/exportMenu";
@@ -664,7 +671,7 @@ export default function Home() {
           title: "Análisis completado",
           description: `Se procesaron ${data.totalRecords.toLocaleString(
             "es-AR"
-          )} registros de ${data.totalAnis.toLocaleString("es-AR")} ANIs únicos.`,
+          )} intentos de ${data.totalAnis.toLocaleString("es-AR")} líneas únicas (ANIs).`,
         });
       },
 
@@ -1228,7 +1235,7 @@ export default function Home() {
           <aside className="border-b border-border bg-card/20 lg:sticky lg:top-12 lg:h-[calc(100vh-3rem)] lg:border-b-0 lg:border-r">
             <div className="border-b border-border px-3 py-3">
               <p className="mb-2 text-[10px] font-semibold uppercase text-muted-foreground">
-                Carga secundaria
+                Archivos externos
               </p>
               <FileUpload
                 onFilesSelected={handleFilesSelected}
@@ -1310,7 +1317,7 @@ export default function Home() {
 
                     <div className="rounded-xl border border-border/60 bg-muted/20 p-3">
                       <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                        Registros
+                        Intentos
                       </p>
                       <p className="mt-1 text-lg font-bold text-foreground">
                         {localHistoryStats.totalRecords.toLocaleString("es-AR")}
@@ -1319,7 +1326,7 @@ export default function Home() {
 
                     <div className="rounded-xl border border-border/60 bg-muted/20 p-3">
                       <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                        ANIs únicos
+                        Líneas únicas (ANIs)
                       </p>
                       <p className="mt-1 text-lg font-bold text-foreground">
                         {localHistoryStats.totalAnis.toLocaleString("es-AR")}
@@ -1355,9 +1362,14 @@ export default function Home() {
             <CardContent className="p-4">
                 <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
-                    <h2 className="text-sm font-semibold text-foreground">
-                      Últimos tickets guardados
-                    </h2>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="text-base font-bold uppercase text-foreground">
+                        Historial de tickets
+                      </h2>
+                      <span className="text-xs text-muted-foreground">
+                        {localHistoryFiles.length.toLocaleString("es-AR")} visibles
+                      </span>
+                    </div>
                     <p className="text-xs text-muted-foreground">
                       Archivos importados al historial local para reutilizar sin volver a cargarlos.
                     </p>
@@ -1366,7 +1378,7 @@ export default function Home() {
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
-                      className="inline-flex items-center gap-2 rounded-lg border border-primary/25 bg-primary/10 px-3 py-2 text-xs font-semibold text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+                      className="inline-flex items-center gap-2 rounded-lg border border-primary bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
                       disabled={
                         analyzeAllHistoryMutation.isPending ||
                         analyzeHistoryPeriodMutation.isPending ||
@@ -1378,27 +1390,37 @@ export default function Home() {
                       <PlayCircle className="h-4 w-4" />
                       {analyzeAllHistoryMutation.isPending
                         ? "Analizando historial..."
-                        : "Analizar historial completo"}
+                        : "Analizar todos los tickets"}
                     </button>
 
-                    <button
-                      type="button"
-                      className="inline-flex items-center gap-2 rounded-lg border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs font-semibold text-destructive transition-colors hover:bg-destructive/20 disabled:cursor-not-allowed disabled:opacity-50"
-                      disabled={
-                        deleteAllHistoryMutation.isPending ||
-                        analyzeHistoryPeriodMutation.isPending ||
-                        localHistoryFiles.length === 0
-                      }
-                      onClick={() => deleteAllHistoryMutation.mutate()}>
-                      <Trash2 className="h-4 w-4" />
-                      {deleteAllHistoryMutation.isPending
-                        ? "Eliminando..."
-                        : "Eliminar tickets"}
-                    </button>
-
-                    <Badge variant="outline" className="w-fit">
-                      {localHistoryFiles.length.toLocaleString("es-AR")} visibles
-                    </Badge>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button
+                          type="button"
+                          className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-background text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                          aria-label="Opciones del historial"
+                          title="Opciones del historial"
+                        >
+                          <MoreVertical className="h-4 w-4" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                          disabled={
+                            deleteAllHistoryMutation.isPending ||
+                            analyzeHistoryPeriodMutation.isPending ||
+                            localHistoryFiles.length === 0
+                          }
+                          onSelect={() => deleteAllHistoryMutation.mutate()}
+                        >
+                          <Trash2 className="mr-2 h-4 w-4" />
+                          {deleteAllHistoryMutation.isPending
+                            ? "Eliminando..."
+                            : "Eliminar tickets guardados"}
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                 </div>
 
@@ -1442,7 +1464,7 @@ export default function Home() {
 
                       <button
                         type="button"
-                        className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-primary/25 bg-primary/10 px-3 text-xs font-semibold text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+                        className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-border bg-background px-3 text-xs font-semibold text-foreground transition-colors hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
                         disabled={
                           !selectedHistoryPeriod ||
                           analyzeHistoryPeriodMutation.isPending ||
@@ -1482,7 +1504,7 @@ export default function Home() {
                   <div className="grid grid-cols-12 gap-3 border-b border-border/60 bg-muted/30 px-4 py-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
                     <div className="col-span-4">Archivo</div>
                     <div className="col-span-2">Fecha archivo</div>
-                    <div className="col-span-2 text-right">Registros</div>
+                    <div className="col-span-2 text-right">Intentos</div>
                     <div className="col-span-3 text-right">Cargado</div>
                     <div className="col-span-1 text-right">Acción</div>
                   </div>

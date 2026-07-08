@@ -158,6 +158,14 @@ export function getGestionCommercialAction(
     return { action: "EXCLUIR", reason: "Catalogado como cliente molesto" };
   }
 
+  if (subresult.includes("ES PREPAGO")) {
+    return { action: "EXCLUIR", reason: "Catalogado como prepago" };
+  }
+
+  if (subresult.includes("ES PERSONAL")) {
+    return { action: "EXCLUIR", reason: "La linea ya pertenece a Personal" };
+  }
+
   if (
     subresult.includes("CONTESTADOR") ||
     subresult.includes("BUZON")

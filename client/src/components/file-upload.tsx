@@ -159,7 +159,7 @@ export function FileUpload({
       <div className="pointer-events-none absolute -right-20 -top-20 h-60 w-60 rounded-full bg-primary/5 blur-3xl" />
 
       <div className="relative flex flex-wrap items-center justify-between gap-4">
-        <h2 className="flex items-center gap-2 text-base font-semibold text-foreground sm:text-lg">
+        <h2 className="flex items-center gap-2 text-base font-bold uppercase text-foreground">
           <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
             <Upload className="h-4 w-4" />
           </span>

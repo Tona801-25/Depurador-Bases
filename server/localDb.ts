@@ -35,6 +35,36 @@ export type LocalAniHistorySummary = {
   prefijos: string[];
 };
 
+export type LocalGestionSummary = {
+  ani: string;
+  resultado: string;
+  subresultado: string;
+  accionComercial: string;
+  motivoAccion: string;
+  ultimaGestion: string;
+  catalogaciones: Array<{
+    resultado: string;
+    subresultado: string;
+    accionComercial: string;
+    ultimaGestion: string;
+  }>;
+  exclusionComercial: boolean;
+  motivoExclusion: string;
+};
+
+function getCommercialExclusionReason(resultado: string, subresultado: string) {
+  const value = `${resultado} ${subresultado}`
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase();
+
+  if (resultado.trim().toUpperCase() === "COMPRA") return "Compra registrada";
+  if (value.includes("FRAUDE")) return "Catalogado como fraude";
+  if (value.includes("CLIENTE MOLESTO")) return "Catalogado como cliente molesto";
+  if (value.includes("ES PREPAGO")) return "Catalogado como prepago";
+  if (value.includes("ES PERSONAL")) return "La linea ya pertenece a Personal";
+  return "";
+}
 function sha256(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
@@ -1074,6 +1104,57 @@ export function getHistorySummaryForAnis(anis: string[]) {
   return result;
 }
 
+export function getLatestGestionForAnis(anis: string[]) {
+  initLocalDb();
+  const normalizedAnis = Array.from(new Set(anis.map((ani) => String(ani ?? "").replace(/\D/g, "").trim()).filter(Boolean)));
+  const result = new Map<string, LocalGestionSummary>();
+
+  for (let index = 0; index < normalizedAnis.length; index += 500) {
+    const chunk = normalizedAnis.slice(index, index + 500);
+    const placeholders = chunk.map(() => "?").join(",");
+    const rows = db.prepare(`
+      SELECT ani, resultado, subresultado, accion_comercial AS accionComercial,
+        motivo_accion AS motivoAccion, ts AS ultimaGestion
+      FROM gestion_records
+      WHERE ani IN (${placeholders})
+      ORDER BY ani ASC, ts ASC, id ASC
+    `).all(...chunk) as Array<Omit<LocalGestionSummary, "catalogaciones" | "exclusionComercial" | "motivoExclusion">>;
+    for (const row of rows) {
+      const ani = String(row.ani);
+      const current = result.get(ani) ?? {
+        ...row,
+        catalogaciones: [],
+        exclusionComercial: false,
+        motivoExclusion: "",
+      };
+      const key = `${row.resultado} | ${row.subresultado}`;
+      const catalogIndex = current.catalogaciones.findIndex(
+        (item) => `${item.resultado} | ${item.subresultado}` === key,
+      );
+      const catalogacion = {
+        resultado: row.resultado,
+        subresultado: row.subresultado,
+        accionComercial: row.accionComercial,
+        ultimaGestion: row.ultimaGestion,
+      };
+      if (catalogIndex >= 0) current.catalogaciones[catalogIndex] = catalogacion;
+      else current.catalogaciones.push(catalogacion);
+
+      const exclusionReason = getCommercialExclusionReason(row.resultado, row.subresultado);
+      if (exclusionReason) {
+        current.exclusionComercial = true;
+        current.motivoExclusion = exclusionReason;
+      }
+      current.resultado = row.resultado;
+      current.subresultado = row.subresultado;
+      current.accionComercial = row.accionComercial;
+      current.motivoAccion = row.motivoAccion;
+      current.ultimaGestion = row.ultimaGestion;
+      result.set(ani, current);
+    }
+  }
+  return result;
+}
 export function saveNeotelReport(
   report: ParsedNeotelReport,
   options?: { source?: "FTP" | "MANUAL"; remotePath?: string },

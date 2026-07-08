@@ -10,6 +10,18 @@ import { parseNeotelReport } from "./neotelReports.ts";
 
 const REPORT_PATTERN = /^(Gestiones_todas|Productividad_Usuarios)_20\d{2}-\d{2}-\d{2}\.csv$/i;
 
+const autoSyncState = {
+  enabled: false,
+  intervalMinutes: 30,
+  running: false,
+  lastAttemptAt: "",
+  lastSuccessAt: "",
+  lastError: "",
+};
+
+let syncInFlight: Promise<Awaited<ReturnType<typeof performNeotelFtpSync>>> | null = null;
+let autoSyncStarted = false;
+
 export function getNeotelFtpConfig() {
   const host = process.env.NEOTEL_FTP_HOST || "192.168.55.12";
   const port = Number(process.env.NEOTEL_FTP_PORT || 21);
@@ -26,7 +38,7 @@ export function getNeotelFtpConfig() {
     password,
     remotePath,
     secure,
-    configured: Boolean(host && user && remotePath),
+    configured: Boolean(host && user && password && remotePath),
   };
 }
 
@@ -39,10 +51,11 @@ export function getNeotelFtpPublicStatus() {
     user: config.user,
     remotePath: config.remotePath,
     secure: config.secure,
+    autoSync: { ...autoSyncState },
   };
 }
 
-export async function syncNeotelReportsFromFtp(tempDirectory: string) {
+async function performNeotelFtpSync(tempDirectory: string) {
   const config = getNeotelFtpConfig();
   if (!config.configured) {
     throw new Error(
@@ -129,4 +142,51 @@ export async function syncNeotelReportsFromFtp(tempDirectory: string) {
   } finally {
     client.close();
   }
+}
+
+export function syncNeotelReportsFromFtp(tempDirectory: string) {
+  if (syncInFlight) return syncInFlight;
+  syncInFlight = performNeotelFtpSync(tempDirectory).finally(() => {
+    syncInFlight = null;
+  });
+  return syncInFlight;
+}
+
+export function startNeotelFtpAutoSync(
+  tempDirectory: string,
+  onLog: (message: string) => void = console.log,
+) {
+  if (autoSyncStarted) return;
+  autoSyncStarted = true;
+  autoSyncState.enabled = /^(1|true|yes)$/i.test(
+    process.env.NEOTEL_FTP_AUTO_SYNC || "false",
+  );
+  autoSyncState.intervalMinutes = Math.max(
+    5,
+    Number(process.env.NEOTEL_FTP_SYNC_INTERVAL_MINUTES || 30) || 30,
+  );
+  if (!autoSyncState.enabled) return;
+
+  const run = async () => {
+    autoSyncState.running = true;
+    autoSyncState.lastAttemptAt = new Date().toISOString();
+    autoSyncState.lastError = "";
+    try {
+      const result = await syncNeotelReportsFromFtp(tempDirectory);
+      autoSyncState.lastSuccessAt = new Date().toISOString();
+      onLog(
+        `Sincronización automática: ${result.imported} nuevos, ${result.duplicates} duplicados, ${result.errors} errores.`,
+      );
+    } catch (error) {
+      autoSyncState.lastError = error instanceof Error ? error.message : String(error);
+      onLog(`Falló la sincronización automática: ${autoSyncState.lastError}`);
+    } finally {
+      autoSyncState.running = false;
+    }
+  };
+
+  const initialTimer = setTimeout(run, 3_000);
+  initialTimer.unref();
+  const interval = setInterval(run, autoSyncState.intervalMinutes * 60_000);
+  interval.unref();
 }

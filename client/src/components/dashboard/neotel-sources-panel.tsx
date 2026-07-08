@@ -49,6 +49,14 @@ type NeotelSourceStatus = {
     user: string;
     remotePath: string;
     secure: boolean;
+    autoSync: {
+      enabled: boolean;
+      intervalMinutes: number;
+      running: boolean;
+      lastAttemptAt: string;
+      lastSuccessAt: string;
+      lastError: string;
+    };
   };
   localReportsDir?: string;
   stats: NeotelSourceStats;
@@ -158,7 +166,7 @@ export function NeotelSourcesPanel({
       .catch((error) => {
         onLog?.({
           kind: "error",
-          title: "Fuentes Neotel no disponibles",
+          title: "Conexión Neotel no disponible",
           detail: error instanceof Error ? error.message : String(error),
         });
       })
@@ -419,7 +427,7 @@ export function NeotelSourcesPanel({
             </div>
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-sm font-semibold text-foreground">Fuentes Neotel</h2>
+                <h2 className="text-base font-bold uppercase text-foreground">Conexión Neotel</h2>
                 <Badge
                   variant="outline"
                   className={
@@ -430,6 +438,13 @@ export function NeotelSourcesPanel({
                 >
                   {status?.ftp.configured ? "FTP disponible" : "FTP sin configurar"}
                 </Badge>
+                {status?.ftp.autoSync.enabled ? (
+                  <Badge variant="outline" className="border-primary/30 text-primary">
+                    {status.ftp.autoSync.running
+                      ? "Sincronizando"
+                      : `Automático · ${status.ftp.autoSync.intervalMinutes} min`}
+                  </Badge>
+                ) : null}
               </div>
               <p className="mt-1 truncate text-xs text-muted-foreground">
                 {status
@@ -493,7 +508,7 @@ export function NeotelSourcesPanel({
         <div className={cn("mt-4 grid grid-cols-2 gap-3 border-t border-border/60 pt-4", !sidebar && "md:grid-cols-5")}>
           {[
             ["Gestiones", displayedStats?.totalGestiones ?? 0],
-            ["ANIs gestionados", displayedStats?.totalGestionAnis ?? 0],
+            ["Líneas únicas (ANIs)", displayedStats?.totalGestionAnis ?? 0],
             ["Excluir", displayedStats?.excludedAnis ?? 0],
             ["Buzones", displayedStats?.mailboxAnis ?? 0],
             ["Asesores", displayedStats?.totalAgents ?? 0],
@@ -565,7 +580,7 @@ export function NeotelSourcesPanel({
               )}
 
               <p className="text-xs text-muted-foreground">
-                La fecha elegida también filtra las catalogaciones comerciales y cada lote Neotel descargado.
+                La fecha elegida también filtra las catalogaciones de asesores y cada lote Neotel descargado.
               </p>
             </div>
           ) : null}
@@ -579,7 +594,7 @@ export function NeotelSourcesPanel({
           >
             <span className="flex items-center gap-2 text-sm font-semibold text-foreground">
               <Tags className="h-4 w-4 text-primary" />
-              Catalogaciones comerciales
+              Catalogaciones de asesores
               <Badge variant="outline">{catalog.length}</Badge>
               {selectedReportDate ? (
                 <span className="text-xs font-normal text-primary">

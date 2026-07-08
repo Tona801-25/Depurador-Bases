@@ -15,6 +15,7 @@ import {
   deleteTicketHistory,
   getAllHistoryRecords,
   getHistorySummaryForAnis,
+  getLatestGestionForAnis,
   getImportedFiles,
   getGestionAnisForCatalog,
   getGestionCatalog,
@@ -368,6 +369,18 @@ type FuzzionLead = {
   ultimoSubestado: string;
   bases: string[];
   categorias: FuzzionCategory[];
+  resultadoGestion: string;
+  subresultadoGestion: string;
+  accionComercial: string;
+  ultimaGestion: string;
+  catalogacionesGestion: Array<{
+    resultado: string;
+    subresultado: string;
+    accionComercial: string;
+    ultimaGestion: string;
+  }>;
+  exclusionComercial: boolean;
+  motivoExclusion: string;
 };
 
 type FuzzionSession = {
@@ -443,30 +456,80 @@ function classifyFuzzionLead(summary?: LocalAniHistorySummary) {
   return categories;
 }
 
+type FuzzionFilterMode = "RECOMENDACION" | "ESTADO" | "CATALOGACION";
+type FuzzionExportMode = "DEPURADO" | "SEGMENTO";
+
+function isExcludedCommercialCatalog(value: string) {
+  const normalized = value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase();
+  return normalized.startsWith("COMPRA |") ||
+    normalized.includes("FRAUDE") ||
+    normalized.includes("CLIENTE MOLESTO") ||
+    normalized.includes("ES PREPAGO") ||
+    normalized.includes("ES PERSONAL");
+}
+
 function filterFuzzionLeads(
   leads: FuzzionLead[],
-  category: FuzzionCategory,
+  categories: FuzzionCategory[],
   search = "",
+  filterMode: FuzzionFilterMode = "RECOMENDACION",
+  filterValues: string[] = [],
+  rangeDays = 0,
+  exportMode: FuzzionExportMode = "SEGMENTO",
 ) {
   const query = search.trim().toLowerCase();
+  const cutoff = rangeDays > 0 ? Date.now() - rangeDays * 86400000 : 0;
 
   return leads.filter((lead) => {
-    if (category !== "TODOS" && !lead.categorias.includes(category)) {
-      return false;
+    if (exportMode === "DEPURADO" && lead.categorias.includes("DESCARTAR")) return false;
+    const reviewingExcludedCatalog =
+      exportMode === "SEGMENTO" &&
+      filterMode === "CATALOGACION" &&
+      filterValues.some(isExcludedCommercialCatalog);
+    const reviewingDiscardGroup =
+      exportMode === "SEGMENTO" &&
+      filterMode === "RECOMENDACION" &&
+      categories.includes("DESCARTAR");
+    if (
+      exportMode === "SEGMENTO" &&
+      lead.exclusionComercial &&
+      !reviewingExcludedCatalog &&
+      !reviewingDiscardGroup
+    ) return false;
+    if (filterMode === "RECOMENDACION" && categories.length > 0 && !categories.some(
+      (category) => lead.categorias.includes(category),
+    )) return false;
+    if (filterMode === "ESTADO" && filterValues.length > 0 && !filterValues.includes(
+      `${lead.ultimoEstado} | ${lead.ultimoSubestado}`,
+    )) return false;
+    if (filterMode === "CATALOGACION" && filterValues.length > 0 && !lead.catalogacionesGestion.some(
+      (item) => filterValues.includes(`${item.resultado} | ${item.subresultado}`),
+    )) return false;
+
+    if (cutoff > 0) {
+      if (filterMode === "CATALOGACION" && filterValues.length > 0) {
+        const hasRecentCatalog = lead.catalogacionesGestion.some((item) => {
+          const key = `${item.resultado} | ${item.subresultado}`;
+          return filterValues.includes(key) && new Date(item.ultimaGestion).getTime() >= cutoff;
+        });
+        if (!hasRecentCatalog) return false;
+      } else {
+        const dateValue = filterMode === "CATALOGACION"
+          ? lead.ultimaGestion
+          : [lead.ultimoLlamado, lead.ultimaGestion]
+              .filter(Boolean)
+              .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || "";
+        const timestamp = dateValue ? new Date(dateValue).getTime() : 0;
+        if (!timestamp || timestamp < cutoff) return false;
+      }
     }
 
     if (!query) return true;
-
-    return [
-      lead.linea,
-      lead.razonSocial,
-      lead.documento,
-      lead.mercadoActual,
-      lead.planActual,
-      lead.planSugerido,
-      lead.localidad,
-      ...lead.bases,
-    ].some((value) => String(value).toLowerCase().includes(query));
+    return [lead.linea, lead.razonSocial, lead.documento, lead.mercadoActual, lead.planActual, lead.planSugerido, lead.localidad, lead.ultimoEstado, lead.ultimoSubestado, lead.resultadoGestion, lead.subresultadoGestion, ...lead.bases]
+      .some((value) => String(value).toLowerCase().includes(query));
   });
 }
 
@@ -1035,12 +1098,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         });
       }
 
-      const history = getHistorySummaryForAnis(
-        parsedRows.map((item) => item.linea),
-      );
+      const lineas = parsedRows.map((item) => item.linea);
+      const history = getHistorySummaryForAnis(lineas);
+      const gestiones = getLatestGestionForAnis(lineas);
 
       const leads: FuzzionLead[] = parsedRows.map(({ row, rowNumber, linea }) => {
         const summary = history.get(linea);
+        const gestion = gestiones.get(linea);
+        const categorias = classifyFuzzionLead(summary);
+        if (gestion?.exclusionComercial && !categorias.includes("DESCARTAR")) {
+          categorias.push("DESCARTAR");
+        }
 
         return {
           rowNumber,
@@ -1077,7 +1145,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           ultimoEstado: summary?.ultimoEstado ?? "",
           ultimoSubestado: summary?.ultimoSubestado ?? "",
           bases: summary?.bases ?? [],
-          categorias: classifyFuzzionLead(summary),
+          categorias,
+          resultadoGestion: gestion?.resultado ?? "",
+          subresultadoGestion: gestion?.subresultado ?? "",
+          accionComercial: gestion?.accionComercial ?? "",
+          ultimaGestion: gestion?.ultimaGestion ?? "",
+          catalogacionesGestion: gestion?.catalogaciones ?? [],
+          exclusionComercial: gestion?.exclusionComercial ?? false,
+          motivoExclusion: gestion?.motivoExclusion ?? "",
         };
       });
 
@@ -1113,6 +1188,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           reintentarMejorFranja: countCategory("REINTENTAR_MEJOR_FRANJA"),
           descartar: countCategory("DESCARTAR"),
         },
+        filterOptions: {
+          estados: Array.from(new Set(leads
+            .filter((lead) => lead.ultimoEstado || lead.ultimoSubestado)
+            .map((lead) => `${lead.ultimoEstado} | ${lead.ultimoSubestado}`))).sort(),
+          catalogaciones: Array.from(new Set(leads
+            .flatMap((lead) => lead.catalogacionesGestion)
+            .map((item) => `${item.resultado} | ${item.subresultado}`))).sort(),
+        },
         preview: leads.slice(0, 250).map(({ originalRow, ...lead }) => lead),
       });
     } catch (error) {
@@ -1134,8 +1217,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
     }
 
-    const category = String(req.body?.category || "TODOS") as FuzzionCategory;
+    const legacyCategory = String(req.body?.category || "TODOS") as FuzzionCategory;
+    const categories = Array.isArray(req.body?.categories)
+      ? req.body.categories.map(String) as FuzzionCategory[]
+      : legacyCategory === "TODOS" ? [] : [legacyCategory];
     const search = String(req.body?.search || "");
+    const filterMode = String(req.body?.filterMode || "RECOMENDACION") as FuzzionFilterMode;
+    const legacyFilterValue = String(req.body?.filterValue || "");
+    const filterValues = Array.isArray(req.body?.filterValues)
+      ? req.body.filterValues.map(String).filter(Boolean)
+      : legacyFilterValue ? [legacyFilterValue] : [];
+    const rangeDays = Math.max(0, Number(req.body?.rangeDays) || 0);
+    const exportMode = String(req.body?.exportMode || "SEGMENTO") as FuzzionExportMode;
     const allowedCategories: FuzzionCategory[] = [
       "TODOS",
       "NUNCA_TRABAJADO",
@@ -1146,31 +1239,37 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       "DESCARTAR",
     ];
 
-    if (!allowedCategories.includes(category)) {
+    if (categories.some((category) => !allowedCategories.includes(category))) {
       return res.status(400).json({ message: "Filtro Fuzzión no válido." });
     }
+    if (!(["DEPURADO", "SEGMENTO"] as FuzzionExportMode[]).includes(exportMode)) {
+      return res.status(400).json({ message: "Tipo de exportación no válido." });
+    }
 
-    const filtered = filterFuzzionLeads(session.leads, category, search);
+    const filtered = filterFuzzionLeads(
+      session.leads,
+      categories,
+      search,
+      filterMode,
+      filterValues,
+      rangeDays,
+      exportMode,
+    );
     const neotelRows = buildFuzzionNeotelRows(filtered);
-
     if (neotelRows.length === 0) {
-      return res.status(422).json({
-        message: "No hay líneas para exportar con este filtro.",
-      });
+      return res.status(422).json({ message: "No hay líneas para exportar con este filtro." });
     }
 
     const worksheet = buildNeotelWorksheet(neotelRows);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, "Contactos");
-    const buffer = XLSX.write(workbook, {
-      type: "buffer",
-      bookType: "biff8",
-    });
+    const buffer = XLSX.write(workbook, { type: "buffer", bookType: "biff8" });
 
     res.setHeader("Content-Type", "application/vnd.ms-excel");
+    res.setHeader("X-Exported-Count", String(neotelRows.length));
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename=fuzzion_${category.toLowerCase()}.xls`,
+      `attachment; filename=fuzzion_${exportMode === "DEPURADO" ? "depurado" : "grupo"}.xls`,
     );
     return res.send(buffer);
   });

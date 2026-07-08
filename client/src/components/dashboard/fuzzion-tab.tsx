@@ -1,6 +1,8 @@
 import { useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
+  ChevronDown,
+  SlidersHorizontal,
   Download,
   FileSpreadsheet,
   PhoneCall,
@@ -13,6 +15,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 
 type FuzzionCategory =
@@ -23,6 +35,9 @@ type FuzzionCategory =
   | "NO_SATURADO"
   | "REINTENTAR_MEJOR_FRANJA"
   | "DESCARTAR";
+
+type FuzzionFilterMode = "RECOMENDACION" | "ESTADO" | "CATALOGACION";
+type FuzzionExportMode = "DEPURADO" | "SEGMENTO";
 
 type FuzzionLeadPreview = {
   rowNumber: number;
@@ -44,6 +59,18 @@ type FuzzionLeadPreview = {
   ultimoSubestado: string;
   bases: string[];
   categorias: FuzzionCategory[];
+  resultadoGestion: string;
+  subresultadoGestion: string;
+  accionComercial: string;
+  ultimaGestion: string;
+  catalogacionesGestion: Array<{
+    resultado: string;
+    subresultado: string;
+    accionComercial: string;
+    ultimaGestion: string;
+  }>;
+  exclusionComercial: boolean;
+  motivoExclusion: string;
 };
 
 type FuzzionPreview = {
@@ -60,6 +87,7 @@ type FuzzionPreview = {
     reintentarMejorFranja: number;
     descartar: number;
   };
+  filterOptions: { estados: string[]; catalogaciones: string[] };
   preview: FuzzionLeadPreview[];
 };
 
@@ -130,58 +158,173 @@ function parseDownloadName(header: string | null) {
   return match?.[1] || "base_fuzzion_neotel.xls";
 }
 
+function isExcludedCommercialCatalog(value: string) {
+  const normalized = value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase();
+  return normalized.startsWith("COMPRA |") ||
+    normalized.includes("FRAUDE") ||
+    normalized.includes("CLIENTE MOLESTO") ||
+    normalized.includes("ES PREPAGO") ||
+    normalized.includes("ES PERSONAL");
+}
+
+type MultiOption = { value: string; label: string };
+
+function MultiCheckSelect({
+  options,
+  values,
+  onChange,
+  disabled = false,
+}: {
+  options: MultiOption[];
+  values: string[];
+  onChange: (values: string[]) => void;
+  disabled?: boolean;
+}) {
+  const summary = values.length === 0
+    ? "Todos"
+    : values.length === 1
+      ? options.find((option) => option.value === values[0])?.label || values[0]
+      : `${values.length} seleccionados`;
+
+  const toggle = (value: string) => {
+    onChange(values.includes(value)
+      ? values.filter((item) => item !== value)
+      : [...values, value]);
+  };
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={disabled}
+          className="h-10 w-full justify-between rounded-none px-3 font-normal"
+        >
+          <span className="truncate">{summary}</span>
+          <ChevronDown className="ml-2 h-4 w-4 shrink-0 text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] p-2">
+        <label className="flex cursor-pointer items-center gap-2 px-2 py-2 text-sm hover:bg-muted/50">
+          <Checkbox checked={values.length === 0} onCheckedChange={() => onChange([])} />
+          <span>Todos</span>
+        </label>
+        <div className="max-h-64 overflow-y-auto">
+          {options.map((option) => (
+            <label key={option.value} className="flex cursor-pointer items-start gap-2 px-2 py-2 text-sm hover:bg-muted/50">
+              <Checkbox
+                checked={values.includes(option.value)}
+                onCheckedChange={() => toggle(option.value)}
+              />
+              <span className="leading-4">{option.label}</span>
+            </label>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 export function FuzzionTab({ onLog }: FuzzionTabProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const [data, setData] = useState<FuzzionPreview | null>(null);
-  const [selectedCategory, setSelectedCategory] =
-    useState<FuzzionCategory>("TODOS");
+  const [selectedCategories, setSelectedCategories] = useState<FuzzionCategory[]>([]);
   const [search, setSearch] = useState("");
+  const [filterMode, setFilterMode] = useState<FuzzionFilterMode>("RECOMENDACION");
+  const [exportMode, setExportMode] = useState<FuzzionExportMode>("DEPURADO");
+  const [filterValues, setFilterValues] = useState<string[]>([]);
+  const [rangeDays, setRangeDays] = useState(0);
+  const [configOpen, setConfigOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [quickCategory, setQuickCategory] = useState<FuzzionCategory | null>(null);
+  const [quickExporting, setQuickExporting] = useState(false);
+  const [quickRangeDays, setQuickRangeDays] = useState(7);
+
+  const filterChoices = useMemo(() => {
+    if (!data) return [];
+    if (filterMode === "ESTADO") return data.filterOptions.estados;
+    if (filterMode === "CATALOGACION") return data.filterOptions.catalogaciones;
+    return categoryOptions.map((option) => option.value);
+  }, [data, filterMode]);
+
+  const quickOption = categoryOptions.find(
+    (option) => option.value === quickCategory,
+  );
+  const quickCount = quickOption?.stat && data
+    ? data.stats[quickOption.stat]
+    : 0;
+
+  const multiOptions = useMemo<MultiOption[]>(() => {
+    if (filterMode === "RECOMENDACION") {
+      return categoryOptions
+        .filter((option) => option.value !== "TODOS")
+        .map((option) => ({ value: option.value, label: option.label }));
+    }
+    return filterChoices.map((value) => ({ value, label: value }));
+  }, [filterChoices, filterMode]);
 
   const visiblePreview = useMemo(() => {
     if (!data) return [];
     const query = search.trim().toLowerCase();
+    const cutoff = rangeDays > 0 ? Date.now() - rangeDays * 86400000 : 0;
 
     return data.preview.filter((lead) => {
-      if (
-        selectedCategory !== "TODOS" &&
-        !lead.categorias.includes(selectedCategory)
-      ) {
-        return false;
+      if (exportMode === "DEPURADO" && lead.categorias.includes("DESCARTAR")) return false;
+      const reviewingExcludedCatalog =
+        exportMode === "SEGMENTO" &&
+        filterMode === "CATALOGACION" &&
+        filterValues.some(isExcludedCommercialCatalog);
+      if (exportMode === "SEGMENTO" && lead.exclusionComercial && !reviewingExcludedCatalog) return false;
+      if (filterMode === "RECOMENDACION" && selectedCategories.length > 0 && !selectedCategories.some(
+        (category) => lead.categorias.includes(category),
+      )) return false;
+      if (filterMode === "ESTADO" && filterValues.length > 0 && !filterValues.includes(
+        `${lead.ultimoEstado} | ${lead.ultimoSubestado}`,
+      )) return false;
+      if (filterMode === "CATALOGACION" && filterValues.length > 0 && !lead.catalogacionesGestion.some(
+        (item) => filterValues.includes(`${item.resultado} | ${item.subresultado}`),
+      )) return false;
+
+      if (cutoff > 0) {
+        if (filterMode === "CATALOGACION" && filterValues.length > 0) {
+          const hasRecentCatalog = lead.catalogacionesGestion.some((item) => {
+            const key = `${item.resultado} | ${item.subresultado}`;
+            return filterValues.includes(key) && new Date(item.ultimaGestion).getTime() >= cutoff;
+          });
+          if (!hasRecentCatalog) return false;
+        } else {
+          const value = filterMode === "CATALOGACION"
+            ? lead.ultimaGestion
+            : [lead.ultimoLlamado, lead.ultimaGestion]
+                .filter(Boolean)
+                .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || "";
+          const timestamp = value ? new Date(value).getTime() : 0;
+          if (!timestamp || timestamp < cutoff) return false;
+        }
       }
 
       if (!query) return true;
-
-      return [
-        lead.linea,
-        lead.razonSocial,
-        lead.documento,
-        lead.mercadoActual,
-        lead.planActual,
-        ...lead.bases,
-      ].some((value) => String(value).toLowerCase().includes(query));
+      return [lead.linea, lead.razonSocial, lead.documento, lead.mercadoActual, lead.planActual, lead.ultimoEstado, lead.ultimoSubestado, lead.resultadoGestion, lead.subresultadoGestion, ...lead.bases]
+        .some((value) => String(value).toLowerCase().includes(query));
     });
-  }, [data, search, selectedCategory]);
-
-  const selectedCount = useMemo(() => {
-    if (!data) return 0;
-    if (selectedCategory === "TODOS") return data.validRows;
-
-    const option = categoryOptions.find(
-      (item) => item.value === selectedCategory,
-    );
-    return option?.stat ? data.stats[option.stat] : 0;
-  }, [data, selectedCategory]);
+  }, [data, exportMode, filterMode, filterValues, rangeDays, search, selectedCategories]);
 
   async function handleFile(file?: File) {
     if (!file) return;
 
     setUploading(true);
     setData(null);
-    setSelectedCategory("TODOS");
-
+    setSelectedCategories([]);
+    setExportMode("DEPURADO");
+    setFilterMode("RECOMENDACION");
+    setFilterValues([]);
+    setRangeDays(0);
     try {
       const formData = new FormData();
       formData.append("file", file);
@@ -199,7 +342,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
       onLog?.({
         kind: "filter",
         title: "Base Fuzzión cruzada",
-        detail: `${payload.fileName} · ${payload.uniqueAnis.toLocaleString("es-AR")} ANIs únicos`,
+        detail: `${payload.fileName} · ${payload.uniqueAnis.toLocaleString("es-AR")} líneas únicas (ANIs)`,
         count: payload.validRows,
       });
       toast({
@@ -228,7 +371,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
   }
 
   async function handleExport() {
-    if (!data || selectedCount === 0) return;
+    if (!data) return;
 
     setExporting(true);
     try {
@@ -236,8 +379,12 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          category: selectedCategory,
+          categories: selectedCategories,
           search,
+          filterMode,
+          filterValues,
+          rangeDays,
+          exportMode,
         }),
       });
 
@@ -246,6 +393,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
         throw new Error(payload?.message || "No se pudo generar el lote");
       }
 
+      const exportedCount = Number(response.headers.get("X-Exported-Count")) || undefined;
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
@@ -261,9 +409,12 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
       onLog?.({
         kind: "export",
         title: "Lote Fuzzión exportado",
-        detail: categoryOptions.find((item) => item.value === selectedCategory)
-          ?.label || selectedCategory,
-        count: selectedCount,
+        detail: exportMode === "DEPURADO"
+          ? "Lote depurado para llamar"
+          : filterMode === "RECOMENDACION"
+            ? selectedCategories.map((value) => categoryOptions.find((item) => item.value === value)?.label || value).join(" + ") || "Todos"
+            : filterValues.join(" + ") || "Todos",
+        count: exportedCount,
       });
     } catch (error) {
       const message =
@@ -283,6 +434,59 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
     }
   }
 
+  async function handleQuickExport() {
+    if (!data || !quickCategory || !quickOption) return;
+
+    setQuickExporting(true);
+    try {
+      const response = await fetch(`/api/fuzzion/${data.id}/export`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          categories: [quickCategory],
+          search: "",
+          filterMode: "RECOMENDACION",
+          filterValues: [],
+          rangeDays: quickRangeDays,
+          exportMode: "SEGMENTO",
+        }),
+      });
+
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new Error(payload?.message || "No se pudo generar el lote");
+      }
+
+      const exportedCount = Number(response.headers.get("X-Exported-Count")) || undefined;
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = parseDownloadName(response.headers.get("Content-Disposition"));
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+
+      onLog?.({
+        kind: "export",
+        title: "Lote rápido exportado",
+        detail: quickOption.label,
+        count: exportedCount,
+      });
+      toast({
+        title: "Lote listo",
+        description: `${(exportedCount ?? quickCount).toLocaleString("es-AR")} líneas exportadas: ${quickOption.label}.`,
+      });
+      setQuickCategory(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo descargar";
+      toast({ title: "Error al exportar", description: message, variant: "destructive" });
+    } finally {
+      setQuickExporting(false);
+    }
+  }
+
   return (
     <Card className="glass-card border-glass-border">
       <CardHeader className="pb-3">
@@ -291,7 +495,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
             <p className="text-[11px] font-semibold uppercase tracking-wide text-primary">
               Modo operativo
             </p>
-            <CardTitle className="mt-1 flex items-center gap-2 text-base">
+            <CardTitle className="mt-1 flex items-center gap-2 text-base font-bold uppercase">
               <FileSpreadsheet className="h-5 w-5 text-primary" />
               Base Fuzzión / Lote Neotel
             </CardTitle>
@@ -321,44 +525,30 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
 
       <CardContent className="space-y-4">
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-          <div className="rounded-lg border border-border bg-background p-3">
-            <p className="text-[11px] uppercase text-muted-foreground">Nunca trabajados</p>
-            <p className="mt-1 text-xl font-bold">
-              {(data?.stats.nuncaTrabajados ?? 0).toLocaleString("es-AR")}
-            </p>
-          </div>
-          <div className="rounded-lg border border-border bg-background p-3">
-            <p className="text-[11px] uppercase text-muted-foreground">
-              Con contacto efectivo
-            </p>
-            <p className="mt-1 text-xl font-bold text-success">
-              {(data?.stats.contactados ?? 0).toLocaleString("es-AR")}
-            </p>
-          </div>
-          <div className="rounded-lg border border-border bg-background p-3">
-            <p className="text-[11px] uppercase text-muted-foreground">
-              Con buzón y sin contacto
-            </p>
-            <p className="mt-1 text-xl font-bold text-warning">
-              {(data?.stats.buzonesSinContacto ?? 0).toLocaleString("es-AR")}
-            </p>
-          </div>
-          <div className="rounded-lg border border-border bg-background p-3">
-            <p className="text-[11px] uppercase text-muted-foreground">
-              Aptos para reintento
-            </p>
-            <p className="mt-1 text-xl font-bold text-primary">
-              {(data?.stats.reintentarMejorFranja ?? 0).toLocaleString("es-AR")}
-            </p>
-          </div>
-          <div className="rounded-lg border border-destructive/25 bg-destructive/5 p-3">
-            <p className="text-[11px] uppercase text-muted-foreground">
-              Con señal de descarte
-            </p>
-            <p className="mt-1 text-xl font-bold text-destructive">
-              {(data?.stats.descartar ?? 0).toLocaleString("es-AR")}
-            </p>
-          </div>
+          {[
+            { category: "NUNCA_TRABAJADO" as const, label: "Nunca trabajados", count: data?.stats.nuncaTrabajados ?? 0, valueClass: "text-foreground", cardClass: "border-border bg-background" },
+            { category: "CONTACTADO" as const, label: "Con contacto efectivo", count: data?.stats.contactados ?? 0, valueClass: "text-success", cardClass: "border-border bg-background" },
+            { category: "BUZON_SIN_CONTACTO" as const, label: "Con buzón y sin contacto", count: data?.stats.buzonesSinContacto ?? 0, valueClass: "text-warning", cardClass: "border-border bg-background" },
+            { category: "REINTENTAR_MEJOR_FRANJA" as const, label: "Aptos para reintento", count: data?.stats.reintentarMejorFranja ?? 0, valueClass: "text-primary", cardClass: "border-border bg-background" },
+            { category: "DESCARTAR" as const, label: "Con señal de descarte", count: data?.stats.descartar ?? 0, valueClass: "text-destructive", cardClass: "border-destructive/25 bg-destructive/5" },
+          ].map((item) => (
+            <button
+              key={item.category}
+              type="button"
+              disabled={!data || item.count === 0}
+              onClick={() => {
+                setQuickCategory(item.category);
+                setQuickRangeDays(item.category === "NUNCA_TRABAJADO" ? 0 : 7);
+              }}
+              className={`soft-cyan-hover min-h-[74px] rounded-lg border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-default disabled:opacity-60 ${item.cardClass}`}
+              title={data ? `Abrir descarga de ${item.label.toLowerCase()}` : "Cargá una base Fuzzión primero"}
+            >
+              <p className="text-[11px] uppercase text-muted-foreground">{item.label}</p>
+              <p className={`mt-1 text-xl font-bold ${item.valueClass}`}>
+                {item.count.toLocaleString("es-AR")}
+              </p>
+            </button>
+          ))}
         </div>
 
         {!data ? (
@@ -370,54 +560,136 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
           </div>
         ) : (
           <>
-            <div className="flex flex-col gap-3 rounded-lg border border-border bg-background p-3">
-              <div className="flex flex-wrap gap-2">
-                {categoryOptions.map((option) => {
-                  const count =
-                    option.value === "TODOS"
-                      ? data.validRows
-                      : option.stat
-                        ? data.stats[option.stat]
-                        : 0;
+            <div className="border border-border bg-background">
+              <button
+                type="button"
+                className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left"
+                onClick={() => setConfigOpen((current) => !current)}
+                aria-expanded={configOpen}
+              >
+                <span className="flex items-center gap-2 text-sm font-semibold">
+                  <SlidersHorizontal className="h-4 w-4 text-primary" />
+                  Configurar lote
+                  <Badge variant="outline">
+                    {exportMode === "DEPURADO"
+                      ? "Lote depurado"
+                      : rangeDays > 0
+                        ? `Últimos ${rangeDays} días`
+                        : "Grupo puntual"}
+                  </Badge>
+                </span>
+                <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${configOpen ? "rotate-180" : ""}`} />
+              </button>
 
-                  return (
-                    <Button
-                      key={option.value}
-                      type="button"
-                      size="sm"
-                      variant={
-                        selectedCategory === option.value ? "default" : "outline"
-                      }
-                      title={option.description}
-                      onClick={() => setSelectedCategory(option.value)}
-                    >
-                      {option.label} ({count.toLocaleString("es-AR")})
+              {configOpen ? (
+                <div className="space-y-3 border-t border-border p-3">
+                  <div className="grid gap-2 lg:grid-cols-4">
+                    <label className="space-y-1 text-xs text-muted-foreground">
+                      <span>Quiero descargar</span>
+                      <select
+                        value={exportMode}
+                        onChange={(event) => {
+                          const mode = event.target.value as FuzzionExportMode;
+                          setExportMode(mode);
+                          if (mode === "DEPURADO") {
+                            setFilterMode("RECOMENDACION");
+                            setSelectedCategories([]);
+                            setFilterValues([]);
+                            setRangeDays(0);
+                          }
+                        }}
+                        className="h-10 w-full border border-border bg-background px-3 text-sm text-foreground"
+                      >
+                        <option value="DEPURADO">Lote depurado para llamar</option>
+                        <option value="SEGMENTO">Un grupo puntual</option>
+                      </select>
+                    </label>
+
+                    <label className="space-y-1 text-xs text-muted-foreground">
+                      <span>Filtrar según</span>
+                      <select
+                        disabled={exportMode === "DEPURADO"}
+                        value={filterMode}
+                        onChange={(event) => {
+                          setFilterMode(event.target.value as FuzzionFilterMode);
+                          setSelectedCategories([]);
+                          setFilterValues([]);
+                        }}
+                        className="h-10 w-full border border-border bg-background px-3 text-sm text-foreground"
+                      >
+                        <option value="RECOMENDACION">Recomendación operativa</option>
+                        <option value="ESTADO">Estado técnico del ticket</option>
+                        <option value="CATALOGACION">Catalogación comercial</option>
+                      </select>
+                    </label>
+
+                    <div className="space-y-1 text-xs text-muted-foreground">
+                      <span>Valores</span>
+                      <MultiCheckSelect
+                        disabled={exportMode === "DEPURADO"}
+                        options={multiOptions}
+                        values={filterMode === "RECOMENDACION" ? selectedCategories : filterValues}
+                        onChange={(values) => {
+                          if (filterMode === "RECOMENDACION") {
+                            setSelectedCategories(values as FuzzionCategory[]);
+                          } else {
+                            setFilterValues(values);
+                          }
+                        }}
+                      />
+                    </div>
+
+                    <label className="space-y-1 text-xs text-muted-foreground">
+                      <span>Rango histórico</span>
+                      <select
+                        disabled={exportMode === "DEPURADO"}
+                        value={rangeDays}
+                        onChange={(event) => setRangeDays(Number(event.target.value))}
+                        className="h-10 w-full border border-border bg-background px-3 text-sm text-foreground"
+                      >
+                        <option value={0}>Todo el historial</option>
+                        <option value={7}>Últimos 7 días</option>
+                        <option value={30}>Últimos 30 días</option>
+                        <option value={60}>Últimos 60 días</option>
+                        <option value={90}>Últimos 90 días</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <div className="border border-primary/25 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
+                    {exportMode === "DEPURADO" ? (
+                      <>
+                        Se conservarán las líneas aptas y se quitarán del archivo las
+                        catalogadas como compra, fraude, cliente molesto, prepago o ya
+                        pertenecientes a Personal, además de los descartes técnicos. Los
+                        datos continúan guardados en SQLite.
+                      </>
+                    ) : (
+                      <>
+                        Este modo descarga solamente el estado o la catalogación elegida.
+                        Usalo, por ejemplo, para armar un lote de re-llamados. Las exclusiones
+                        comerciales se mantienen, salvo que elijas una de ellas expresamente
+                        para controlarla por separado.
+                      </>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <div className="relative flex-1">
+                      <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                      <Input value={search} onChange={(event) => setSearch(event.target.value)} className="pl-9" placeholder="Buscar línea, nombre, DNI, estado o catalogación..." />
+                    </div>
+                    <Button type="button" onClick={handleExport} disabled={exporting || !data}>
+                      <Download className="mr-2 h-4 w-4" />
+                      {exporting
+                        ? "Generando..."
+                        : exportMode === "DEPURADO"
+                          ? "Descargar lote depurado"
+                          : "Descargar grupos seleccionados"}
                     </Button>
-                  );
-                })}
-              </div>
-
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <div className="relative flex-1">
-                  <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                    className="pl-9"
-                    placeholder="Buscar línea, nombre, DNI, compañía o base..."
-                  />
+                  </div>
                 </div>
-                <Button
-                  type="button"
-                  onClick={handleExport}
-                  disabled={exporting || selectedCount === 0}
-                >
-                  <Download className="mr-2 h-4 w-4" />
-                  {exporting
-                    ? "Generando..."
-                    : `Descargar Neotel (${selectedCount.toLocaleString("es-AR")})`}
-                </Button>
-              </div>
+              ) : null}
             </div>
 
             <div className="overflow-hidden rounded-lg border border-border">
@@ -489,6 +761,73 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
             3 REJECTED sin contacto efectivo.
           </p>
         </div>
+
+        <Dialog
+          open={Boolean(quickCategory)}
+          onOpenChange={(open) => {
+            if (!open && !quickExporting) setQuickCategory(null);
+          }}
+        >
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>{quickOption?.label ?? "Descargar lote"}</DialogTitle>
+              <DialogDescription>
+                Se generará un archivo Neotel únicamente con las líneas de este grupo.
+              </DialogDescription>
+            </DialogHeader>
+
+            <label className="space-y-1 text-xs text-muted-foreground">
+              <span>Rango histórico</span>
+              <select
+                value={quickRangeDays}
+                disabled={quickCategory === "NUNCA_TRABAJADO"}
+                onChange={(event) => setQuickRangeDays(Number(event.target.value))}
+                className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground disabled:opacity-70"
+              >
+                {quickCategory === "NUNCA_TRABAJADO" ? (
+                  <option value={0}>Todo el historial · sin llamadas previas</option>
+                ) : (
+                  <>
+                    <option value={7}>Últimos 7 días</option>
+                    <option value={30}>Últimos 30 días</option>
+                    <option value={60}>Últimos 60 días</option>
+                    <option value={90}>Últimos 90 días</option>
+                    <option value={0}>Todo el historial</option>
+                  </>
+                )}
+              </select>
+            </label>
+
+            <div className="border-y border-border py-4">
+              <p className="text-3xl font-bold text-foreground">
+                {quickCount.toLocaleString("es-AR")}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                líneas del grupo antes de aplicar el rango histórico
+              </p>
+              <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
+                {quickCategory === "DESCARTAR"
+                  ? "Este es un archivo de control: incluye descartes técnicos y exclusiones comerciales. No está pensado para volver a llamar."
+                  : "Las compras, fraudes, clientes molestos, líneas prepagas y líneas que ya pertenecen a Personal se excluirán por seguridad."}
+              </p>
+            </div>
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={quickExporting}
+                onClick={() => setQuickCategory(null)}
+              >
+                Cancelar
+              </Button>
+              <Button type="button" disabled={quickExporting} onClick={handleQuickExport}>
+                <Download className="mr-2 h-4 w-4" />
+                {quickExporting ? "Generando..." : "Descargar lote"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </CardContent>
     </Card>
   );

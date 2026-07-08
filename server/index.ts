@@ -3,6 +3,8 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+import path from "node:path";
+import { startNeotelFtpAutoSync } from "./neotelFtp.ts";
 
 const app = express();
 const httpServer = createServer(app);
@@ -82,6 +84,10 @@ function summarizeResponseForLog(body: Record<string, any>) {
 
 (async () => {
   await registerRoutes(httpServer, app);
+  startNeotelFtpAutoSync(
+    path.resolve(process.cwd(), "uploads_tmp"),
+    (message) => log(message, "neotel-ftp"),
+  );
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
