@@ -101,6 +101,18 @@ function downloadName(header: string | null) {
   return header?.match(/filename="?([^";]+)"?/i)?.[1] || "catalogacion_neotel.xls";
 }
 
+function formatSyncDate(value?: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("es-AR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 export function NeotelSourcesPanel({
   onLog,
   onLocalImportComplete,
@@ -172,6 +184,20 @@ export function NeotelSourcesPanel({
       })
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      refresh().catch((error) => {
+        onLog?.({
+          kind: "error",
+          title: "Conexion Neotel no disponible",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }, 60_000);
+
+    return () => window.clearInterval(interval);
+  }, [selectedReportDate]);
 
   const visibleCatalog = useMemo(() => {
     const query = catalogSearch.trim().toLowerCase();
@@ -416,6 +442,41 @@ export function NeotelSourcesPanel({
         totalAgents: selectedDateSummary.totalAgents,
       }
     : stats;
+  const syncStatus = status?.ftp.autoSync;
+  const syncState = !status?.ftp.configured
+    ? "pending"
+    : syncStatus?.running || syncing
+      ? "running"
+      : syncStatus?.lastError
+        ? "error"
+        : syncStatus?.lastSuccessAt
+          ? "synced"
+          : "pending";
+  const syncStateText =
+    syncState === "running"
+      ? "Sincronizando ahora"
+      : syncState === "synced"
+        ? "Sincronizado"
+        : syncState === "error"
+          ? "Revisar sincronizacion"
+          : "Pendiente de sincronizar";
+  const syncStateClass =
+    syncState === "running"
+      ? "border-primary/30 text-primary"
+      : syncState === "synced"
+        ? "border-success/30 text-success"
+        : syncState === "error"
+          ? "border-destructive/40 text-destructive"
+          : "border-warning/30 text-warning";
+  const syncDetail = syncStatus?.running || syncing
+    ? "Leyendo reportes nuevos del FTP."
+    : syncStatus?.lastError
+      ? `Ultimo error: ${syncStatus.lastError}`
+      : syncStatus?.lastSuccessAt
+        ? `Ultima sincronizacion correcta: ${formatSyncDate(syncStatus.lastSuccessAt)}`
+        : syncStatus?.lastAttemptAt
+          ? `Ultimo intento: ${formatSyncDate(syncStatus.lastAttemptAt)}`
+          : "Todavia no se registro una sincronizacion.";
 
   return (
     <Card className={cn(sidebar ? "h-full rounded-none border-0 bg-transparent shadow-none" : "glass-card border-primary/15 bg-background/70")}>
@@ -445,12 +506,27 @@ export function NeotelSourcesPanel({
                       : `Automático · ${status.ftp.autoSync.intervalMinutes} min`}
                   </Badge>
                 ) : null}
+                {status ? (
+                  <Badge variant="outline" className={syncStateClass}>
+                    {syncStateText}
+                  </Badge>
+                ) : null}
               </div>
               <p className="mt-1 truncate text-xs text-muted-foreground">
                 {status
                   ? `${status.ftp.user}@${status.ftp.host}:${status.ftp.port}${status.ftp.remotePath}`
                   : "Leyendo configuración..."}
               </p>
+              {status ? (
+                <p
+                  className={cn(
+                    "mt-1 text-xs",
+                    syncState === "error" ? "text-destructive" : "text-muted-foreground",
+                  )}
+                >
+                  {syncDetail}
+                </p>
+              ) : null}
             </div>
           </div>
 

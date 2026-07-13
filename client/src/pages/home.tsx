@@ -1226,6 +1226,74 @@ export default function Home() {
     );
   };
 
+  const latestAnalysisLogIndex = operationLog.findIndex(
+    (entry) => entry.kind === "analysis",
+  );
+  const hasCompletedExport = operationLog
+    .slice(0, latestAnalysisLogIndex < 0 ? operationLog.length : latestAnalysisLogIndex)
+    .some((entry) => entry.kind === "export");
+  const workflowSteps = workspaceMode === "operar"
+    ? [
+        { label: "Datos cargados", status: "complete" as const, target: "history", tab: "filtros" },
+        {
+          label: "Filtrar y depurar",
+          status: hasCompletedExport || activeDashboardTab === "depuracion"
+            ? "complete" as const
+            : activeDashboardTab === "filtros" ? "current" as const : "pending" as const,
+          target: "dashboard",
+          tab: "filtros",
+        },
+        {
+          label: "Priorizar",
+          status: hasCompletedExport
+            ? "complete" as const
+            : activeDashboardTab === "depuracion" ? "current" as const : "pending" as const,
+          target: "dashboard",
+          tab: "depuracion",
+        },
+        {
+          label: "Exportar lote",
+          status: hasCompletedExport ? "complete" as const : "pending" as const,
+          target: "dashboard",
+          tab: "depuracion",
+        },
+      ]
+    : [
+        {
+          label: "Historial disponible",
+          status: localHistoryFiles.length > 0 ? "complete" as const : "pending" as const,
+          target: "history",
+          tab: "resumen",
+        },
+        {
+          label: "Alcance elegido",
+          status: activeAnalysis ? "complete" as const : "current" as const,
+          target: "history",
+          tab: "resumen",
+        },
+        {
+          label: "Análisis generado",
+          status: analysisResult ? "complete" as const : "pending" as const,
+          target: "dashboard",
+          tab: "resumen",
+        },
+        {
+          label: "Revisar prioridades",
+          status: analysisResult ? "current" as const : "pending" as const,
+          target: "dashboard",
+          tab: "resumen",
+        },
+      ];
+
+  const navigateWorkflow = (target: string, tab: string) => {
+    if (target === "dashboard") setActiveDashboardTab(tab);
+    window.requestAnimationFrame(() => {
+      document.getElementById(
+        target === "history" ? "history-tickets" : "analysis-dashboard",
+      )?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  };
+
   return (
     <div className="min-h-screen overflow-x-hidden bg-background text-foreground">
       <Header />
@@ -1357,7 +1425,7 @@ export default function Home() {
           </Card>
         </section>
 
-        <section className="mb-4">
+        <section id="history-tickets" className="mb-4 scroll-mt-16">
           <Card className="glass-card overflow-hidden border-border/70 bg-background/70">
             <CardContent className="p-4">
                 <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1710,6 +1778,7 @@ export default function Home() {
 
         {analysisResult && !uploadMutation.isPending && (
           <Tabs
+            id="analysis-dashboard"
             value={activeDashboardTab}
             onValueChange={setActiveDashboardTab}
             className="space-y-6"
@@ -1747,6 +1816,49 @@ export default function Home() {
                 <BarChart3 className="h-4 w-4" />
                 Analizar / Entender
               </button>
+            </section>
+
+            <section className="mb-3 overflow-x-auto border border-border bg-background/70" aria-label="Ruta de trabajo actual">
+              <div className="flex min-w-[680px] items-stretch">
+                <div className="flex w-32 shrink-0 items-center border-r border-border px-3 py-2">
+                  <span className="text-[10px] font-bold uppercase text-muted-foreground">
+                    {workspaceMode === "operar" ? "Ruta operativa" : "Ruta de análisis"}
+                  </span>
+                </div>
+                {workflowSteps.map((step, index) => (
+                  <button
+                    key={step.label}
+                    type="button"
+                    onClick={() => navigateWorkflow(step.target, step.tab)}
+                    className={cn(
+                      "relative flex min-h-12 flex-1 items-center gap-2 border-r border-border px-3 py-2 text-left text-xs transition-colors last:border-r-0 hover:bg-muted/40",
+                      step.status === "current" && "bg-primary/10 text-primary",
+                      step.status === "complete" && "text-foreground",
+                      step.status === "pending" && "text-muted-foreground",
+                    )}
+                    aria-current={step.status === "current" ? "step" : undefined}
+                  >
+                    {step.status === "complete" ? (
+                      <CheckCircle2 className="h-4 w-4 shrink-0 text-primary" />
+                    ) : (
+                      <span
+                        className={cn(
+                          "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[10px] font-bold",
+                          step.status === "current"
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-border",
+                        )}
+                      >
+                        {index + 1}
+                      </span>
+                    )}
+                    <span className="font-semibold">{step.label}</span>
+                    {step.status === "current" ? (
+                      <span className="absolute inset-x-0 bottom-0 h-0.5 bg-primary" />
+                    ) : null}
+                  </button>
+                ))}
+              </div>
             </section>
 
             <div className="sticky top-12 z-40 mb-2 rounded-md bg-background/90 py-1 backdrop-blur lg:fixed lg:right-2 lg:top-14 lg:mb-0 lg:bg-transparent lg:p-0">

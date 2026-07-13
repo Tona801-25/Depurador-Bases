@@ -348,6 +348,14 @@ type FuzzionCategory =
   | "REINTENTAR_MEJOR_FRANJA"
   | "DESCARTAR";
 
+type FuzzionRules = {
+  unallocatedDescartar: number;
+  rejectedDescartar: number;
+  totalSaturado: number;
+  noAnswerSaturado: number;
+  buzonSaturado: number;
+};
+
 type FuzzionLead = {
   rowNumber: number;
   linea: string;
@@ -392,6 +400,30 @@ type FuzzionSession = {
 
 const fuzzionSessions = new Map<string, FuzzionSession>();
 
+const DEFAULT_FUZZION_RULES: FuzzionRules = {
+  unallocatedDescartar: 3,
+  rejectedDescartar: 3,
+  totalSaturado: 9,
+  noAnswerSaturado: 6,
+  buzonSaturado: 5,
+};
+
+function parseFuzzionRules(input: unknown): FuzzionRules {
+  const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const read = (key: keyof FuzzionRules) => {
+    const value = Math.floor(Number(raw[key]));
+    return Number.isFinite(value) && value > 0 ? value : DEFAULT_FUZZION_RULES[key];
+  };
+
+  return {
+    unallocatedDescartar: read("unallocatedDescartar"),
+    rejectedDescartar: read("rejectedDescartar"),
+    totalSaturado: read("totalSaturado"),
+    noAnswerSaturado: read("noAnswerSaturado"),
+    buzonSaturado: read("buzonSaturado"),
+  };
+}
+
 function normalizeHeader(value: unknown) {
   return String(value ?? "")
     .trim()
@@ -421,7 +453,10 @@ function getFuzzionText(
   return String(getFuzzionValue(row, candidates) ?? "").trim();
 }
 
-function classifyFuzzionLead(summary?: LocalAniHistorySummary) {
+function classifyFuzzionLead(
+  summary?: LocalAniHistorySummary,
+  rules: FuzzionRules = DEFAULT_FUZZION_RULES,
+) {
   const categories: FuzzionCategory[] = [];
 
   if (!summary || summary.intentosTotales === 0) {
@@ -431,12 +466,12 @@ function classifyFuzzionLead(summary?: LocalAniHistorySummary) {
 
   const contactado = summary.intentosAnswerAgent > 0;
   const descartar =
-    summary.intentosUnallocated >= 3 ||
-    (summary.intentosRejected >= 3 && !contactado);
+    summary.intentosUnallocated >= rules.unallocatedDescartar ||
+    (summary.intentosRejected >= rules.rejectedDescartar && !contactado);
   const saturado =
-    summary.intentosTotales >= 9 ||
-    summary.intentosNoAnswer >= 6 ||
-    summary.intentosAnsweringMachine >= 5;
+    summary.intentosTotales >= rules.totalSaturado ||
+    summary.intentosNoAnswer >= rules.noAnswerSaturado ||
+    summary.intentosAnsweringMachine >= rules.buzonSaturado;
 
   if (contactado) categories.push("CONTACTADO");
   if (summary.intentosAnsweringMachine > 0 && !contactado) {
@@ -449,6 +484,39 @@ function classifyFuzzionLead(summary?: LocalAniHistorySummary) {
     !saturado &&
     summary.intentosTotales > 0
   ) {
+    categories.push("REINTENTAR_MEJOR_FRANJA");
+  }
+  if (descartar) categories.push("DESCARTAR");
+
+  return categories;
+}
+
+function getFuzzionLeadCategories(
+  lead: FuzzionLead,
+  rules: FuzzionRules = DEFAULT_FUZZION_RULES,
+) {
+  const categories: FuzzionCategory[] = [];
+
+  if (lead.intentosTotales === 0) {
+    categories.push("NUNCA_TRABAJADO", "NO_SATURADO");
+    if (lead.exclusionComercial) categories.push("DESCARTAR");
+    return categories;
+  }
+
+  const contactado = lead.contactosEfectivos > 0;
+  const descartar =
+    lead.invalidos >= rules.unallocatedDescartar ||
+    (lead.rechazados >= rules.rejectedDescartar && !contactado) ||
+    lead.exclusionComercial;
+  const saturado =
+    lead.intentosTotales >= rules.totalSaturado ||
+    lead.noAnswer >= rules.noAnswerSaturado ||
+    lead.buzones >= rules.buzonSaturado;
+
+  if (contactado) categories.push("CONTACTADO");
+  if (lead.buzones > 0 && !contactado) categories.push("BUZON_SIN_CONTACTO");
+  if (!saturado) categories.push("NO_SATURADO");
+  if (!contactado && !descartar && !saturado) {
     categories.push("REINTENTAR_MEJOR_FRANJA");
   }
   if (descartar) categories.push("DESCARTAR");
@@ -479,12 +547,14 @@ function filterFuzzionLeads(
   filterValues: string[] = [],
   rangeDays = 0,
   exportMode: FuzzionExportMode = "SEGMENTO",
+  rules: FuzzionRules = DEFAULT_FUZZION_RULES,
 ) {
   const query = search.trim().toLowerCase();
   const cutoff = rangeDays > 0 ? Date.now() - rangeDays * 86400000 : 0;
 
   return leads.filter((lead) => {
-    if (exportMode === "DEPURADO" && lead.categorias.includes("DESCARTAR")) return false;
+    const leadCategories = getFuzzionLeadCategories(lead, rules);
+    if (exportMode === "DEPURADO" && leadCategories.includes("DESCARTAR")) return false;
     const reviewingExcludedCatalog =
       exportMode === "SEGMENTO" &&
       filterMode === "CATALOGACION" &&
@@ -500,7 +570,7 @@ function filterFuzzionLeads(
       !reviewingDiscardGroup
     ) return false;
     if (filterMode === "RECOMENDACION" && categories.length > 0 && !categories.some(
-      (category) => lead.categorias.includes(category),
+      (category) => leadCategories.includes(category),
     )) return false;
     if (filterMode === "ESTADO" && filterValues.length > 0 && !filterValues.includes(
       `${lead.ultimoEstado} | ${lead.ultimoSubestado}`,
@@ -530,6 +600,142 @@ function filterFuzzionLeads(
     if (!query) return true;
     return [lead.linea, lead.razonSocial, lead.documento, lead.mercadoActual, lead.planActual, lead.planSugerido, lead.localidad, lead.ultimoEstado, lead.ultimoSubestado, lead.resultadoGestion, lead.subresultadoGestion, ...lead.bases]
       .some((value) => String(value).toLowerCase().includes(query));
+  });
+}
+
+function getFuzzionDiscardReason(
+  lead: FuzzionLead,
+  rules: FuzzionRules = DEFAULT_FUZZION_RULES,
+) {
+  const technicalReasons: string[] = [];
+  if (lead.invalidos >= rules.unallocatedDescartar) {
+    technicalReasons.push(`UNALLOCATED ${rules.unallocatedDescartar}+`);
+  }
+  if (lead.rechazados >= rules.rejectedDescartar && lead.contactosEfectivos === 0) {
+    technicalReasons.push(`REJECTED ${rules.rejectedDescartar}+ sin contacto`);
+  }
+  return technicalReasons;
+}
+
+function buildFuzzionComposition(
+  leads: FuzzionLead[],
+  rules: FuzzionRules = DEFAULT_FUZZION_RULES,
+) {
+  const discarded = leads.filter((lead) => getFuzzionLeadCategories(lead, rules).includes("DESCARTAR"));
+  const technicalDiscarded = discarded.filter(
+    (lead) => getFuzzionDiscardReason(lead, rules).length > 0,
+  );
+  const commercialDiscarded = discarded.filter((lead) => lead.exclusionComercial);
+  const bothDiscarded = discarded.filter(
+    (lead) => lead.exclusionComercial && getFuzzionDiscardReason(lead).length > 0,
+  );
+
+  const countBy = (values: string[]) => {
+    const counts = new Map<string, number>();
+    for (const value of values) {
+      const key = value.trim() || "Sin dato";
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .map(([label, count]) => ({ label, count }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+  };
+
+  const highAttempts = leads
+    .filter((lead) => lead.intentosTotales >= 20)
+    .sort((a, b) => b.intentosTotales - a.intentosTotales);
+  const maxIntentos = leads.reduce(
+    (max, lead) => Math.max(max, lead.intentosTotales),
+    0,
+  );
+
+  return {
+    totalLineas: leads.length,
+    loteDepurado: leads.length - discarded.length,
+    descartadas: discarded.length,
+    descarteTecnico: technicalDiscarded.length,
+    descarteComercial: commercialDiscarded.length,
+    descarteTecnicoYComercial: bothDiscarded.length,
+    con20IntentosOMas: highAttempts.length,
+    maxIntentos,
+    descartesPorMotivo: countBy([
+      ...technicalDiscarded.flatMap((lead) => getFuzzionDiscardReason(lead, rules)),
+      ...commercialDiscarded.map((lead) => lead.motivoExclusion || "Exclusion comercial"),
+    ]),
+    descartesPorEstado: countBy(
+      discarded.map((lead) => `${lead.ultimoEstado || "Sin estado"} | ${lead.ultimoSubestado || "Sin subestado"}`),
+    ),
+    intentosAltos: highAttempts.slice(0, 10).map((lead) => ({
+      linea: lead.linea,
+      razonSocial: lead.razonSocial,
+      intentosTotales: lead.intentosTotales,
+      ultimoEstado: lead.ultimoEstado,
+      ultimoSubestado: lead.ultimoSubestado,
+      lectura: lead.exclusionComercial
+        ? lead.motivoExclusion
+        : getFuzzionLeadCategories(lead, rules).includes("CONTACTADO")
+          ? "Contacto efectivo"
+          : getFuzzionLeadCategories(lead, rules).includes("BUZON_SIN_CONTACTO")
+            ? "Buzon sin contacto"
+            : getFuzzionLeadCategories(lead, rules).includes("DESCARTAR")
+              ? "Descarte tecnico"
+              : "Con historial",
+    })),
+  };
+}
+
+function countUniqueFuzzionLines(leads: FuzzionLead[]) {
+  return new Set(leads.map((lead) => lead.linea).filter(Boolean)).size;
+}
+
+function buildFuzzionStats(
+  leads: FuzzionLead[],
+  rules: FuzzionRules = DEFAULT_FUZZION_RULES,
+) {
+  const countCategory = (category: FuzzionCategory) =>
+    leads.filter((lead) => getFuzzionLeadCategories(lead, rules).includes(category)).length;
+
+  return {
+    nuncaTrabajados: countCategory("NUNCA_TRABAJADO"),
+    contactados: countCategory("CONTACTADO"),
+    buzonesSinContacto: countCategory("BUZON_SIN_CONTACTO"),
+    noSaturados: countCategory("NO_SATURADO"),
+    reintentarMejorFranja: countCategory("REINTENTAR_MEJOR_FRANJA"),
+    descartar: countCategory("DESCARTAR"),
+  };
+}
+
+function buildFuzzionSelectionBreakdown(
+  session: FuzzionSession,
+  filterMode: FuzzionFilterMode,
+  categories: FuzzionCategory[],
+  filterValues: string[],
+  search: string,
+  rangeDays: number,
+  exportMode: FuzzionExportMode,
+  rules: FuzzionRules = DEFAULT_FUZZION_RULES,
+) {
+  const selectedValues = filterMode === "RECOMENDACION" ? categories : filterValues;
+  if (exportMode === "DEPURADO" || selectedValues.length === 0) return [];
+
+  return selectedValues.map((value) => {
+    const itemCategories = filterMode === "RECOMENDACION" ? [value as FuzzionCategory] : categories;
+    const itemFilterValues = filterMode === "RECOMENDACION" ? filterValues : [value];
+    const filtered = filterFuzzionLeads(
+      session.leads,
+      itemCategories,
+      search,
+      filterMode,
+      itemFilterValues,
+      rangeDays,
+      exportMode,
+      rules,
+    );
+    return {
+      value,
+      label: value,
+      count: countUniqueFuzzionLines(filtered),
+    };
   });
 }
 
@@ -1171,8 +1377,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (oldest) fuzzionSessions.delete(oldest.id);
       }
 
-      const countCategory = (category: FuzzionCategory) =>
-        leads.filter((lead) => lead.categorias.includes(category)).length;
+      const allCatalogOptions = Array.from(new Set(getGestionCatalog()
+        .map((item) => {
+          const catalog = item as { resultado?: string; subresultado?: string };
+          return `${catalog.resultado ?? ""} | ${catalog.subresultado ?? ""}`;
+        })
+        .filter((value) => value.replace(/\s|\|/g, "").length > 0)));
 
       return res.json({
         id: session.id,
@@ -1180,21 +1390,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         totalRows: rows.length,
         validRows: leads.length,
         uniqueAnis: new Set(leads.map((lead) => lead.linea)).size,
-        stats: {
-          nuncaTrabajados: countCategory("NUNCA_TRABAJADO"),
-          contactados: countCategory("CONTACTADO"),
-          buzonesSinContacto: countCategory("BUZON_SIN_CONTACTO"),
-          noSaturados: countCategory("NO_SATURADO"),
-          reintentarMejorFranja: countCategory("REINTENTAR_MEJOR_FRANJA"),
-          descartar: countCategory("DESCARTAR"),
-        },
+        stats: buildFuzzionStats(leads),
+        composition: buildFuzzionComposition(leads),
         filterOptions: {
           estados: Array.from(new Set(leads
             .filter((lead) => lead.ultimoEstado || lead.ultimoSubestado)
             .map((lead) => `${lead.ultimoEstado} | ${lead.ultimoSubestado}`))).sort(),
-          catalogaciones: Array.from(new Set(leads
-            .flatMap((lead) => lead.catalogacionesGestion)
-            .map((item) => `${item.resultado} | ${item.subresultado}`))).sort(),
+          catalogaciones: allCatalogOptions,
         },
         preview: leads.slice(0, 250).map(({ originalRow, ...lead }) => lead),
       });
@@ -1207,6 +1409,79 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } finally {
       fs.rmSync(uploadedFile.path, { force: true });
     }
+  });
+
+  app.get("/api/fuzzion/:id/composition", (req, res) => {
+    const session = fuzzionSessions.get(req.params.id);
+    if (!session) {
+      return res.status(404).json({
+        message: "La base Fuzzion ya no esta disponible. Volve a cargarla.",
+      });
+    }
+
+    return res.json(buildFuzzionComposition(session.leads));
+  });
+
+  app.post("/api/fuzzion/:id/stats", (req, res) => {
+    const session = fuzzionSessions.get(req.params.id);
+    if (!session) {
+      return res.status(404).json({
+        message: "La base Fuzzion ya no esta disponible. Volve a cargarla.",
+      });
+    }
+
+    const rules = parseFuzzionRules(req.body?.rules);
+    return res.json(buildFuzzionStats(session.leads, rules));
+  });
+
+  app.post("/api/fuzzion/:id/count", (req, res) => {
+    const session = fuzzionSessions.get(req.params.id);
+    if (!session) {
+      return res.status(404).json({
+        message: "La base Fuzzion ya no esta disponible. Volve a cargarla.",
+      });
+    }
+
+    const legacyCategory = String(req.body?.category || "TODOS") as FuzzionCategory;
+    const categories = Array.isArray(req.body?.categories)
+      ? req.body.categories.map(String) as FuzzionCategory[]
+      : legacyCategory === "TODOS" ? [] : [legacyCategory];
+    const search = String(req.body?.search || "");
+    const filterMode = String(req.body?.filterMode || "RECOMENDACION") as FuzzionFilterMode;
+    const legacyFilterValue = String(req.body?.filterValue || "");
+    const filterValues = Array.isArray(req.body?.filterValues)
+      ? req.body.filterValues.map(String).filter(Boolean)
+      : legacyFilterValue ? [legacyFilterValue] : [];
+    const rangeDays = Math.max(0, Number(req.body?.rangeDays) || 0);
+    const exportMode = String(req.body?.exportMode || "SEGMENTO") as FuzzionExportMode;
+    const rules = parseFuzzionRules(req.body?.rules);
+
+    const filtered = filterFuzzionLeads(
+      session.leads,
+      categories,
+      search,
+      filterMode,
+      filterValues,
+      rangeDays,
+      exportMode,
+      rules,
+    );
+
+    return res.json({
+      rows: filtered.length,
+      exportableLines: countUniqueFuzzionLines(filtered),
+      composition: buildFuzzionComposition(filtered, rules),
+      selections: buildFuzzionSelectionBreakdown(
+        session,
+        filterMode,
+        categories,
+        filterValues,
+        search,
+        rangeDays,
+        exportMode,
+        rules,
+      ),
+    });
   });
 
   app.post("/api/fuzzion/:id/export", async (req, res) => {
@@ -1229,6 +1504,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       : legacyFilterValue ? [legacyFilterValue] : [];
     const rangeDays = Math.max(0, Number(req.body?.rangeDays) || 0);
     const exportMode = String(req.body?.exportMode || "SEGMENTO") as FuzzionExportMode;
+    const rules = parseFuzzionRules(req.body?.rules);
     const allowedCategories: FuzzionCategory[] = [
       "TODOS",
       "NUNCA_TRABAJADO",
@@ -1254,6 +1530,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       filterValues,
       rangeDays,
       exportMode,
+      rules,
     );
     const neotelRows = buildFuzzionNeotelRows(filtered);
     if (neotelRows.length === 0) {

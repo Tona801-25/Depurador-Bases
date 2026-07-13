@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
   ChevronDown,
@@ -39,6 +39,23 @@ type FuzzionCategory =
 type FuzzionFilterMode = "RECOMENDACION" | "ESTADO" | "CATALOGACION";
 type FuzzionExportMode = "DEPURADO" | "SEGMENTO";
 
+type FuzzionStats = {
+  nuncaTrabajados: number;
+  contactados: number;
+  buzonesSinContacto: number;
+  noSaturados: number;
+  reintentarMejorFranja: number;
+  descartar: number;
+};
+
+type FuzzionRules = {
+  unallocatedDescartar: number;
+  rejectedDescartar: number;
+  totalSaturado: number;
+  noAnswerSaturado: number;
+  buzonSaturado: number;
+};
+
 type FuzzionLeadPreview = {
   rowNumber: number;
   linea: string;
@@ -73,22 +90,44 @@ type FuzzionLeadPreview = {
   motivoExclusion: string;
 };
 
+type FuzzionComposition = {
+  totalLineas: number;
+  loteDepurado: number;
+  descartadas: number;
+  descarteTecnico: number;
+  descarteComercial: number;
+  descarteTecnicoYComercial: number;
+  con20IntentosOMas: number;
+  maxIntentos: number;
+  descartesPorMotivo: Array<{ label: string; count: number }>;
+  descartesPorEstado: Array<{ label: string; count: number }>;
+  intentosAltos: Array<{
+    linea: string;
+    razonSocial: string;
+    intentosTotales: number;
+    ultimoEstado: string;
+    ultimoSubestado: string;
+    lectura: string;
+  }>;
+};
+
+type FuzzionSelectionSummary = {
+  rows: number;
+  exportableLines: number;
+  composition: FuzzionComposition;
+  selections: Array<{ value: string; label: string; count: number }>;
+};
+
 type FuzzionPreview = {
   id: string;
   fileName: string;
   totalRows: number;
   validRows: number;
   uniqueAnis: number;
-  stats: {
-    nuncaTrabajados: number;
-    contactados: number;
-    buzonesSinContacto: number;
-    noSaturados: number;
-    reintentarMejorFranja: number;
-    descartar: number;
-  };
+  stats: FuzzionStats;
   filterOptions: { estados: string[]; catalogaciones: string[] };
   preview: FuzzionLeadPreview[];
+  composition?: FuzzionComposition;
 };
 
 type FuzzionTabProps = {
@@ -172,6 +211,42 @@ function isExcludedCommercialCatalog(value: string) {
 
 type MultiOption = { value: string; label: string };
 
+const DEFAULT_FUZZION_RULES: FuzzionRules = {
+  unallocatedDescartar: 3,
+  rejectedDescartar: 3,
+  totalSaturado: 9,
+  noAnswerSaturado: 6,
+  buzonSaturado: 5,
+};
+
+function getLeadCategories(lead: FuzzionLeadPreview, rules: FuzzionRules) {
+  const categories: FuzzionCategory[] = [];
+  if (lead.intentosTotales === 0) {
+    categories.push("NUNCA_TRABAJADO", "NO_SATURADO");
+    if (lead.exclusionComercial) categories.push("DESCARTAR");
+    return categories;
+  }
+
+  const contactado = lead.contactosEfectivos > 0;
+  const descartar =
+    lead.invalidos >= rules.unallocatedDescartar ||
+    (lead.rechazados >= rules.rejectedDescartar && !contactado) ||
+    lead.exclusionComercial;
+  const saturado =
+    lead.intentosTotales >= rules.totalSaturado ||
+    lead.noAnswer >= rules.noAnswerSaturado ||
+    lead.buzones >= rules.buzonSaturado;
+
+  if (contactado) categories.push("CONTACTADO");
+  if (lead.buzones > 0 && !contactado) categories.push("BUZON_SIN_CONTACTO");
+  if (!saturado) categories.push("NO_SATURADO");
+  if (!contactado && !descartar && !saturado) {
+    categories.push("REINTENTAR_MEJOR_FRANJA");
+  }
+  if (descartar) categories.push("DESCARTAR");
+  return categories;
+}
+
 function MultiCheckSelect({
   options,
   values,
@@ -233,18 +308,26 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const [data, setData] = useState<FuzzionPreview | null>(null);
+  const [composition, setComposition] = useState<FuzzionComposition | null>(null);
   const [selectedCategories, setSelectedCategories] = useState<FuzzionCategory[]>([]);
   const [search, setSearch] = useState("");
   const [filterMode, setFilterMode] = useState<FuzzionFilterMode>("RECOMENDACION");
   const [exportMode, setExportMode] = useState<FuzzionExportMode>("DEPURADO");
   const [filterValues, setFilterValues] = useState<string[]>([]);
   const [rangeDays, setRangeDays] = useState(0);
+  const [compositionOpen, setCompositionOpen] = useState(true);
   const [configOpen, setConfigOpen] = useState(false);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [fuzzionRules, setFuzzionRules] = useState<FuzzionRules>(DEFAULT_FUZZION_RULES);
   const [uploading, setUploading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [quickCategory, setQuickCategory] = useState<FuzzionCategory | null>(null);
   const [quickExporting, setQuickExporting] = useState(false);
   const [quickRangeDays, setQuickRangeDays] = useState(7);
+  const [selectedExportCount, setSelectedExportCount] = useState<number | null>(null);
+  const [selectionSummary, setSelectionSummary] = useState<FuzzionSelectionSummary | null>(null);
+  const [countingSelection, setCountingSelection] = useState(false);
+  const [ruleStats, setRuleStats] = useState<FuzzionStats | null>(null);
 
   const filterChoices = useMemo(() => {
     if (!data) return [];
@@ -256,9 +339,121 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
   const quickOption = categoryOptions.find(
     (option) => option.value === quickCategory,
   );
-  const quickCount = quickOption?.stat && data
-    ? data.stats[quickOption.stat]
+  const dynamicStats = ruleStats ?? data?.stats ?? {
+    nuncaTrabajados: 0,
+    contactados: 0,
+    buzonesSinContacto: 0,
+    noSaturados: 0,
+    reintentarMejorFranja: 0,
+    descartar: 0,
+  };
+
+  const quickCount = quickOption?.stat
+    ? dynamicStats[quickOption.stat]
     : 0;
+
+  useEffect(() => {
+    if (!data) {
+      setComposition(null);
+      return;
+    }
+    if (data.composition) {
+      setComposition(data.composition);
+      return;
+    }
+
+    fetch(`/api/fuzzion/${data.id}/composition`)
+      .then((response) => {
+        if (!response.ok) throw new Error("No se pudo leer la composicion del lote.");
+        return response.json();
+      })
+      .then((payload: FuzzionComposition) => setComposition(payload))
+      .catch(() => setComposition(null));
+  }, [data]);
+
+  useEffect(() => {
+    if (!data) {
+      setRuleStats(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    setRuleStats(data.stats);
+    fetch(`/api/fuzzion/${data.id}/stats`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rules: fuzzionRules }),
+      signal: controller.signal,
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error("No se pudieron recalcular las tarjetas.");
+        return response.json();
+      })
+      .then((payload: FuzzionStats) => setRuleStats(payload))
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setRuleStats(data.stats);
+      });
+
+    return () => controller.abort();
+  }, [data, fuzzionRules]);
+
+  useEffect(() => {
+    if (!data) {
+      setSelectedExportCount(null);
+      setSelectionSummary(null);
+      setCountingSelection(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    setCountingSelection(true);
+    const timeout = window.setTimeout(() => {
+      controller.abort();
+      setCountingSelection(false);
+      setSelectedExportCount(null);
+      setSelectionSummary(null);
+    }, 4_000);
+    const timer = window.setTimeout(() => {
+      fetch(`/api/fuzzion/${data.id}/count`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          categories: selectedCategories,
+          search,
+          filterMode,
+          filterValues,
+          rangeDays,
+          exportMode,
+          rules: fuzzionRules,
+        }),
+        signal: controller.signal,
+      })
+        .then((response) => {
+        if (!response.ok) throw new Error("No se pudo contar la selección.");
+          return response.json();
+        })
+        .then((payload: FuzzionSelectionSummary) => {
+          setSelectedExportCount(payload.exportableLines);
+          setSelectionSummary(payload);
+        })
+        .catch((error) => {
+          if (error instanceof DOMException && error.name === "AbortError") return;
+          setSelectedExportCount(null);
+          setSelectionSummary(null);
+        })
+        .finally(() => {
+          window.clearTimeout(timeout);
+          if (!controller.signal.aborted) setCountingSelection(false);
+        });
+    }, 250);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timeout);
+      window.clearTimeout(timer);
+    };
+  }, [data, exportMode, filterMode, filterValues, fuzzionRules, rangeDays, search, selectedCategories]);
 
   const multiOptions = useMemo<MultiOption[]>(() => {
     if (filterMode === "RECOMENDACION") {
@@ -269,20 +464,40 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
     return filterChoices.map((value) => ({ value, label: value }));
   }, [filterChoices, filterMode]);
 
+  const displayedComposition = selectionSummary?.composition ?? composition;
+  const showingSelectionComposition = Boolean(selectionSummary);
+  const selectedBreakdown = selectionSummary?.selections.map((item) => ({
+    ...item,
+    label:
+      filterMode === "RECOMENDACION"
+        ? categoryOptions.find((option) => option.value === item.value)?.label || item.label
+        : item.label,
+  })) ?? [];
+
   const visiblePreview = useMemo(() => {
     if (!data) return [];
     const query = search.trim().toLowerCase();
     const cutoff = rangeDays > 0 ? Date.now() - rangeDays * 86400000 : 0;
 
     return data.preview.filter((lead) => {
-      if (exportMode === "DEPURADO" && lead.categorias.includes("DESCARTAR")) return false;
+      const leadCategories = getLeadCategories(lead, fuzzionRules);
+      if (exportMode === "DEPURADO" && leadCategories.includes("DESCARTAR")) return false;
       const reviewingExcludedCatalog =
         exportMode === "SEGMENTO" &&
         filterMode === "CATALOGACION" &&
         filterValues.some(isExcludedCommercialCatalog);
-      if (exportMode === "SEGMENTO" && lead.exclusionComercial && !reviewingExcludedCatalog) return false;
+      const reviewingDiscardGroup =
+        exportMode === "SEGMENTO" &&
+        filterMode === "RECOMENDACION" &&
+        selectedCategories.includes("DESCARTAR");
+      if (
+        exportMode === "SEGMENTO" &&
+        lead.exclusionComercial &&
+        !reviewingExcludedCatalog &&
+        !reviewingDiscardGroup
+      ) return false;
       if (filterMode === "RECOMENDACION" && selectedCategories.length > 0 && !selectedCategories.some(
-        (category) => lead.categorias.includes(category),
+        (category) => leadCategories.includes(category),
       )) return false;
       if (filterMode === "ESTADO" && filterValues.length > 0 && !filterValues.includes(
         `${lead.ultimoEstado} | ${lead.ultimoSubestado}`,
@@ -313,13 +528,16 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
       return [lead.linea, lead.razonSocial, lead.documento, lead.mercadoActual, lead.planActual, lead.ultimoEstado, lead.ultimoSubestado, lead.resultadoGestion, lead.subresultadoGestion, ...lead.bases]
         .some((value) => String(value).toLowerCase().includes(query));
     });
-  }, [data, exportMode, filterMode, filterValues, rangeDays, search, selectedCategories]);
+  }, [data, exportMode, filterMode, filterValues, fuzzionRules, rangeDays, search, selectedCategories]);
 
   async function handleFile(file?: File) {
     if (!file) return;
 
     setUploading(true);
     setData(null);
+    setComposition(null);
+    setRuleStats(null);
+    setSelectionSummary(null);
     setSelectedCategories([]);
     setExportMode("DEPURADO");
     setFilterMode("RECOMENDACION");
@@ -385,6 +603,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
           filterValues,
           rangeDays,
           exportMode,
+          rules: fuzzionRules,
         }),
       });
 
@@ -449,6 +668,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
           filterValues: [],
           rangeDays: quickRangeDays,
           exportMode: "SEGMENTO",
+          rules: fuzzionRules,
         }),
       });
 
@@ -526,16 +746,28 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
       <CardContent className="space-y-4">
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
           {[
-            { category: "NUNCA_TRABAJADO" as const, label: "Nunca trabajados", count: data?.stats.nuncaTrabajados ?? 0, valueClass: "text-foreground", cardClass: "border-border bg-background" },
-            { category: "CONTACTADO" as const, label: "Con contacto efectivo", count: data?.stats.contactados ?? 0, valueClass: "text-success", cardClass: "border-border bg-background" },
+            { category: "NUNCA_TRABAJADO" as const, label: "Nunca trabajados", count: dynamicStats.nuncaTrabajados, valueClass: "text-foreground", cardClass: "border-border bg-background" },
+            { category: "CONTACTADO" as const, label: "Con contacto efectivo", count: dynamicStats.contactados, valueClass: "text-success", cardClass: "border-border bg-background" },
             { category: "BUZON_SIN_CONTACTO" as const, label: "Con buzón y sin contacto", count: data?.stats.buzonesSinContacto ?? 0, valueClass: "text-warning", cardClass: "border-border bg-background" },
-            { category: "REINTENTAR_MEJOR_FRANJA" as const, label: "Aptos para reintento", count: data?.stats.reintentarMejorFranja ?? 0, valueClass: "text-primary", cardClass: "border-border bg-background" },
+            { category: "REINTENTAR_MEJOR_FRANJA" as const, label: "Aptos para reintento", count: dynamicStats.reintentarMejorFranja, valueClass: "text-primary", cardClass: "border-border bg-background" },
             { category: "DESCARTAR" as const, label: "Con señal de descarte", count: data?.stats.descartar ?? 0, valueClass: "text-destructive", cardClass: "border-destructive/25 bg-destructive/5" },
-          ].map((item) => (
+          ].map((item) => {
+            const countByCategory: Record<FuzzionCategory, number> = {
+              TODOS: data?.validRows ?? 0,
+              NUNCA_TRABAJADO: dynamicStats.nuncaTrabajados,
+              CONTACTADO: dynamicStats.contactados,
+              BUZON_SIN_CONTACTO: dynamicStats.buzonesSinContacto,
+              NO_SATURADO: dynamicStats.noSaturados,
+              REINTENTAR_MEJOR_FRANJA: dynamicStats.reintentarMejorFranja,
+              DESCARTAR: dynamicStats.descartar,
+            };
+            const count = countByCategory[item.category];
+
+            return (
             <button
               key={item.category}
               type="button"
-              disabled={!data || item.count === 0}
+              disabled={!data || count === 0}
               onClick={() => {
                 setQuickCategory(item.category);
                 setQuickRangeDays(item.category === "NUNCA_TRABAJADO" ? 0 : 7);
@@ -545,10 +777,11 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
             >
               <p className="text-[11px] uppercase text-muted-foreground">{item.label}</p>
               <p className={`mt-1 text-xl font-bold ${item.valueClass}`}>
-                {item.count.toLocaleString("es-AR")}
+                {count.toLocaleString("es-AR")}
               </p>
             </button>
-          ))}
+            );
+          })}
         </div>
 
         {!data ? (
@@ -560,6 +793,127 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
           </div>
         ) : (
           <>
+            {displayedComposition ? (
+              <div className="rounded-lg border border-border bg-background p-3">
+                <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-foreground">{showingSelectionComposition ? "Composición de la selección actual" : "Composición del lote cargado"}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {displayedComposition.loteDepurado.toLocaleString("es-AR")} quedan · {displayedComposition.descartadas.toLocaleString("es-AR")} se quitan · máximo {displayedComposition.maxIntentos} intentos
+                    </p>
+                  </div>
+                  <span className="flex flex-wrap items-center gap-2">
+                    {displayedComposition.con20IntentosOMas > 0 ? (
+                      <Badge variant="outline" className="border-destructive/35 text-destructive">
+                        {displayedComposition.con20IntentosOMas.toLocaleString("es-AR")} líneas con 20+ intentos
+                      </Badge>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-semibold text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
+                      onClick={() => setCompositionOpen((current) => !current)}
+                      aria-expanded={compositionOpen}
+                    >
+                      {compositionOpen ? "Ocultar detalle" : "Ver detalle"}
+                      <ChevronDown className={`h-4 w-4 transition-transform ${compositionOpen ? "rotate-180" : ""}`} />
+                    </button>
+                  </span>
+                </div>
+
+                {compositionOpen ? (
+                  <>
+                    <div className="mt-3 grid gap-2 md:grid-cols-4">
+                      {[
+                        [showingSelectionComposition ? "Total selección" : "Total cargado", displayedComposition.totalLineas],
+                        ["Queda en lote depurado", displayedComposition.loteDepurado],
+                        ["Se quita del lote", displayedComposition.descartadas],
+                        ["Máximo de intentos", displayedComposition.maxIntentos],
+                      ].map(([label, value]) => (
+                        <div key={String(label)} className="border border-border px-3 py-2">
+                          <p className="text-[11px] uppercase text-muted-foreground">{label}</p>
+                          <p className="mt-1 text-lg font-bold text-foreground">
+                            {Number(value).toLocaleString("es-AR")}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+
+                    {selectedBreakdown.length > 0 ? (
+                      <div className="mt-3 rounded-lg border border-primary/20 bg-primary/5 p-3">
+                        <p className="text-xs font-semibold uppercase text-primary">
+                          Detalle de lo seleccionado
+                        </p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Los grupos pueden superponerse. El total seleccionado cuenta cada línea una sola vez.
+                        </p>
+                        <div className="mt-2 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                          {selectedBreakdown.map((item) => (
+                            <div key={item.value} className="flex items-center justify-between gap-3 border border-border/70 px-3 py-2 text-xs">
+                              <span className="truncate text-muted-foreground">{item.label}</span>
+                              <strong className="text-foreground">{item.count.toLocaleString("es-AR")}</strong>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                      <div className="rounded-lg border border-border p-3">
+                        <p className="text-xs font-semibold uppercase text-muted-foreground">
+                          Por que se descartan
+                        </p>
+                        <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+                          <span><strong className="text-foreground">{displayedComposition.descarteTecnico.toLocaleString("es-AR")}</strong> técnicas</span>
+                          <span><strong className="text-foreground">{displayedComposition.descarteComercial.toLocaleString("es-AR")}</strong> comerciales</span>
+                          <span><strong className="text-foreground">{displayedComposition.descarteTecnicoYComercial.toLocaleString("es-AR")}</strong> ambas</span>
+                        </div>
+                        <div className="mt-3 space-y-1">
+                          {displayedComposition.descartesPorMotivo.slice(0, 6).map((item) => (
+                            <div key={item.label} className="flex items-center justify-between gap-3 text-xs">
+                              <span className="truncate text-muted-foreground">{item.label}</span>
+                              <strong className="text-foreground">{item.count.toLocaleString("es-AR")}</strong>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border border-border p-3">
+                        <p className="text-xs font-semibold uppercase text-muted-foreground">
+                          Estados de esas líneas
+                        </p>
+                        <div className="mt-2 space-y-1">
+                          {displayedComposition.descartesPorEstado.slice(0, 6).map((item) => (
+                            <div key={item.label} className="flex items-center justify-between gap-3 text-xs">
+                              <span className="truncate text-muted-foreground">{item.label}</span>
+                              <strong className="text-foreground">{item.count.toLocaleString("es-AR")}</strong>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {displayedComposition.intentosAltos.length > 0 ? (
+                      <div className="mt-3 rounded-lg border border-destructive/25 bg-destructive/5 p-3">
+                        <p className="text-xs font-semibold uppercase text-destructive">
+                          Muestra de líneas con más intentos
+                        </p>
+                        <div className="mt-2 max-h-36 divide-y divide-border/70 overflow-auto">
+                          {displayedComposition.intentosAltos.map((lead) => (
+                            <div key={lead.linea} className="grid grid-cols-[110px_1fr_70px_150px] gap-2 py-1.5 text-xs">
+                              <span className="font-mono text-foreground">{lead.linea}</span>
+                              <span className="truncate text-muted-foreground">{lead.razonSocial || "-"}</span>
+                              <strong className="text-foreground">{lead.intentosTotales}</strong>
+                              <span className="truncate text-muted-foreground">{lead.lectura}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
+              </div>
+            ) : null}
+
             <div className="border border-border bg-background">
               <button
                 type="button"
@@ -576,6 +930,13 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                       : rangeDays > 0
                         ? `Últimos ${rangeDays} días`
                         : "Grupo puntual"}
+                  </Badge>
+                  <Badge variant="outline" className="border-primary/30 text-primary">
+                    {countingSelection
+                      ? "Contando..."
+                      : selectedExportCount === null
+                        ? "Conteo no disponible"
+                        : `${selectedExportCount.toLocaleString("es-AR")} líneas quedan`}
                   </Badge>
                 </span>
                 <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${configOpen ? "rotate-180" : ""}`} />
@@ -657,6 +1018,13 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                   </div>
 
                   <div className="border border-primary/25 bg-primary/5 px-3 py-2 text-xs text-muted-foreground">
+                    <p className="mb-1 font-semibold text-foreground">
+                      {countingSelection
+                        ? "Calculando líneas disponibles..."
+                        : selectedExportCount === null
+                          ? "Podés descargar igual; el conteo previo no respondió a tiempo."
+                          : `Con esta selección quedan ${selectedExportCount.toLocaleString("es-AR")} líneas para descargar.`}
+                    </p>
                     {exportMode === "DEPURADO" ? (
                       <>
                         Se conservarán las líneas aptas y se quitarán del archivo las
@@ -679,15 +1047,79 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                       <Search className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
                       <Input value={search} onChange={(event) => setSearch(event.target.value)} className="pl-9" placeholder="Buscar línea, nombre, DNI, estado o catalogación..." />
                     </div>
-                    <Button type="button" onClick={handleExport} disabled={exporting || !data}>
+                    <Button type="button" onClick={handleExport} disabled={exporting || !data || selectedExportCount === 0}>
                       <Download className="mr-2 h-4 w-4" />
                       {exporting
                         ? "Generando..."
+                        : countingSelection
+                          ? "Descargar sin esperar conteo"
+                        : selectedExportCount === null
+                          ? exportMode === "DEPURADO"
+                            ? "Descargar lote depurado"
+                            : "Descargar grupos seleccionados"
                         : exportMode === "DEPURADO"
-                          ? "Descargar lote depurado"
-                          : "Descargar grupos seleccionados"}
+                          ? `Descargar lote depurado (${selectedExportCount.toLocaleString("es-AR")})`
+                          : `Descargar grupos seleccionados (${selectedExportCount.toLocaleString("es-AR")})`}
                     </Button>
                   </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="border border-border bg-background">
+              <button
+                type="button"
+                className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left"
+                onClick={() => setRulesOpen((current) => !current)}
+                aria-expanded={rulesOpen}
+              >
+                <span className="flex flex-wrap items-center gap-2 text-sm font-semibold">
+                  <SlidersHorizontal className="h-4 w-4 text-primary" />
+                  Reglas de depuración
+                  <Badge variant="outline">
+                    UNALLOCATED {fuzzionRules.unallocatedDescartar}+ · REJECTED {fuzzionRules.rejectedDescartar}+ · Saturación {fuzzionRules.totalSaturado} intentos
+                  </Badge>
+                </span>
+                <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${rulesOpen ? "rotate-180" : ""}`} />
+              </button>
+
+              {rulesOpen ? (
+                <div className="space-y-3 border-t border-border p-3">
+                  <p className="text-xs text-muted-foreground">
+                    Estas reglas afectan el conteo, el lote depurado y los grupos operativos. Ajustalas antes de descargar si querés endurecer o aflojar el criterio.
+                  </p>
+                  <div className="grid gap-2 md:grid-cols-5">
+                    {([
+                      ["unallocatedDescartar", "Descartar UNALLOCATED desde"],
+                      ["rejectedDescartar", "Descartar REJECTED desde"],
+                      ["totalSaturado", "Saturado por intentos desde"],
+                      ["noAnswerSaturado", "Saturado NOANSWER desde"],
+                      ["buzonSaturado", "Saturado buzón desde"],
+                    ] as Array<[keyof FuzzionRules, string]>).map(([key, label]) => (
+                      <label key={key} className="space-y-1 text-xs text-muted-foreground">
+                        <span>{label}</span>
+                        <Input
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={fuzzionRules[key]}
+                          onChange={(event) => {
+                            const value = Math.max(1, Math.floor(Number(event.target.value) || DEFAULT_FUZZION_RULES[key]));
+                            setFuzzionRules((current) => ({ ...current, [key]: value }));
+                          }}
+                          className="h-10"
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setFuzzionRules(DEFAULT_FUZZION_RULES)}
+                  >
+                    Restaurar reglas estándar
+                  </Button>
                 </div>
               ) : null}
             </div>
@@ -701,7 +1133,10 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                 <span>Lectura</span>
               </div>
               <div className="max-h-72 divide-y divide-border overflow-auto">
-                {visiblePreview.slice(0, 100).map((lead) => (
+                {visiblePreview.slice(0, 100).map((lead) => {
+                  const leadCategories = getLeadCategories(lead, fuzzionRules);
+
+                  return (
                   <div
                     key={`${lead.rowNumber}-${lead.linea}`}
                     className="grid grid-cols-[minmax(110px,1fr)_minmax(150px,1.5fr)_100px_110px_130px] gap-3 px-3 py-2 text-xs"
@@ -711,24 +1146,24 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                     <span>{lead.intentosTotales}</span>
                     <span className="truncate">{lead.ultimoEstado || "Sin historial"}</span>
                     <div>
-                      {lead.categorias.includes("DESCARTAR") ? (
+                      {leadCategories.includes("DESCARTAR") ? (
                         <Badge variant="destructive">
                           <XCircle className="mr-1 h-3 w-3" />
                           Descartar
                         </Badge>
-                      ) : lead.categorias.includes("CONTACTADO") ? (
+                      ) : leadCategories.includes("CONTACTADO") ? (
                         <Badge variant="outline" className="text-success">
                           <CheckCircle2 className="mr-1 h-3 w-3" />
                           Contacto efectivo
                         </Badge>
-                      ) : lead.categorias.includes("BUZON_SIN_CONTACTO") ? (
+                      ) : leadCategories.includes("BUZON_SIN_CONTACTO") ? (
                         <Badge variant="outline" className="text-warning">
                           <PhoneOff className="mr-1 h-3 w-3" />
                           Buzón sin contacto
                         </Badge>
-                      ) : lead.categorias.includes("NUNCA_TRABAJADO") ? (
+                      ) : leadCategories.includes("NUNCA_TRABAJADO") ? (
                         <Badge variant="outline">Nunca trabajado</Badge>
-                      ) : lead.categorias.includes("REINTENTAR_MEJOR_FRANJA") ? (
+                      ) : leadCategories.includes("REINTENTAR_MEJOR_FRANJA") ? (
                         <Badge variant="outline" className="text-primary">
                           <PhoneCall className="mr-1 h-3 w-3" />
                           Apto para reintento
@@ -738,7 +1173,8 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                       )}
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </>
@@ -756,9 +1192,12 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
             mismo tiempo.
           </p>
           <p>
-            Contacto efectivo = al menos 1 ANSWER + AGENT. Saturación = 9
-            intentos totales, 6 NOANSWER o 5 buzones. Descarte = 3 UNALLOCATED o
-            3 REJECTED sin contacto efectivo.
+            Contacto efectivo = al menos 1 ANSWER + AGENT. Saturación ={" "}
+            {fuzzionRules.totalSaturado} intentos totales,{" "}
+            {fuzzionRules.noAnswerSaturado} NOANSWER o{" "}
+            {fuzzionRules.buzonSaturado} buzones. Descarte ={" "}
+            {fuzzionRules.unallocatedDescartar} UNALLOCATED o{" "}
+            {fuzzionRules.rejectedDescartar} REJECTED sin contacto efectivo.
           </p>
         </div>
 
@@ -832,3 +1271,4 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
     </Card>
   );
 }
+
