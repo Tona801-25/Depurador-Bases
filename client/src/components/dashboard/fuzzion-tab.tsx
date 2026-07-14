@@ -5,8 +5,10 @@ import {
   SlidersHorizontal,
   Download,
   FileSpreadsheet,
+  Minus,
   PhoneCall,
   PhoneOff,
+  Plus,
   Search,
   Upload,
   XCircle,
@@ -351,6 +353,11 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
   const quickCount = quickOption?.stat
     ? dynamicStats[quickOption.stat]
     : 0;
+
+  const updateFuzzionRule = (key: keyof FuzzionRules, value: number) => {
+    const nextValue = Math.max(1, Math.floor(value || DEFAULT_FUZZION_RULES[key]));
+    setFuzzionRules((current) => ({ ...current, [key]: nextValue }));
+  };
 
   useEffect(() => {
     if (!data) {
@@ -1098,17 +1105,35 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                     ] as Array<[keyof FuzzionRules, string]>).map(([key, label]) => (
                       <label key={key} className="space-y-1 text-xs text-muted-foreground">
                         <span>{label}</span>
-                        <Input
-                          type="number"
-                          min={1}
-                          step={1}
-                          value={fuzzionRules[key]}
-                          onChange={(event) => {
-                            const value = Math.max(1, Math.floor(Number(event.target.value) || DEFAULT_FUZZION_RULES[key]));
-                            setFuzzionRules((current) => ({ ...current, [key]: value }));
-                          }}
-                          className="h-10"
-                        />
+                        <div className="grid h-10 grid-cols-[2.25rem_1fr_2.25rem] overflow-hidden rounded-lg border border-border bg-card/60 transition-colors focus-within:border-primary/70 focus-within:ring-1 focus-within:ring-primary/50">
+                          <button
+                            type="button"
+                            className="flex items-center justify-center border-r border-border text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary disabled:opacity-40"
+                            disabled={fuzzionRules[key] <= 1}
+                            onClick={() => updateFuzzionRule(key, fuzzionRules[key] - 1)}
+                            aria-label={`Bajar ${label}`}
+                          >
+                            <Minus className="h-3.5 w-3.5" />
+                          </button>
+                          <Input
+                            type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
+                            value={fuzzionRules[key]}
+                            onChange={(event) => {
+                              updateFuzzionRule(key, Number(event.target.value));
+                            }}
+                            className="h-10 rounded-none border-0 bg-transparent px-2 text-center font-semibold shadow-none focus-visible:ring-0"
+                          />
+                          <button
+                            type="button"
+                            className="flex items-center justify-center border-l border-border text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
+                            onClick={() => updateFuzzionRule(key, fuzzionRules[key] + 1)}
+                            aria-label={`Subir ${label}`}
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
                       </label>
                     ))}
                   </div>

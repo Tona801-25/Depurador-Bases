@@ -1324,6 +1324,10 @@ export default function Home() {
 
           <div className="min-w-0 px-4 py-4 lg:pr-16 xl:pl-5">
             <section className="mb-4">
+              <FuzzionTab onLog={pushOperationLog} />
+            </section>
+
+            <section className="mb-4">
               <NeotelSourcesPanel
                 onLog={pushOperationLog}
                 onLocalImportComplete={() => {
@@ -1632,10 +1636,6 @@ export default function Home() {
               )}
             </CardContent>
           </Card>
-        </section>
-
-        <section className="mb-6">
-          <FuzzionTab onLog={pushOperationLog} />
         </section>
 
         {analysisResult && activeAnalysis && (
