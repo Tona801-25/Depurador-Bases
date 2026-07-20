@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { Client } from "basic-ftp";
 
 import {
@@ -7,8 +8,13 @@ import {
   saveNeotelReport,
 } from "./localDb.ts";
 import { parseNeotelReport } from "./neotelReports.ts";
+import {
+  importNeotelTicketBuffer,
+  NEOTEL_TICKET_FILE_PATTERN,
+} from "./neotelTickets.ts";
 
 const REPORT_PATTERN = /^(Gestiones_todas|Productividad_Usuarios)_20\d{2}-\d{2}-\d{2}\.csv$/i;
+const DEFAULT_FTP_BACKUP_DIR = path.resolve(process.cwd(), "data", "neotel-ftp-backup");
 
 const autoSyncState = {
   enabled: false,
@@ -21,6 +27,54 @@ const autoSyncState = {
 
 let syncInFlight: Promise<Awaited<ReturnType<typeof performNeotelFtpSync>>> | null = null;
 let autoSyncStarted = false;
+
+function getNeotelFtpBackupDir() {
+  return path.resolve(process.env.NEOTEL_FTP_BACKUP_DIR || DEFAULT_FTP_BACKUP_DIR);
+}
+
+function sha256File(filePath: string) {
+  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+}
+
+function timestampSuffix() {
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return [
+    now.getFullYear(),
+    pad(now.getMonth() + 1),
+    pad(now.getDate()),
+    "_",
+    pad(now.getHours()),
+    pad(now.getMinutes()),
+    pad(now.getSeconds()),
+  ].join("");
+}
+
+function backupDownloadedFtpFile(tempPath: string, fileName: string) {
+  const backupDir = getNeotelFtpBackupDir();
+  fs.mkdirSync(backupDir, { recursive: true });
+
+  const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const targetPath = path.join(backupDir, safeName);
+
+  if (!fs.existsSync(targetPath)) {
+    fs.copyFileSync(tempPath, targetPath);
+    return { status: "CREADO", path: targetPath };
+  }
+
+  if (sha256File(tempPath) === sha256File(targetPath)) {
+    return { status: "EXISTENTE", path: targetPath };
+  }
+
+  const extension = path.extname(safeName);
+  const baseName = path.basename(safeName, extension);
+  const versionedPath = path.join(
+    backupDir,
+    `${baseName}__${timestampSuffix()}${extension}`,
+  );
+  fs.copyFileSync(tempPath, versionedPath);
+  return { status: "VERSIONADO", path: versionedPath };
+}
 
 export function getNeotelFtpConfig() {
   const host = process.env.NEOTEL_FTP_HOST || "192.168.55.12";
@@ -51,6 +105,7 @@ export function getNeotelFtpPublicStatus() {
     user: config.user,
     remotePath: config.remotePath,
     secure: config.secure,
+    backupDir: getNeotelFtpBackupDir(),
     autoSync: { ...autoSyncState },
   };
 }
@@ -89,14 +144,12 @@ async function performNeotelFtpSync(tempDirectory: string) {
     await client.cd(config.remotePath);
 
     const files = (await client.list())
-      .filter((file) => file.isFile && REPORT_PATTERN.test(file.name))
+      .filter((file) => file.isFile && (REPORT_PATTERN.test(file.name) || NEOTEL_TICKET_FILE_PATTERN.test(file.name)))
       .sort((a, b) => a.name.localeCompare(b.name));
 
     for (const file of files) {
-      if (importedNames.has(file.name)) {
-        results.push({ fileName: file.name, status: "DUPLICADO" });
-        continue;
-      }
+      const isReport = REPORT_PATTERN.test(file.name);
+      const isTicket = NEOTEL_TICKET_FILE_PATTERN.test(file.name);
 
       const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
       const tempPath = path.join(
@@ -106,18 +159,41 @@ async function performNeotelFtpSync(tempDirectory: string) {
 
       try {
         await client.downloadTo(tempPath, file.name);
-        const report = parseNeotelReport(fs.readFileSync(tempPath), file.name);
-        const saved = saveNeotelReport(report, {
-          source: "FTP",
-          remotePath: `${config.remotePath}/${file.name}`,
-        });
+        const backup = backupDownloadedFtpFile(tempPath, file.name);
+        if (isReport && importedNames.has(file.name)) {
+          results.push({
+            fileName: file.name,
+            status: "DUPLICADO",
+            backupStatus: backup.status,
+            backupPath: backup.path,
+          });
+          continue;
+        }
+
+        const buffer = fs.readFileSync(tempPath);
+        const remotePath = `${config.remotePath}/${file.name}`;
+        const saved = isTicket
+          ? importNeotelTicketBuffer(buffer, file.name, "FTP", remotePath)
+          : (() => {
+              const report = parseNeotelReport(buffer, file.name);
+              return saveNeotelReport(report, {
+                source: "FTP",
+                remotePath,
+              });
+            })();
 
         results.push({
           fileName: file.name,
-          status: saved.duplicate ? "DUPLICADO" : "IMPORTADO",
+          status: "status" in saved
+            ? saved.status
+            : saved.duplicate ? "DUPLICADO" : "IMPORTADO",
           reportType: saved.reportType,
-          importedRows: saved.importedRows,
-          rejectedRows: saved.rejectedRows,
+          importedRows: "importedRows" in saved ? saved.importedRows : saved.insertedRecords,
+          rejectedRows: "rejectedRows" in saved ? saved.rejectedRows : 0,
+          insertedRecords: "insertedRecords" in saved ? saved.insertedRecords : undefined,
+          duplicatedRecords: "duplicatedRecords" in saved ? saved.duplicatedRecords : undefined,
+          backupStatus: backup.status,
+          backupPath: backup.path,
         });
       } catch (error) {
         results.push({

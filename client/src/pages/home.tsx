@@ -13,6 +13,10 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  Dialog,
+  DialogContent,
+} from "@/components/ui/dialog";
+import {
   DashboardTabs,
   EstadoDistribucionChart,
   EstadoBarrasChart,
@@ -59,6 +63,7 @@ import {
   EyeOff,
   ClipboardList,
   MoreVertical,
+  ChevronDown,
 } from "lucide-react";
 import FilterChips from "@/components/dashboard/filterChips";
 import ExportMenu from "@/components/dashboard/exportMenu";
@@ -233,7 +238,9 @@ export default function Home() {
     count: number;
     names: string[];
   } | null>(null);
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
   const [operationLog, setOperationLog] = useState<OperationLogEntry[]>([]);
+  const [logPanelOpen, setLogPanelOpen] = useState(false);
 
     const { toast } = useToast();
     const queryClient = useQueryClient();
@@ -1199,6 +1206,7 @@ export default function Home() {
   const selectedHistoryPeriod =
     historyPeriodOptions.find((option) => option.key === selectedHistoryPeriodKey) ??
     historyPeriodOptions[0];
+  const latestOperationLog = operationLog[0];
 
 
 
@@ -1286,10 +1294,14 @@ export default function Home() {
       ];
 
   const navigateWorkflow = (target: string, tab: string) => {
+    if (target === "history") {
+      setHistoryModalOpen(true);
+      return;
+    }
     if (target === "dashboard") setActiveDashboardTab(tab);
     window.requestAnimationFrame(() => {
       document.getElementById(
-        target === "history" ? "history-tickets" : "analysis-dashboard",
+        "analysis-dashboard",
       )?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
   };
@@ -1319,10 +1331,32 @@ export default function Home() {
                 }
                 uploadError={uploadError}
               />
+              <button
+                type="button"
+                className="mt-3 flex w-full items-center justify-between gap-3 rounded-lg border border-border bg-background/70 px-3 py-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
+                onClick={() => setHistoryModalOpen(true)}
+              >
+                <span className="flex min-w-0 items-center gap-3">
+                  <span className="rounded-lg border border-primary/20 bg-primary/10 p-2 text-primary">
+                    <Database className="h-4 w-4" />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-sm font-semibold text-foreground">
+                      Historial de tickets
+                    </span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      Analizar días, semanas o meses.
+                    </span>
+                  </span>
+                </span>
+                <Badge variant="outline">
+                  {localHistoryFiles.length.toLocaleString("es-AR")}
+                </Badge>
+              </button>
             </div>
           </aside>
 
-          <div className="min-w-0 px-4 py-4 lg:pr-16 xl:pl-5">
+          <div className="min-w-0 px-4 pb-32 pt-4 lg:pr-16 xl:pl-5">
             <section className="mb-4">
               <FuzzionTab onLog={pushOperationLog} />
             </section>
@@ -1429,7 +1463,9 @@ export default function Home() {
           </Card>
         </section>
 
-        <section id="history-tickets" className="mb-4 scroll-mt-16">
+        <Dialog open={historyModalOpen} onOpenChange={setHistoryModalOpen}>
+          <DialogContent className="max-h-[90vh] max-w-[min(1180px,calc(100vw-2rem))] overflow-hidden p-0">
+            <div id="history-tickets" className="max-h-[90vh] overflow-auto">
           <Card className="glass-card overflow-hidden border-border/70 bg-background/70">
             <CardContent className="p-4">
                 <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1636,7 +1672,9 @@ export default function Home() {
               )}
             </CardContent>
           </Card>
-        </section>
+            </div>
+          </DialogContent>
+        </Dialog>
 
         {analysisResult && activeAnalysis && (
           <section className="mb-6">
@@ -1667,7 +1705,7 @@ export default function Home() {
           </section>
         )}
 
-        {(analysisResult || operationLog.length > 0) && (
+        {false && (analysisResult || operationLog.length > 0) && (
           <section className="mb-6">
             <Card className="glass-card border-glass-border">
               <CardHeader className="pb-3">
@@ -1683,8 +1721,8 @@ export default function Home() {
                         {activeAnalysis?.label || "Analisis activo"}
                       </Badge>
                       <span>
-                        {analysisResult.totalRecords.toLocaleString("es-AR")} registros ·{" "}
-                        {analysisResult.totalAnis.toLocaleString("es-AR")} ANIs
+                        {analysisResult?.totalRecords.toLocaleString("es-AR")} registros ·{" "}
+                        {analysisResult?.totalAnis.toLocaleString("es-AR")} ANIs
                       </span>
                     </div>
                   ) : null}
@@ -2337,6 +2375,105 @@ export default function Home() {
           </div>
         </div>
       </main>
+
+      {(analysisResult || operationLog.length > 0) && (
+        <section className="fixed inset-x-3 bottom-3 z-50 mx-auto max-w-6xl">
+          <Card className="border-primary/30 bg-background/95 shadow-2xl shadow-primary/10 backdrop-blur">
+            <button
+              type="button"
+              className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+              onClick={() => setLogPanelOpen((current) => !current)}
+              aria-expanded={logPanelOpen}
+            >
+              <span className="flex min-w-0 items-center gap-3">
+                <span className="rounded-lg border border-primary/20 bg-primary/10 p-2 text-primary">
+                  <ClipboardList className="h-4 w-4" />
+                </span>
+                <span className="min-w-0">
+                  <span className="block text-sm font-display font-bold text-foreground">
+                    Log operativo
+                  </span>
+                  <span className="block truncate text-xs text-muted-foreground">
+                    {latestOperationLog
+                      ? `${latestOperationLog.time} · ${latestOperationLog.title} · ${latestOperationLog.detail}`
+                      : "Todavía no hay eventos registrados."}
+                  </span>
+                </span>
+              </span>
+
+              <span className="flex shrink-0 items-center gap-2">
+                {latestOperationLog?.count !== undefined ? (
+                  <Badge variant="outline">
+                    {latestOperationLog.count.toLocaleString("es-AR")}
+                  </Badge>
+                ) : null}
+                <Badge variant="outline">
+                  {operationLog.length.toLocaleString("es-AR")}
+                </Badge>
+                <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", logPanelOpen && "rotate-180")} />
+              </span>
+            </button>
+
+            {logPanelOpen ? (
+              <CardContent className="border-t border-border px-4 pb-4 pt-0">
+                {operationLog.length === 0 ? (
+                  <p className="pt-4 text-xs text-muted-foreground">
+                    Todavía no hay eventos registrados. Analizá un ticket o registrá un filtro para verlo acá.
+                  </p>
+                ) : (
+                  <div className="max-h-64 space-y-2 overflow-auto pt-4">
+                    {operationLog.map((entry) => (
+                      <div
+                        key={entry.id}
+                        className="grid gap-2 rounded-lg border border-border/60 bg-secondary/20 px-3 py-2 text-xs sm:grid-cols-[82px_1fr_auto]"
+                      >
+                        <span className="font-mono text-muted-foreground">
+                          {entry.time}
+                        </span>
+
+                        <div className="min-w-0">
+                          <p className="truncate font-semibold text-foreground">
+                            {entry.title}
+                          </p>
+                          <p className="truncate text-muted-foreground">
+                            {entry.detail}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-2 sm:justify-end">
+                          <Badge
+                            variant={
+                              entry.kind === "error"
+                                ? "destructive"
+                                : entry.kind === "export"
+                                  ? "default"
+                                  : "outline"
+                            }
+                          >
+                            {entry.kind === "analysis"
+                              ? "analisis"
+                              : entry.kind === "export"
+                                ? "descarga"
+                                : entry.kind === "filter"
+                                  ? "filtro"
+                                  : "error"}
+                          </Badge>
+
+                          {typeof entry.count === "number" ? (
+                            <span className="whitespace-nowrap font-semibold text-foreground">
+                              {entry.count.toLocaleString("es-AR")}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            ) : null}
+          </Card>
+        </section>
+      )}
     </div>
   );
 }

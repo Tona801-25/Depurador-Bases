@@ -31,6 +31,10 @@ import type { LocalAniHistorySummary } from "./localDb";
 import { randomUUID } from "crypto";
 import { parseNeotelReport } from "./neotelReports.ts";
 import {
+  importNeotelTicketFile,
+  NEOTEL_TICKET_FILE_PATTERN,
+} from "./neotelTickets.ts";
+import {
   getNeotelFtpPublicStatus,
   syncNeotelReportsFromFtp,
 } from "./neotelFtp.ts";
@@ -41,7 +45,6 @@ const DEFAULT_NEOTEL_LOCAL_REPORTS_DIR =
   "C:\\Users\\Osar\\Desktop\\ANTONELLA\\BASES\\PRUEBAS APP ANTO";
 const NEOTEL_REPORT_FILE_PATTERN =
   /^(Gestiones_todas|Productividad_Usuarios)_20\d{2}-\d{2}-\d{2}\.csv$/i;
-const NEOTEL_TICKET_FILE_PATTERN = /\.(xls|xlsx)$/i;
 const NEOTEL_LOCAL_REPORTS_DIR = path.resolve(
   process.env.NEOTEL_LOCAL_REPORTS_DIR || DEFAULT_NEOTEL_LOCAL_REPORTS_DIR,
 );
@@ -351,6 +354,7 @@ type FuzzionCategory =
 type FuzzionRules = {
   unallocatedDescartar: number;
   rejectedDescartar: number;
+  intentosDescartar: number;
   totalSaturado: number;
   noAnswerSaturado: number;
   buzonSaturado: number;
@@ -403,6 +407,7 @@ const fuzzionSessions = new Map<string, FuzzionSession>();
 const DEFAULT_FUZZION_RULES: FuzzionRules = {
   unallocatedDescartar: 3,
   rejectedDescartar: 3,
+  intentosDescartar: 100,
   totalSaturado: 9,
   noAnswerSaturado: 6,
   buzonSaturado: 5,
@@ -418,6 +423,7 @@ function parseFuzzionRules(input: unknown): FuzzionRules {
   return {
     unallocatedDescartar: read("unallocatedDescartar"),
     rejectedDescartar: read("rejectedDescartar"),
+    intentosDescartar: read("intentosDescartar"),
     totalSaturado: read("totalSaturado"),
     noAnswerSaturado: read("noAnswerSaturado"),
     buzonSaturado: read("buzonSaturado"),
@@ -466,6 +472,7 @@ function classifyFuzzionLead(
 
   const contactado = summary.intentosAnswerAgent > 0;
   const descartar =
+    summary.intentosTotales >= rules.intentosDescartar ||
     summary.intentosUnallocated >= rules.unallocatedDescartar ||
     (summary.intentosRejected >= rules.rejectedDescartar && !contactado);
   const saturado =
@@ -505,6 +512,7 @@ function getFuzzionLeadCategories(
 
   const contactado = lead.contactosEfectivos > 0;
   const descartar =
+    lead.intentosTotales >= rules.intentosDescartar ||
     lead.invalidos >= rules.unallocatedDescartar ||
     (lead.rechazados >= rules.rejectedDescartar && !contactado) ||
     lead.exclusionComercial;
@@ -608,6 +616,9 @@ function getFuzzionDiscardReason(
   rules: FuzzionRules = DEFAULT_FUZZION_RULES,
 ) {
   const technicalReasons: string[] = [];
+  if (lead.intentosTotales >= rules.intentosDescartar) {
+    technicalReasons.push(`Intentos ${rules.intentosDescartar}+`);
+  }
   if (lead.invalidos >= rules.unallocatedDescartar) {
     technicalReasons.push(`UNALLOCATED ${rules.unallocatedDescartar}+`);
   }
@@ -969,22 +980,11 @@ async function importLocalCompatibleFile(relativePath: string) {
     );
   }
 
-  const cancellationController = new AbortController();
-  const { sqliteResult, sqliteError } = await runUploadWorker(
-    [toLocalUploadFile(file.fullPath)],
-    cancellationController.signal,
-  );
+  const result = importNeotelTicketFile(file.fullPath, "LOCAL");
 
   return {
+    ...result,
     fileName: file.relativePath,
-    status:
-      (sqliteResult?.insertedFiles ?? 0) > 0 ? "IMPORTADO" : "DUPLICADO",
-    reportType: "TICKET",
-    insertedFiles: sqliteResult?.insertedFiles ?? 0,
-    duplicatedFiles: sqliteResult?.duplicatedFiles ?? 0,
-    insertedRecords: sqliteResult?.insertedRecords ?? 0,
-    duplicatedRecords: sqliteResult?.duplicatedRecords ?? 0,
-    sqliteError,
   };
 }
 

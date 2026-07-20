@@ -15,6 +15,13 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -137,6 +144,7 @@ export function NeotelSourcesPanel({
   const [catalogSearch, setCatalogSearch] = useState("");
   const [actionFilter, setActionFilter] = useState("TODAS");
   const [exportingKey, setExportingKey] = useState("");
+  const [exclusionDetailOpen, setExclusionDetailOpen] = useState(false);
 
   async function refresh() {
     const dateQuery = selectedReportDate
@@ -212,6 +220,14 @@ export function NeotelSourcesPanel({
         .includes(query);
     });
   }, [actionFilter, catalog, catalogSearch]);
+
+  const exclusionCatalog = useMemo(
+    () =>
+      catalog
+        .filter((item) => item.accionComercial === "EXCLUIR")
+        .sort((a, b) => b.totalAnis - a.totalAnis),
+    [catalog],
+  );
 
   async function handleSync() {
     setSyncing(true);
@@ -588,14 +604,30 @@ export function NeotelSourcesPanel({
             ["Excluir", displayedStats?.excludedAnis ?? 0],
             ["Buzones", displayedStats?.mailboxAnis ?? 0],
             ["Asesores", displayedStats?.totalAgents ?? 0],
-          ].map(([label, value]) => (
-            <div key={String(label)}>
-              <p className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</p>
-              <p className="mt-1 text-lg font-bold text-foreground">
-                {Number(value).toLocaleString("es-AR")}
-              </p>
-            </div>
-          ))}
+          ].map(([label, value]) => {
+            const content = (
+              <>
+                <p className="text-[10px] font-semibold uppercase text-muted-foreground">{label}</p>
+                <p className="mt-1 text-lg font-bold text-foreground">
+                  {Number(value).toLocaleString("es-AR")}
+                </p>
+              </>
+            );
+
+            return label === "Excluir" ? (
+              <button
+                key={String(label)}
+                type="button"
+                className="text-left"
+                onClick={() => setExclusionDetailOpen(true)}
+                title="Ver detalle de exclusiones"
+              >
+                {content}
+              </button>
+            ) : (
+              <div key={String(label)}>{content}</div>
+            );
+          })}
         </div>
 
         <div className="mt-4 border-t border-border/60 pt-3">
@@ -750,6 +782,66 @@ export function NeotelSourcesPanel({
           ) : null}
         </div>
       </CardContent>
+
+      <Dialog open={exclusionDetailOpen} onOpenChange={setExclusionDetailOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Detalle de exclusiones</DialogTitle>
+            <DialogDescription>
+              Catalogaciones que se quitan del lote operativo cuando descargás una base depurada.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <div className="rounded-lg border border-border bg-muted/20 px-3 py-2">
+              <p className="text-[11px] font-semibold uppercase text-muted-foreground">
+                Total para excluir
+              </p>
+              <p className="mt-1 text-xl font-bold text-destructive">
+                {(displayedStats?.excludedAnis ?? 0).toLocaleString("es-AR")} ANIs
+              </p>
+              {selectedReportDate ? (
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Filtrado por {new Date(`${selectedReportDate}T12:00:00`).toLocaleDateString("es-AR")}.
+                </p>
+              ) : null}
+            </div>
+
+            <div className="max-h-72 overflow-auto rounded-lg border border-border">
+              {exclusionCatalog.length === 0 ? (
+                <p className="px-3 py-5 text-sm text-muted-foreground">
+                  Todavía no hay catalogaciones marcadas para excluir.
+                </p>
+              ) : (
+                <div className="divide-y divide-border">
+                  {exclusionCatalog.map((item) => (
+                    <div
+                      key={`${item.resultado}|${item.subresultado}`}
+                      className="grid gap-2 px-3 py-2.5 text-xs sm:grid-cols-[1fr_auto] sm:items-center"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate font-semibold text-foreground">
+                          {item.resultado || "Sin resultado"} · {item.subresultado || "Sin subresultado"}
+                        </p>
+                        <p className="mt-0.5 text-muted-foreground">
+                          {item.motivoAccion || "Catalogación marcada para exclusión."}
+                        </p>
+                      </div>
+                      <span className="whitespace-nowrap font-semibold text-foreground">
+                        {item.totalAnis.toLocaleString("es-AR")} ANIs
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <p className="text-xs text-muted-foreground">
+              No se borran de SQLite: solo se excluyen temporalmente al descargar lotes depurados.
+            </p>
+          </div>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

@@ -53,6 +53,7 @@ type FuzzionStats = {
 type FuzzionRules = {
   unallocatedDescartar: number;
   rejectedDescartar: number;
+  intentosDescartar: number;
   totalSaturado: number;
   noAnswerSaturado: number;
   buzonSaturado: number;
@@ -154,8 +155,8 @@ const categoryOptions: Array<{
   },
   {
     value: "NUNCA_TRABAJADO",
-    label: "Nunca trabajados",
-    description: "No tienen intentos registrados en el historial SQLite.",
+    label: "Sin historial en tickets SQLite",
+    description: "No aparecen en los tickets guardados en SQLite.",
     stat: "nuncaTrabajados",
   },
   {
@@ -216,6 +217,7 @@ type MultiOption = { value: string; label: string };
 const DEFAULT_FUZZION_RULES: FuzzionRules = {
   unallocatedDescartar: 3,
   rejectedDescartar: 3,
+  intentosDescartar: 100,
   totalSaturado: 9,
   noAnswerSaturado: 6,
   buzonSaturado: 5,
@@ -231,6 +233,7 @@ function getLeadCategories(lead: FuzzionLeadPreview, rules: FuzzionRules) {
 
   const contactado = lead.contactosEfectivos > 0;
   const descartar =
+    lead.intentosTotales >= rules.intentosDescartar ||
     lead.invalidos >= rules.unallocatedDescartar ||
     (lead.rechazados >= rules.rejectedDescartar && !contactado) ||
     lead.exclusionComercial;
@@ -318,14 +321,19 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
   const [filterValues, setFilterValues] = useState<string[]>([]);
   const [rangeDays, setRangeDays] = useState(0);
   const [compositionOpen, setCompositionOpen] = useState(true);
+  const [cardDetailOpen, setCardDetailOpen] = useState(false);
+  const [highAttemptsOpen, setHighAttemptsOpen] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [fuzzionRules, setFuzzionRules] = useState<FuzzionRules>(DEFAULT_FUZZION_RULES);
   const [uploading, setUploading] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [exportReviewOpen, setExportReviewOpen] = useState(false);
   const [quickCategory, setQuickCategory] = useState<FuzzionCategory | null>(null);
   const [quickExporting, setQuickExporting] = useState(false);
   const [quickRangeDays, setQuickRangeDays] = useState(7);
+  const [quickExportCount, setQuickExportCount] = useState<number | null>(null);
+  const [quickCounting, setQuickCounting] = useState(false);
   const [selectedExportCount, setSelectedExportCount] = useState<number | null>(null);
   const [selectionSummary, setSelectionSummary] = useState<FuzzionSelectionSummary | null>(null);
   const [countingSelection, setCountingSelection] = useState(false);
@@ -462,6 +470,49 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
     };
   }, [data, exportMode, filterMode, filterValues, fuzzionRules, rangeDays, search, selectedCategories]);
 
+  useEffect(() => {
+    if (!data || !quickCategory) {
+      setQuickExportCount(null);
+      setQuickCounting(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    setQuickCounting(true);
+    setQuickExportCount(null);
+
+    fetch(`/api/fuzzion/${data.id}/count`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        categories: [quickCategory],
+        search: "",
+        filterMode: "RECOMENDACION",
+        filterValues: [],
+        rangeDays: quickRangeDays,
+        exportMode: "SEGMENTO",
+        rules: fuzzionRules,
+      }),
+      signal: controller.signal,
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error("No se pudo contar el lote rapido.");
+        return response.json();
+      })
+      .then((payload: FuzzionSelectionSummary) => {
+        setQuickExportCount(payload.exportableLines);
+      })
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setQuickExportCount(null);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setQuickCounting(false);
+      });
+
+    return () => controller.abort();
+  }, [data, fuzzionRules, quickCategory, quickRangeDays]);
+
   const multiOptions = useMemo<MultiOption[]>(() => {
     if (filterMode === "RECOMENDACION") {
       return categoryOptions
@@ -480,6 +531,78 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
         ? categoryOptions.find((option) => option.value === item.value)?.label || item.label
         : item.label,
   })) ?? [];
+  const exportReviewComposition = selectionSummary?.composition ?? displayedComposition;
+  const exportReviewCount = selectedExportCount ?? exportReviewComposition?.loteDepurado ?? 0;
+  const exportReviewLabel = exportMode === "DEPURADO"
+    ? "Lote depurado para llamar"
+    : filterMode === "RECOMENDACION"
+      ? selectedCategories.map((value) => categoryOptions.find((item) => item.value === value)?.label || value).join(" + ") || "Todos"
+      : filterValues.join(" + ") || "Todos";
+  const operationalSummary = useMemo(() => {
+    if (!data) {
+      return {
+        noLlamar: 0,
+        pausar: 0,
+        reintentar: 0,
+        segmentar: 0,
+      };
+    }
+
+    const summary = {
+      noLlamar: 0,
+      pausar: 0,
+      reintentar: 0,
+      segmentar: 0,
+    };
+
+    for (const lead of data.preview) {
+      const leadCategories = getLeadCategories(lead, fuzzionRules);
+      const descartar = leadCategories.includes("DESCARTAR");
+      const contactado = leadCategories.includes("CONTACTADO");
+      const noSaturado = leadCategories.includes("NO_SATURADO");
+      const reintentar = leadCategories.includes("REINTENTAR_MEJOR_FRANJA");
+      const buzonSinContacto = leadCategories.includes("BUZON_SIN_CONTACTO");
+
+      if (descartar) summary.noLlamar += 1;
+      if (!descartar && !contactado && !noSaturado) summary.pausar += 1;
+      if (!descartar && reintentar) summary.reintentar += 1;
+      if (!descartar && (contactado || buzonSinContacto)) summary.segmentar += 1;
+    }
+
+    return summary;
+  }, [data, fuzzionRules]);
+  const cardDetailSummary = useMemo(() => {
+    const empty = {
+      contactosEfectivos: 0,
+      contactosSegmentables: 0,
+      contactosNoLlamar: 0,
+      descartes: 0,
+      descarteIntentos: 0,
+      descarteComercial: 0,
+      descarteUnallocatedRejected: 0,
+    };
+    if (!data) return empty;
+
+    return data.preview.reduce((summary, lead) => {
+      const leadCategories = getLeadCategories(lead, fuzzionRules);
+      const contactado = leadCategories.includes("CONTACTADO");
+      const descartar = leadCategories.includes("DESCARTAR");
+      const descartePorIntentos = lead.intentosTotales >= fuzzionRules.intentosDescartar;
+      const descartePorUnallocatedRejected =
+        lead.invalidos >= fuzzionRules.unallocatedDescartar ||
+        (lead.rechazados >= fuzzionRules.rejectedDescartar && lead.contactosEfectivos === 0);
+
+      if (contactado) summary.contactosEfectivos += 1;
+      if (contactado && !descartar) summary.contactosSegmentables += 1;
+      if (contactado && descartar) summary.contactosNoLlamar += 1;
+      if (descartar) summary.descartes += 1;
+      if (descartePorIntentos) summary.descarteIntentos += 1;
+      if (lead.exclusionComercial) summary.descarteComercial += 1;
+      if (descartePorUnallocatedRejected) summary.descarteUnallocatedRejected += 1;
+
+      return summary;
+    }, { ...empty });
+  }, [data, fuzzionRules]);
 
   const visiblePreview = useMemo(() => {
     if (!data) return [];
@@ -595,7 +718,12 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
     }
   }
 
-  async function handleExport() {
+  function handleExport() {
+    if (!data) return;
+    setExportReviewOpen(true);
+  }
+
+  async function performExport() {
     if (!data) return;
 
     setExporting(true);
@@ -631,6 +759,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
       anchor.click();
       anchor.remove();
       URL.revokeObjectURL(url);
+      setExportReviewOpen(false);
 
       onLog?.({
         kind: "export",
@@ -706,6 +835,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
         description: `${(exportedCount ?? quickCount).toLocaleString("es-AR")} líneas exportadas: ${quickOption.label}.`,
       });
       setQuickCategory(null);
+      setQuickExportCount(null);
     } catch (error) {
       const message = error instanceof Error ? error.message : "No se pudo descargar";
       toast({ title: "Error al exportar", description: message, variant: "destructive" });
@@ -753,7 +883,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
       <CardContent className="space-y-4">
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
           {[
-            { category: "NUNCA_TRABAJADO" as const, label: "Nunca trabajados", count: dynamicStats.nuncaTrabajados, valueClass: "text-foreground", cardClass: "border-border bg-background" },
+            { category: "NUNCA_TRABAJADO" as const, label: "Sin historial en tickets SQLite", count: dynamicStats.nuncaTrabajados, valueClass: "text-foreground", cardClass: "border-border bg-background" },
             { category: "CONTACTADO" as const, label: "Con contacto efectivo", count: dynamicStats.contactados, valueClass: "text-success", cardClass: "border-border bg-background" },
             { category: "BUZON_SIN_CONTACTO" as const, label: "Con buzón y sin contacto", count: data?.stats.buzonesSinContacto ?? 0, valueClass: "text-warning", cardClass: "border-border bg-background" },
             { category: "REINTENTAR_MEJOR_FRANJA" as const, label: "Aptos para reintento", count: dynamicStats.reintentarMejorFranja, valueClass: "text-primary", cardClass: "border-border bg-background" },
@@ -789,6 +919,131 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
             </button>
             );
           })}
+        </div>
+
+        <div className="rounded-lg border border-border bg-background">
+          <button
+            type="button"
+            className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left"
+            onClick={() => setCardDetailOpen((current) => !current)}
+            aria-expanded={cardDetailOpen}
+          >
+            <span>
+              <span className="block text-sm font-semibold text-foreground">
+                Detalle de contacto efectivo y descarte
+              </span>
+              <span className="block text-xs text-muted-foreground">
+                Explica por qué una línea puede haber atendido y aun así quedar marcada como no llamar.
+              </span>
+            </span>
+            <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${cardDetailOpen ? "rotate-180" : ""}`} />
+          </button>
+
+          {cardDetailOpen ? (
+            <div className="grid gap-3 border-t border-border p-3 lg:grid-cols-2">
+              <div className="rounded-lg border border-border p-3">
+                <p className="text-xs font-semibold uppercase text-muted-foreground">
+                  Con contacto efectivo
+                </p>
+                <p className="mt-1 text-2xl font-bold text-foreground">
+                  {cardDetailSummary.contactosEfectivos.toLocaleString("es-AR")}
+                </p>
+                <div className="mt-3 space-y-2 text-xs">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">Aptos para segmentar</span>
+                    <strong className="text-foreground">{cardDetailSummary.contactosSegmentables.toLocaleString("es-AR")}</strong>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">También marcados como no llamar</span>
+                    <strong className="text-destructive">{cardDetailSummary.contactosNoLlamar.toLocaleString("es-AR")}</strong>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-destructive/25 bg-destructive/5 p-3">
+                <p className="text-xs font-semibold uppercase text-muted-foreground">
+                  Con señal de descarte
+                </p>
+                <p className="mt-1 text-2xl font-bold text-destructive">
+                  {cardDetailSummary.descartes.toLocaleString("es-AR")}
+                </p>
+                <div className="mt-3 space-y-2 text-xs">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">{fuzzionRules.intentosDescartar}+ intentos</span>
+                    <strong className="text-foreground">{cardDetailSummary.descarteIntentos.toLocaleString("es-AR")}</strong>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">Compra / fraude / cliente molesto / Personal / prepago</span>
+                    <strong className="text-foreground">{cardDetailSummary.descarteComercial.toLocaleString("es-AR")}</strong>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-muted-foreground">UNALLOCATED / REJECTED</span>
+                    <strong className="text-foreground">{cardDetailSummary.descarteUnallocatedRejected.toLocaleString("es-AR")}</strong>
+                  </div>
+                </div>
+                <p className="mt-3 text-xs text-muted-foreground">
+                  Estos motivos pueden superponerse; por eso no siempre suman exactamente el total.
+                </p>
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-sm font-semibold uppercase text-foreground">
+                Lectura operativa del lote
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Separa lo que conviene excluir de lo que puede trabajarse en otro momento o en lotes aparte. Algunos grupos pueden superponerse.
+              </p>
+            </div>
+            <Badge variant="outline" className="w-fit">
+              Criterio actual
+            </Badge>
+          </div>
+
+          <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+            {[
+              {
+                label: "No llamar",
+                value: operationalSummary.noLlamar,
+                description: "Compra, fraude, cliente molesto, Personal, prepago o descarte técnico.",
+                className: "border-destructive/30 bg-destructive/5 text-destructive",
+              },
+              {
+                label: "Llamar en otro momento",
+                value: operationalSummary.pausar,
+                description: "Sin contacto útil, pero saturado por intentos, no contesta o buzones.",
+                className: "border-warning/30 bg-warning/5 text-warning",
+              },
+              {
+                label: "Reintentar",
+                value: operationalSummary.reintentar,
+                description: "Sin contacto, no saturado y sin señal de descarte.",
+                className: "border-primary/30 bg-primary/5 text-primary",
+              },
+              {
+                label: "Segmentar aparte",
+                value: operationalSummary.segmentar,
+                description: "Buzones o contactos históricos para lotes controlados.",
+                className: "border-border bg-background text-foreground",
+              },
+            ].map((item) => (
+              <div key={item.label} className={`rounded-lg border p-3 ${item.className}`}>
+                <p className="text-[11px] font-semibold uppercase text-muted-foreground">
+                  {item.label}
+                </p>
+                <p className="mt-1 text-2xl font-bold">
+                  {item.value.toLocaleString("es-AR")}
+                </p>
+                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                  {item.description}
+                </p>
+              </div>
+            ))}
+          </div>
         </div>
 
         {!data ? (
@@ -901,19 +1156,33 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
 
                     {displayedComposition.intentosAltos.length > 0 ? (
                       <div className="mt-3 rounded-lg border border-destructive/25 bg-destructive/5 p-3">
-                        <p className="text-xs font-semibold uppercase text-destructive">
-                          Muestra de líneas con más intentos
-                        </p>
-                        <div className="mt-2 max-h-36 divide-y divide-border/70 overflow-auto">
-                          {displayedComposition.intentosAltos.map((lead) => (
-                            <div key={lead.linea} className="grid grid-cols-[110px_1fr_70px_150px] gap-2 py-1.5 text-xs">
-                              <span className="font-mono text-foreground">{lead.linea}</span>
-                              <span className="truncate text-muted-foreground">{lead.razonSocial || "-"}</span>
-                              <strong className="text-foreground">{lead.intentosTotales}</strong>
-                              <span className="truncate text-muted-foreground">{lead.lectura}</span>
-                            </div>
-                          ))}
-                        </div>
+                        <button
+                          type="button"
+                          className="flex w-full items-center justify-between gap-3 text-left"
+                          onClick={() => setHighAttemptsOpen((current) => !current)}
+                          aria-expanded={highAttemptsOpen}
+                        >
+                          <span className="text-xs font-semibold uppercase text-destructive">
+                            Muestra de lineas con mas intentos
+                          </span>
+                          <span className="flex items-center gap-2 text-xs font-semibold text-destructive">
+                            {displayedComposition.intentosAltos.length.toLocaleString("es-AR")} visibles
+                            <ChevronDown className={`h-4 w-4 transition-transform ${highAttemptsOpen ? "rotate-180" : ""}`} />
+                          </span>
+                        </button>
+
+                        {highAttemptsOpen ? (
+                          <div className="mt-2 max-h-36 divide-y divide-border/70 overflow-auto">
+                            {displayedComposition.intentosAltos.map((lead) => (
+                              <div key={lead.linea} className="grid grid-cols-[110px_1fr_70px_150px] gap-2 py-1.5 text-xs">
+                                <span className="font-mono text-foreground">{lead.linea}</span>
+                                <span className="truncate text-muted-foreground">{lead.razonSocial || "-"}</span>
+                                <strong className="text-foreground">{lead.intentosTotales}</strong>
+                                <span className="truncate text-muted-foreground">{lead.lectura}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
                     ) : null}
                   </>
@@ -1084,7 +1353,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                   <SlidersHorizontal className="h-4 w-4 text-primary" />
                   Reglas de depuración
                   <Badge variant="outline">
-                    UNALLOCATED {fuzzionRules.unallocatedDescartar}+ · REJECTED {fuzzionRules.rejectedDescartar}+ · Saturación {fuzzionRules.totalSaturado} intentos
+                    UNALLOCATED {fuzzionRules.unallocatedDescartar}+ · REJECTED {fuzzionRules.rejectedDescartar}+ · Descarte {fuzzionRules.intentosDescartar}+ intentos
                   </Badge>
                 </span>
                 <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${rulesOpen ? "rotate-180" : ""}`} />
@@ -1095,10 +1364,11 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                   <p className="text-xs text-muted-foreground">
                     Estas reglas afectan el conteo, el lote depurado y los grupos operativos. Ajustalas antes de descargar si querés endurecer o aflojar el criterio.
                   </p>
-                  <div className="grid gap-2 md:grid-cols-5">
+                  <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">
                     {([
                       ["unallocatedDescartar", "Descartar UNALLOCATED desde"],
                       ["rejectedDescartar", "Descartar REJECTED desde"],
+                      ["intentosDescartar", "Descartar intentos desde"],
                       ["totalSaturado", "Saturado por intentos desde"],
                       ["noAnswerSaturado", "Saturado NOANSWER desde"],
                       ["buzonSaturado", "Saturado buzón desde"],
@@ -1221,15 +1491,159 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
             {fuzzionRules.totalSaturado} intentos totales,{" "}
             {fuzzionRules.noAnswerSaturado} NOANSWER o{" "}
             {fuzzionRules.buzonSaturado} buzones. Descarte ={" "}
+            {fuzzionRules.intentosDescartar}+ intentos totales,{" "}
             {fuzzionRules.unallocatedDescartar} UNALLOCATED o{" "}
             {fuzzionRules.rejectedDescartar} REJECTED sin contacto efectivo.
           </p>
         </div>
 
         <Dialog
+          open={exportReviewOpen}
+          onOpenChange={(open) => {
+            if (!exporting) setExportReviewOpen(open);
+          }}
+        >
+          <DialogContent className="sm:max-w-2xl">
+            <DialogHeader>
+              <DialogTitle>Resumen antes de descargar</DialogTitle>
+              <DialogDescription>
+                Revisá la composición del lote final antes de generar el archivo compatible con Neotel.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4">
+              <div className="rounded-lg border border-primary/25 bg-primary/5 p-3">
+                <p className="text-xs font-semibold uppercase text-primary">
+                  {exportReviewLabel}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {countingSelection
+                    ? "El conteo previo todavía se está actualizando; la descarga usará la configuración actual."
+                    : selectedExportCount === null
+                      ? "El conteo previo no respondió a tiempo, pero podés descargar igual."
+                      : "Estos números corresponden a la selección actual."}
+                </p>
+              </div>
+
+              <div className="grid gap-2 sm:grid-cols-3">
+                <div className="rounded-lg border border-border p-3">
+                  <p className="text-[11px] uppercase text-muted-foreground">Total evaluado</p>
+                  <p className="mt-1 text-2xl font-bold text-foreground">
+                    {(exportReviewComposition?.totalLineas ?? data?.uniqueAnis ?? 0).toLocaleString("es-AR")}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border p-3">
+                  <p className="text-[11px] uppercase text-muted-foreground">Se excluyen</p>
+                  <p className="mt-1 text-2xl font-bold text-destructive">
+                    {(exportReviewComposition?.descartadas ?? 0).toLocaleString("es-AR")}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-primary/35 p-3">
+                  <p className="text-[11px] uppercase text-muted-foreground">Quedan para descargar</p>
+                  <p className="mt-1 text-2xl font-bold text-primary">
+                    {exportReviewCount.toLocaleString("es-AR")}
+                  </p>
+                </div>
+              </div>
+
+              {exportReviewComposition ? (
+                <div className="grid gap-3 lg:grid-cols-2">
+                  <div className="rounded-lg border border-border p-3">
+                    <p className="text-xs font-semibold uppercase text-muted-foreground">
+                      Motivos de exclusión
+                    </p>
+                    <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+                      <span><strong className="text-foreground">{exportReviewComposition.descarteTecnico.toLocaleString("es-AR")}</strong> técnicas</span>
+                      <span><strong className="text-foreground">{exportReviewComposition.descarteComercial.toLocaleString("es-AR")}</strong> comerciales</span>
+                      <span><strong className="text-foreground">{exportReviewComposition.descarteTecnicoYComercial.toLocaleString("es-AR")}</strong> ambas</span>
+                    </div>
+                    <div className="mt-3 space-y-1">
+                      {exportReviewComposition.descartesPorMotivo.length > 0 ? (
+                        exportReviewComposition.descartesPorMotivo.slice(0, 8).map((item) => (
+                          <div key={item.label} className="flex items-center justify-between gap-3 text-xs">
+                            <span className="truncate text-muted-foreground">{item.label}</span>
+                            <strong className="text-foreground">{item.count.toLocaleString("es-AR")}</strong>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-xs text-muted-foreground">No hay motivos de exclusión para esta selección.</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-border p-3">
+                    <p className="text-xs font-semibold uppercase text-muted-foreground">
+                      Estados de las líneas excluidas
+                    </p>
+                    <div className="mt-2 space-y-1">
+                      {exportReviewComposition.descartesPorEstado.length > 0 ? (
+                        exportReviewComposition.descartesPorEstado.slice(0, 8).map((item) => (
+                          <div key={item.label} className="flex items-center justify-between gap-3 text-xs">
+                            <span className="truncate text-muted-foreground">{item.label}</span>
+                            <strong className="text-foreground">{item.count.toLocaleString("es-AR")}</strong>
+                          </div>
+                        ))
+                      ) : (
+                        <p className="text-xs text-muted-foreground">No hay estados excluidos para esta selección.</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              {selectedBreakdown.length > 0 ? (
+                <div className="rounded-lg border border-primary/20 bg-primary/5 p-3">
+                  <p className="text-xs font-semibold uppercase text-primary">Detalle seleccionado</p>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                    {selectedBreakdown.map((item) => (
+                      <div key={item.value} className="flex items-center justify-between gap-3 border border-border/70 px-3 py-2 text-xs">
+                        <span className="truncate text-muted-foreground">{item.label}</span>
+                        <strong className="text-foreground">{item.count.toLocaleString("es-AR")}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {exportReviewComposition?.con20IntentosOMas ? (
+                <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+                  Atención: hay {exportReviewComposition.con20IntentosOMas.toLocaleString("es-AR")} líneas con 20+ intentos dentro de lo evaluado.
+                </div>
+              ) : null}
+            </div>
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={exporting}
+                onClick={() => setExportReviewOpen(false)}
+              >
+                Cancelar
+              </Button>
+              <Button
+                type="button"
+                disabled={exporting || !data || selectedExportCount === 0}
+                onClick={performExport}
+              >
+                <Download className="mr-2 h-4 w-4" />
+                {exporting
+                  ? "Generando..."
+                  : selectedExportCount === null
+                    ? "Descargar lote"
+                    : `Descargar lote (${exportReviewCount.toLocaleString("es-AR")})`}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
           open={Boolean(quickCategory)}
           onOpenChange={(open) => {
-            if (!open && !quickExporting) setQuickCategory(null);
+            if (!open && !quickExporting) {
+              setQuickCategory(null);
+              setQuickExportCount(null);
+            }
           }}
         >
           <DialogContent className="sm:max-w-md">
@@ -1264,10 +1678,16 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
 
             <div className="border-y border-border py-4">
               <p className="text-3xl font-bold text-foreground">
-                {quickCount.toLocaleString("es-AR")}
+                {quickCounting
+                  ? "..."
+                  : (quickExportCount ?? quickCount).toLocaleString("es-AR")}
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                líneas del grupo antes de aplicar el rango histórico
+                {quickCounting
+                  ? "calculando líneas con el rango seleccionado"
+                  : quickExportCount === null
+                    ? "líneas del grupo antes de aplicar el rango histórico"
+                    : "líneas a descargar con el rango seleccionado"}
               </p>
               <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
                 {quickCategory === "DESCARTAR"
@@ -1285,9 +1705,17 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
               >
                 Cancelar
               </Button>
-              <Button type="button" disabled={quickExporting} onClick={handleQuickExport}>
+              <Button
+                type="button"
+                disabled={quickExporting || quickCounting || quickExportCount === 0}
+                onClick={handleQuickExport}
+              >
                 <Download className="mr-2 h-4 w-4" />
-                {quickExporting ? "Generando..." : "Descargar lote"}
+                {quickExporting
+                  ? "Generando..."
+                  : quickCounting
+                    ? "Calculando..."
+                    : "Descargar lote"}
               </Button>
             </DialogFooter>
           </DialogContent>
