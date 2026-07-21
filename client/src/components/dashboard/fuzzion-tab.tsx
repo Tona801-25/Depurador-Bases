@@ -252,6 +252,130 @@ function getLeadCategories(lead: FuzzionLeadPreview, rules: FuzzionRules) {
   return categories;
 }
 
+function getLeadReading(
+  lead: FuzzionLeadPreview,
+  categories: FuzzionCategory[],
+  rules: FuzzionRules,
+) {
+  const contactado = categories.includes("CONTACTADO");
+  const sinHistorial = categories.includes("NUNCA_TRABAJADO");
+  const descartar = categories.includes("DESCARTAR");
+  const noSaturado = categories.includes("NO_SATURADO");
+  const reintentar = categories.includes("REINTENTAR_MEJOR_FRANJA");
+  const buzonSinContacto = categories.includes("BUZON_SIN_CONTACTO");
+
+  if (descartar) {
+    if (lead.exclusionComercial) {
+      return {
+        label: lead.motivoExclusion || "No llamar: exclusion comercial",
+        variant: "destructive" as const,
+        className: "",
+        icon: XCircle,
+      };
+    }
+    if (lead.intentosTotales >= rules.intentosDescartar) {
+      return {
+        label: `No llamar: ${rules.intentosDescartar}+ intentos`,
+        variant: "destructive" as const,
+        className: "",
+        icon: XCircle,
+      };
+    }
+    if (lead.invalidos >= rules.unallocatedDescartar) {
+      return {
+        label: "No llamar: UNALLOCATED",
+        variant: "destructive" as const,
+        className: "",
+        icon: XCircle,
+      };
+    }
+    if (lead.rechazados >= rules.rejectedDescartar && !contactado) {
+      return {
+        label: "No llamar: REJECTED",
+        variant: "destructive" as const,
+        className: "",
+        icon: XCircle,
+      };
+    }
+    return {
+      label: "No llamar",
+      variant: "destructive" as const,
+      className: "",
+      icon: XCircle,
+    };
+  }
+
+  if (sinHistorial) {
+    return {
+      label: "Sin historial",
+      variant: "outline" as const,
+      className: "text-foreground",
+      icon: Search,
+    };
+  }
+
+  if (reintentar) {
+    return {
+      label: "Apta para reintento",
+      variant: "outline" as const,
+      className: "text-primary",
+      icon: PhoneCall,
+    };
+  }
+
+  if (contactado && !noSaturado) {
+    return {
+      label: "Revisar: contacto histórico",
+      variant: "outline" as const,
+      className: "text-warning",
+      icon: CheckCircle2,
+    };
+  }
+
+  if (contactado) {
+    return {
+      label: "Contacto histórico",
+      variant: "outline" as const,
+      className: "text-success",
+      icon: CheckCircle2,
+    };
+  }
+
+  if (buzonSinContacto && !noSaturado) {
+    return {
+      label: "Pausar: buzón saturado",
+      variant: "outline" as const,
+      className: "text-warning",
+      icon: PhoneOff,
+    };
+  }
+
+  if (buzonSinContacto) {
+    return {
+      label: "Segmentar: buzón",
+      variant: "outline" as const,
+      className: "text-warning",
+      icon: PhoneOff,
+    };
+  }
+
+  if (!noSaturado) {
+    return {
+      label: "Pausar: saturada",
+      variant: "outline" as const,
+      className: "text-warning",
+      icon: PhoneOff,
+    };
+  }
+
+  return {
+    label: "Con historial",
+    variant: "outline" as const,
+    className: "text-muted-foreground",
+    icon: CheckCircle2,
+  };
+}
+
 function MultiCheckSelect({
   options,
   values,
@@ -1420,7 +1544,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
             </div>
 
             <div className="overflow-hidden rounded-lg border border-border">
-              <div className="grid grid-cols-[minmax(110px,1fr)_minmax(150px,1.5fr)_100px_110px_130px] gap-3 bg-muted/40 px-3 py-2 text-[11px] font-semibold uppercase text-muted-foreground">
+              <div className="grid grid-cols-[minmax(110px,1fr)_minmax(150px,1.5fr)_90px_110px_190px] gap-3 bg-muted/40 px-3 py-2 text-[11px] font-semibold uppercase text-muted-foreground">
                 <span>Línea</span>
                 <span>Cliente</span>
                 <span>Intentos</span>
@@ -1430,17 +1554,29 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
               <div className="max-h-72 divide-y divide-border overflow-auto">
                 {visiblePreview.slice(0, 100).map((lead) => {
                   const leadCategories = getLeadCategories(lead, fuzzionRules);
+                  const reading = getLeadReading(lead, leadCategories, fuzzionRules);
+                  const ReadingIcon = reading.icon;
 
                   return (
                   <div
                     key={`${lead.rowNumber}-${lead.linea}`}
-                    className="grid grid-cols-[minmax(110px,1fr)_minmax(150px,1.5fr)_100px_110px_130px] gap-3 px-3 py-2 text-xs"
+                    className="grid grid-cols-[minmax(110px,1fr)_minmax(150px,1.5fr)_90px_110px_190px] gap-3 px-3 py-2 text-xs"
                   >
                     <span className="font-mono text-foreground">{lead.linea}</span>
                     <span className="truncate">{lead.razonSocial || "-"}</span>
                     <span>{lead.intentosTotales}</span>
                     <span className="truncate">{lead.ultimoEstado || "Sin historial"}</span>
                     <div>
+                      <Badge
+                        variant={reading.variant}
+                        className={`max-w-full justify-start ${reading.className}`}
+                        title={reading.label}
+                      >
+                        <ReadingIcon className="mr-1 h-3 w-3 shrink-0" />
+                        <span className="truncate">{reading.label}</span>
+                      </Badge>
+                    </div>
+                    <div className="hidden">
                       {leadCategories.includes("DESCARTAR") ? (
                         <Badge variant="destructive">
                           <XCircle className="mr-1 h-3 w-3" />

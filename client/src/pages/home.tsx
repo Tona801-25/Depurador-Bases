@@ -239,6 +239,7 @@ export default function Home() {
     names: string[];
   } | null>(null);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const [neotelModalOpen, setNeotelModalOpen] = useState(false);
   const [operationLog, setOperationLog] = useState<OperationLogEntry[]>([]);
   const [logPanelOpen, setLogPanelOpen] = useState(false);
 
@@ -1353,6 +1354,26 @@ export default function Home() {
                   {localHistoryFiles.length.toLocaleString("es-AR")}
                 </Badge>
               </button>
+              <button
+                type="button"
+                className="mt-3 flex w-full items-center justify-between gap-3 rounded-lg border border-border bg-background/70 px-3 py-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
+                onClick={() => setNeotelModalOpen(true)}
+              >
+                <span className="flex min-w-0 items-center gap-3">
+                  <span className="rounded-lg border border-primary/20 bg-primary/10 p-2 text-primary">
+                    <Database className="h-4 w-4" />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-sm font-semibold text-foreground">
+                      Conexión Neotel
+                    </span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      FTP, fechas y catalogaciones.
+                    </span>
+                  </span>
+                </span>
+                <Badge variant="outline">FTP</Badge>
+              </button>
             </div>
           </aside>
 
@@ -1361,19 +1382,21 @@ export default function Home() {
               <FuzzionTab onLog={pushOperationLog} />
             </section>
 
-            <section className="mb-4">
-              <NeotelSourcesPanel
-                onLog={pushOperationLog}
-                onLocalImportComplete={() => {
-                  void queryClient.invalidateQueries({
-                    queryKey: ["local-history-stats"],
-                  });
-                  void queryClient.invalidateQueries({
-                    queryKey: ["local-history-files"],
-                  });
-                }}
-              />
-            </section>
+            <Dialog open={neotelModalOpen} onOpenChange={setNeotelModalOpen}>
+              <DialogContent className="max-h-[90vh] max-w-[min(1180px,calc(100vw-2rem))] overflow-auto p-0">
+                <NeotelSourcesPanel
+                  onLog={pushOperationLog}
+                  onLocalImportComplete={() => {
+                    void queryClient.invalidateQueries({
+                      queryKey: ["local-history-stats"],
+                    });
+                    void queryClient.invalidateQueries({
+                      queryKey: ["local-history-files"],
+                    });
+                  }}
+                />
+              </DialogContent>
+            </Dialog>
 
         <section className="hidden">
           <Card className="glass-card overflow-hidden border-primary/15 bg-background/70">
