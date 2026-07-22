@@ -28,6 +28,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
+import { cn } from "@/lib/utils";
 
 type FuzzionCategory =
   | "TODOS"
@@ -406,7 +407,7 @@ function MultiCheckSelect({
           type="button"
           variant="outline"
           disabled={disabled}
-          className="h-10 w-full justify-between rounded-none px-3 font-normal"
+          className="soft-cyan-hover h-10 w-full justify-between rounded-none px-3 font-normal"
         >
           <span className="truncate">{summary}</span>
           <ChevronDown className="ml-2 h-4 w-4 shrink-0 text-muted-foreground" />
@@ -433,8 +434,55 @@ function MultiCheckSelect({
   );
 }
 
+function FlatSelect({
+  value,
+  options,
+  onChange,
+  disabled = false,
+}: {
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+}) {
+  const selectedLabel = options.find((option) => option.value === value)?.label ?? options[0]?.label ?? "Seleccionar";
+
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={disabled}
+          className="soft-cyan-hover h-11 w-full justify-between rounded-none border-primary/25 bg-background px-3 text-sm font-semibold focus:ring-0 focus:ring-offset-0"
+        >
+          <span className="truncate">{selectedLabel}</span>
+          <ChevronDown className="ml-2 h-4 w-4 shrink-0 text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[var(--radix-popover-trigger-width)] rounded-none border-primary/25 bg-popover p-1">
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            className={cn(
+              "flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm transition-colors hover:bg-primary/10 hover:text-primary",
+              option.value === value && "bg-primary/10 text-primary"
+            )}
+            onClick={() => onChange(option.value)}
+          >
+            <span>{option.label}</span>
+            {option.value === value ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0" /> : null}
+          </button>
+        ))}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 export function FuzzionTab({ onLog }: FuzzionTabProps) {
   const inputRef = useRef<HTMLInputElement>(null);
+  const flatInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const [data, setData] = useState<FuzzionPreview | null>(null);
   const [composition, setComposition] = useState<FuzzionComposition | null>(null);
@@ -784,6 +832,96 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
     });
   }, [data, exportMode, filterMode, filterValues, fuzzionRules, rangeDays, search, selectedCategories]);
 
+  const flatDbName = data?.fileName
+    ? data.fileName.replace(/\.[^.]+$/, "")
+    : "Sin base cargada";
+  const flatTotalRows = data?.validRows ?? 0;
+  const flatUniqueRows = data?.uniqueAnis ?? 0;
+  const flatRemainingRows = selectedExportCount ?? displayedComposition?.loteDepurado ?? 0;
+  const flatEliminatedRows = displayedComposition?.descartadas ?? 0;
+  const flatRangeLabel = rangeDays > 0 ? `Últimos ${rangeDays} días` : "Todo el historial";
+  const flatCatalogLabel = filterMode === "CATALOGACION"
+    ? filterValues.length === 0
+      ? "Todas"
+      : `${filterValues.length} seleccionadas`
+    : "Todas";
+  const flatGatewayLabel = filterMode === "ESTADO"
+    ? filterValues.length === 0
+      ? "Todos"
+      : `${filterValues.length} seleccionados`
+    : "Todos";
+
+  const matrixColumns = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const lead of visiblePreview) {
+      const key = lead.ultimoEstado || "Sin estado";
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4)
+      .map(([label]) => label);
+  }, [visiblePreview]);
+
+  const matrixRows = useMemo(() => {
+    const rows = new Map<string, { label: string; total: number; byGateway: Map<string, number> }>();
+
+    for (const lead of visiblePreview) {
+      const catalog = lead.catalogacionesGestion[0];
+      const label = catalog
+        ? `${catalog.resultado || "Sin resultado"} · ${catalog.subresultado || "Sin subresultado"}`
+        : lead.resultadoGestion || lead.subresultadoGestion
+          ? `${lead.resultadoGestion || "Sin resultado"} · ${lead.subresultadoGestion || "Sin subresultado"}`
+          : "Sin catalogación";
+      const gateway = lead.ultimoEstado || "Sin estado";
+      const current = rows.get(label) ?? { label, total: 0, byGateway: new Map<string, number>() };
+      current.total += 1;
+      current.byGateway.set(gateway, (current.byGateway.get(gateway) ?? 0) + 1);
+      rows.set(label, current);
+    }
+
+    return Array.from(rows.values())
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 5);
+  }, [visiblePreview]);
+
+  const remainingBreakdown = useMemo(() => (
+    matrixRows.slice(0, 4).map((row) => ({
+      label: row.label,
+      count: row.total,
+    }))
+  ), [matrixRows]);
+
+  const segmentChips = useMemo(() => {
+    const counts = {
+      buzones: 0,
+      contacto: 0,
+      noContesta: 0,
+      answerGw: 0,
+      cancelled: 0,
+      unallocated: 0,
+    };
+
+    for (const lead of visiblePreview) {
+      const stateText = `${lead.ultimoEstado} ${lead.ultimoSubestado}`.toUpperCase();
+      if (lead.buzones > 0 && lead.contactosEfectivos === 0) counts.buzones += 1;
+      if (lead.contactosEfectivos > 0) counts.contacto += 1;
+      if (lead.noAnswer > 0) counts.noContesta += 1;
+      if (lead.ultimoEstado === "ANSWER") counts.answerGw += 1;
+      if (stateText.includes("CANCEL")) counts.cancelled += 1;
+      if (stateText.includes("UNALLOCATED") || lead.invalidos > 0) counts.unallocated += 1;
+    }
+
+    return [
+      { label: "Buzones", count: counts.buzones },
+      { label: "Contacto hist.", count: counts.contacto },
+      { label: "No contesta", count: counts.noContesta },
+      { label: "Answer GW", count: counts.answerGw },
+      { label: "Cancelled", count: counts.cancelled },
+      { label: "UNALLOCATED", count: counts.unallocated },
+    ];
+  }, [visiblePreview]);
+
   async function handleFile(file?: File) {
     if (!file) return;
 
@@ -969,8 +1107,8 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
   }
 
   return (
-    <Card className="glass-card border-glass-border">
-      <CardHeader className="pb-3">
+    <Card className="border-0 bg-transparent text-foreground shadow-none">
+      <CardHeader className="hidden">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-wide text-primary">
@@ -1004,7 +1142,307 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
         </div>
       </CardHeader>
 
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-4 p-0">
+        <div className="space-y-5">
+          <section className="soft-cyan-hover overflow-hidden rounded-md border border-primary/25 bg-card/80 dark:bg-[#05090b]">
+            <div className="flex flex-col gap-3 border-b border-primary/20 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <h2 className="flex items-center gap-2 font-display text-sm font-bold uppercase tracking-[0.14em] text-foreground">
+                  <SlidersHorizontal className="h-4 w-4 text-primary" />
+                  Filtrar · Depurar lote para Neotel
+                </h2>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Cruzá la base cargada contra SQLite y decidí qué queda para llamar.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <input
+                  ref={flatInputRef}
+                  className="hidden"
+                  type="file"
+                  accept=".xls,.xlsx,.csv,.txt"
+                  onChange={(event) => handleFile(event.target.files?.[0])}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-9 rounded-none border-primary/40 bg-transparent px-4 text-[11px] font-bold uppercase tracking-[0.14em] text-foreground hover:bg-primary/10 hover:shadow-[0_0_18px_hsl(var(--primary)/0.18)]"
+                  onClick={() => flatInputRef.current?.click()}
+                  disabled={uploading}
+                >
+                  <Upload className="mr-2 h-4 w-4" />
+                  {uploading ? "Cruzando..." : "Cargar base"}
+                </Button>
+                <Button
+                  type="button"
+                  className="h-9 rounded-none px-5 text-[11px] font-bold uppercase tracking-[0.14em] hover:shadow-[0_0_22px_hsl(var(--primary)/0.22)]"
+                  disabled={!data || flatRemainingRows === 0}
+                  onClick={handleExport}
+                >
+                  <Download className="mr-2 h-4 w-4" />
+                  Descargar resultado
+                </Button>
+              </div>
+            </div>
+
+            <div className="grid border-b border-primary/20 md:grid-cols-4">
+              {[
+                { label: "Nombre DB", value: flatDbName, tone: "text-foreground" },
+                { label: "Q datos iniciales", value: flatTotalRows.toLocaleString("es-AR"), tone: "text-foreground" },
+                { label: "Restante post-filtro", value: flatRemainingRows.toLocaleString("es-AR"), tone: "text-primary" },
+                { label: "Eliminados", value: flatEliminatedRows.toLocaleString("es-AR"), tone: "text-destructive" },
+              ].map((item) => (
+                <div key={item.label} className="soft-cyan-hover relative min-h-[82px] border-b border-primary/10 px-5 py-4 hover:bg-primary/[0.045] md:border-b-0 md:border-r md:border-primary/20 last:border-r-0">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                    {item.label}
+                  </p>
+                  <p className={`mt-2 truncate font-display text-2xl font-black tracking-tight ${item.tone}`}>
+                    {item.value}
+                  </p>
+                  {item.label === "Restante post-filtro" && remainingBreakdown.length > 0 ? (
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <button
+                          type="button"
+                          className="absolute right-4 top-4 text-[10px] font-black uppercase tracking-[0.12em] text-primary hover:text-primary/80"
+                        >
+                          Ver desglose →
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent align="end" className="w-80 rounded-none border-primary/25 bg-popover p-4">
+                        <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                          Detalle del restante
+                        </p>
+                        <div className="space-y-2">
+                          {remainingBreakdown.map((row) => (
+                            <div key={row.label} className="flex items-center justify-between gap-3 border-b border-border/60 pb-2 text-xs last:border-b-0 last:pb-0">
+                              <span className="truncate text-muted-foreground">{row.label}</span>
+                              <strong className="text-foreground">{row.count.toLocaleString("es-AR")}</strong>
+                            </div>
+                          ))}
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+
+            <div className="grid gap-3 px-5 py-5 lg:grid-cols-3">
+              <label className="space-y-2">
+                <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                  Rango histórico
+                </span>
+                <FlatSelect
+                  value={String(rangeDays)}
+                  onChange={(value) => setRangeDays(Number(value))}
+                  options={[
+                    { value: "0", label: "Todo el historial" },
+                    { value: "7", label: "Ultimos 7 dias" },
+                    { value: "30", label: "Ultimos 30 dias" },
+                    { value: "60", label: "Ultimos 60 dias" },
+                    { value: "90", label: "Ultimos 90 dias" },
+                  ]}
+                />
+              </label>
+
+              <label className="space-y-2">
+                <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                  Mirada del filtro
+                </span>
+                <FlatSelect value={filterMode} onChange={(value) => { setFilterMode(value as FuzzionFilterMode); setFilterValues([]); setSelectedCategories([]); }} options={[{ value: "RECOMENDACION", label: "Recomendacion operativa" }, { value: "CATALOGACION", label: "Catalogacion comercial" }, { value: "ESTADO", label: "Estado gateway" }]} />
+              </label>
+
+              <div className="space-y-2">
+                <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                  Valores
+                </span>
+                <MultiCheckSelect
+                  options={multiOptions}
+                  values={filterMode === "RECOMENDACION" ? selectedCategories : filterValues}
+                  disabled={!data}
+                  onChange={(values) => {
+                    if (filterMode === "RECOMENDACION") {
+                      setSelectedCategories(values as FuzzionCategory[]);
+                    } else {
+                      setFilterValues(values);
+                    }
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="px-5 pb-5">
+              <div className="mb-3 grid gap-2 text-[11px] text-muted-foreground sm:grid-cols-3">
+                <div className="soft-cyan-hover border border-primary/20 px-3 py-2 hover:bg-primary/[0.045]">
+                  <span className="block uppercase tracking-[0.16em]">Desde · hasta</span>
+                  <strong className="mt-1 block text-foreground">{flatRangeLabel}</strong>
+                </div>
+                <div className="soft-cyan-hover border border-primary/20 px-3 py-2 hover:bg-primary/[0.045]">
+                  <span className="block uppercase tracking-[0.16em]">Catalogaciones</span>
+                  <strong className="mt-1 block text-foreground">{flatCatalogLabel}</strong>
+                </div>
+                <div className="soft-cyan-hover border border-primary/20 px-3 py-2 hover:bg-primary/[0.045]">
+                  <span className="block uppercase tracking-[0.16em]">Estado gateways</span>
+                  <strong className="mt-1 block text-foreground">{flatGatewayLabel}</strong>
+                </div>
+              </div>
+
+              <div className="soft-cyan-hover border border-primary/25">
+                <div className="flex items-center justify-between border-b border-primary/20 px-3 py-3">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                    Matriz de resultado · catalogaciones x gateways
+                  </p>
+                  <span className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+                    {matrixColumns.length} col x {matrixRows.length} filas
+                  </span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[720px] text-left text-xs">
+                    <thead className="bg-primary/5 text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                      <tr>
+                        <th className="px-3 py-3">Catalogación</th>
+                        {matrixColumns.map((column) => (
+                          <th key={column} className="px-3 py-3 text-right">{column}</th>
+                        ))}
+                        <th className="px-3 py-3 text-right text-primary">Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {matrixRows.length > 0 ? (
+                        matrixRows.map((row) => (
+                          <tr key={row.label} className="border-t border-primary/10 transition-colors hover:bg-primary/[0.045]">
+                            <td className="max-w-[360px] truncate px-3 py-3 font-semibold text-foreground">{row.label}</td>
+                            {matrixColumns.map((column) => (
+                              <td key={column} className="px-3 py-3 text-right text-muted-foreground">
+                                {(row.byGateway.get(column) ?? 0).toLocaleString("es-AR")}
+                              </td>
+                            ))}
+                            <td className="px-3 py-3 text-right font-bold text-primary">{row.total.toLocaleString("es-AR")}</td>
+                          </tr>
+                        ))
+                      ) : (
+                        <tr>
+                          <td className="px-3 py-8 text-center text-muted-foreground" colSpan={matrixColumns.length + 2}>
+                            Cargá una base Fuzzión para ver la matriz de depuración.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section className="soft-cyan-hover overflow-hidden rounded-md border border-primary/25 bg-card/80 dark:bg-[#05090b]">
+            <div className="flex flex-col gap-3 border-b border-primary/20 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <h2 className="flex items-center gap-2 font-display text-sm font-bold uppercase tracking-[0.14em] text-foreground">
+                  <FileSpreadsheet className="h-4 w-4 text-primary" />
+                  Descarga · Lote segmentado
+                </h2>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Armá un lote puntual con nombre controlado y revisá el total antes de exportar.
+                </p>
+              </div>
+              <Button
+                type="button"
+                className="h-9 rounded-none px-5 text-[11px] font-bold uppercase tracking-[0.14em] hover:shadow-[0_0_22px_hsl(var(--primary)/0.22)]"
+                disabled={!data || flatRemainingRows === 0}
+                onClick={handleExport}
+              >
+                <Download className="mr-2 h-4 w-4" />
+                Descargar segmento
+              </Button>
+            </div>
+
+            <div className="grid border-b border-primary/20 md:grid-cols-2">
+              <div className="soft-cyan-hover relative min-h-[82px] border-b border-primary/10 px-5 py-4 hover:bg-primary/[0.045] md:border-b-0 md:border-r md:border-primary/20">
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                  Total líneas
+                </p>
+                <p className="mt-2 font-display text-2xl font-black tracking-tight text-primary">{flatTotalRows.toLocaleString("es-AR")}</p>
+                {segmentChips.some((chip) => chip.count > 0) ? (
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <button
+                        type="button"
+                        className="absolute right-4 top-4 text-[10px] font-black uppercase tracking-[0.12em] text-primary hover:text-primary/80"
+                      >
+                        Ver desglose →
+                      </button>
+                    </PopoverTrigger>
+                    <PopoverContent align="start" className="w-80 rounded-none border-primary/25 bg-popover p-4">
+                      <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                        Desglose por tipo
+                      </p>
+                      <div className="space-y-2">
+                        {segmentChips.map((chip) => (
+                          <div key={chip.label} className="flex items-center justify-between gap-3 border-b border-border/60 pb-2 text-xs last:border-b-0 last:pb-0">
+                            <span className="truncate text-muted-foreground">{chip.label}</span>
+                            <strong className="text-foreground">{chip.count.toLocaleString("es-AR")}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    </PopoverContent>
+                  </Popover>
+                ) : null}
+              </div>
+              <div className="soft-cyan-hover min-h-[82px] px-5 py-4 hover:bg-primary/[0.045]">
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                  Líneas únicas
+                </p>
+                <p className="mt-2 font-display text-2xl font-black tracking-tight text-foreground">{flatUniqueRows.toLocaleString("es-AR")}</p>
+              </div>
+            </div>
+
+            <div className="grid gap-3 px-5 py-5 lg:grid-cols-3">
+              <label className="space-y-2">
+                <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                  Tipo de descarga
+                </span>
+                <FlatSelect value={exportMode} onChange={(value) => setExportMode(value as FuzzionExportMode)} options={[{ value: "DEPURADO", label: "Lote depurado para llamar" }, { value: "SEGMENTO", label: "Un grupo puntual" }]} />
+              </label>
+              <label className="space-y-2">
+                <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                  Buscar en lote
+                </span>
+                <div className="soft-cyan-hover flex h-11 items-center gap-2 border border-primary/25 bg-background px-3">
+                  <Search className="h-4 w-4 text-muted-foreground" />
+                  <Input
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    placeholder="Linea, nombre, DNI, estado..."
+                    className="h-9 border-0 bg-transparent px-0 focus-visible:ring-0"
+                  />
+                </div>
+              </label>
+              <div className="space-y-2">
+                <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                  Total a descargar
+                </span>
+                <div className="soft-cyan-hover flex h-11 items-center border border-primary/25 bg-primary/5 px-3 text-lg font-black text-primary">
+                  {countingSelection ? "Calculando..." : flatRemainingRows.toLocaleString("es-AR")}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2 px-5 pb-5">
+              {segmentChips.map((chip) => (
+                <button
+                  key={chip.label}
+                  type="button"
+                  className="soft-cyan-hover rounded-none border border-primary/25 px-3 py-2 text-[11px] text-muted-foreground transition-colors hover:border-primary hover:bg-primary/[0.045] hover:text-primary"
+                >
+                  {chip.label} <strong className="ml-1 text-foreground">{chip.count.toLocaleString("es-AR")}</strong>
+                </button>
+              ))}
+            </div>
+          </section>
+        </div>
+
+        <div className="hidden">
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
           {[
             { category: "NUNCA_TRABAJADO" as const, label: "Sin historial en tickets SQLite", count: dynamicStats.nuncaTrabajados, valueClass: "text-foreground", cardClass: "border-border bg-background" },
@@ -1631,6 +2069,8 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
             {fuzzionRules.unallocatedDescartar} UNALLOCATED o{" "}
             {fuzzionRules.rejectedDescartar} REJECTED sin contacto efectivo.
           </p>
+        </div>
+
         </div>
 
         <Dialog

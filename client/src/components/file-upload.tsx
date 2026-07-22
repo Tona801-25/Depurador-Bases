@@ -158,7 +158,7 @@ export function FileUpload({
     >
       <div className="pointer-events-none absolute -right-20 -top-20 h-60 w-60 rounded-full bg-primary/5 blur-3xl" />
 
-      <div className="relative flex flex-wrap items-center justify-between gap-4">
+      <div className={cn("relative flex flex-wrap items-center justify-between gap-4", compact && !hasFiles && "hidden")}>
         <h2 className="flex items-center gap-2 text-base font-bold uppercase text-foreground">
           <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
             <Upload className="h-4 w-4" />
@@ -210,15 +210,14 @@ export function FileUpload({
         </div>
       ) : null}
 
-      {description && !hasFiles ? (
+      {description && !hasFiles && !compact ? (
         <p className="relative mt-2 text-xs text-muted-foreground">{description}</p>
       ) : null}
 
       {!hasFiles && compact ? (
         <label
           className={cn(
-            "relative mt-4 flex h-11 cursor-pointer items-center justify-center gap-2 rounded-lg border border-primary/25 bg-primary/10 px-4 text-sm font-semibold text-primary",
-            "transition-colors hover:bg-primary/15",
+            "soft-cyan-hover relative flex min-h-[74px] cursor-pointer items-center gap-3 rounded-none border border-dashed border-primary/25 bg-background/40 px-4 py-3 text-left",
             isUploading && "pointer-events-none opacity-60",
           )}
         >
@@ -232,11 +231,22 @@ export function FileUpload({
             data-testid="input-file-upload"
           />
           {isUploading ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-primary/30 bg-primary/10 text-primary">
+              <Loader2 className="h-4 w-4 animate-spin" />
+            </span>
           ) : (
-            <Plus className="h-4 w-4" />
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-primary/30 bg-primary/10 text-primary">
+              <FileSpreadsheet className="h-4 w-4" />
+            </span>
           )}
-          {isUploading ? "Procesando..." : "Seleccionar tickets"}
+          <span className="min-w-0">
+            <span className="block text-sm font-bold text-foreground">
+              {isUploading ? "Procesando..." : "Seleccionar tickets"}
+            </span>
+            <span className="mt-1 block truncate text-[11px] text-muted-foreground">
+              .csv · .txt · .xlsx externos al FTP
+            </span>
+          </span>
         </label>
       ) : !hasFiles ? (
         <div

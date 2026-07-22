@@ -64,6 +64,7 @@ import {
   ClipboardList,
   MoreVertical,
   ChevronDown,
+  X,
 } from "lucide-react";
 import FilterChips from "@/components/dashboard/filterChips";
 import ExportMenu from "@/components/dashboard/exportMenu";
@@ -239,7 +240,9 @@ export default function Home() {
     names: string[];
   } | null>(null);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const [quickHistoryOpen, setQuickHistoryOpen] = useState(false);
   const [neotelModalOpen, setNeotelModalOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [operationLog, setOperationLog] = useState<OperationLogEntry[]>([]);
   const [logPanelOpen, setLogPanelOpen] = useState(false);
 
@@ -1175,6 +1178,7 @@ export default function Home() {
     () => [...localHistoryFiles].sort(compareHistoryFiles),
     [localHistoryFiles],
   );
+  const quickHistoryFiles = sortedLocalHistoryFiles.slice(0, 5);
 
   const historyPeriodOptions = useMemo<HistoryPeriodOption[]>(() => {
     const groups = new Map<string, HistoryPeriodOption>();
@@ -1307,22 +1311,79 @@ export default function Home() {
     });
   };
 
+  const openHistoryDrawerTarget = () => {
+    setSidebarOpen(false);
+    window.setTimeout(() => setHistoryModalOpen(true), 180);
+  };
+
+  const openNeotelDrawerTarget = () => {
+    setSidebarOpen(false);
+    window.setTimeout(() => setNeotelModalOpen(true), 180);
+  };
+
   return (
     <div className="min-h-screen overflow-x-hidden bg-background text-foreground">
-      <Header />
+      <Header
+        onMenuClick={() => setSidebarOpen((current) => !current)}
+        onHistoryClick={() => setQuickHistoryOpen(true)}
+        historyCount={quickHistoryFiles.length}
+      />
 
       <main className="operational-workspace w-full" data-export-root>
-        <div className="min-h-[calc(100vh-3rem)] lg:grid lg:grid-cols-[250px_minmax(0,1fr)]">
-          <aside className="border-b border-border bg-card/20 lg:sticky lg:top-12 lg:h-[calc(100vh-3rem)] lg:border-b-0 lg:border-r">
-            <div className="border-b border-border px-3 py-3">
-              <p className="mb-2 text-[10px] font-semibold uppercase text-muted-foreground">
-                Archivos externos
+        <button
+          type="button"
+          aria-label="Cerrar fuentes de datos"
+          className={cn(
+            "fixed inset-0 z-[60] bg-black/70 backdrop-blur-[1px] transition-opacity duration-300 ease-out",
+            sidebarOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
+          )}
+          onClick={() => setSidebarOpen(false)}
+        />
+
+        <div className="min-h-[calc(100vh-64px)]">
+          <aside className={cn(
+            "fixed inset-y-0 left-0 z-[70] w-[376px] max-w-[88vw] border-r border-primary/25 bg-background shadow-2xl shadow-black/35 transition-transform duration-300 ease-out dark:bg-[#05090b]",
+            sidebarOpen ? "translate-x-0" : "-translate-x-full",
+          )}>
+            <div className="flex h-11 items-center justify-between border-b border-primary/20 px-3 font-mono">
+              <p className="text-xs font-extrabold uppercase tracking-[0.14em] text-foreground">
+                Fuentes de datos
+              </p>
+              <button
+                type="button"
+                className="flex h-7 w-7 items-center justify-center rounded-md border border-primary/35 bg-primary/10 text-primary transition-colors hover:bg-primary hover:text-primary-foreground"
+                onClick={() => setSidebarOpen(false)}
+                aria-label="Cerrar fuentes de datos"
+                title="Cerrar"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="h-[calc(100vh-44px)] overflow-auto border-b border-primary/20 px-3 py-4 font-mono">
+              <div className="mb-5 -mx-1">
+                <NeotelSourcesPanel
+                  sidebar
+                  onLog={pushOperationLog}
+                  onLocalImportComplete={() => {
+                    void queryClient.invalidateQueries({
+                      queryKey: ["local-history-stats"],
+                    });
+                    void queryClient.invalidateQueries({
+                      queryKey: ["local-history-files"],
+                    });
+                  }}
+                />
+              </div>
+
+              <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                Carga manual
               </p>
               <FileUpload
                 onFilesSelected={handleFilesSelected}
                 onCancelUpload={handleCancelUpload}
                 compact
-                className="rounded-none border-0 bg-transparent p-0 shadow-none backdrop-blur-none hover:shadow-none"
+                className="rounded-none border-0 bg-transparent p-0 shadow-none backdrop-blur-none hover:shadow-none [&_h2]:text-sm [&_h2]:tracking-tight [&_label]:rounded-none"
                 title="Carga manual"
                 description="Archivos externos al FTP."
                 isUploading={
@@ -1334,15 +1395,15 @@ export default function Home() {
               />
               <button
                 type="button"
-                className="mt-3 flex w-full items-center justify-between gap-3 rounded-lg border border-border bg-background/70 px-3 py-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
-                onClick={() => setHistoryModalOpen(true)}
+                className="soft-cyan-hover mt-6 flex w-full items-center justify-between gap-3 rounded-md border border-primary/15 bg-background/70 px-3 py-3 text-left transition-colors hover:border-primary/45 hover:bg-primary/5 dark:bg-[#0b1114]"
+                onClick={openHistoryDrawerTarget}
               >
                 <span className="flex min-w-0 items-center gap-3">
-                  <span className="rounded-lg border border-primary/20 bg-primary/10 p-2 text-primary">
+                  <span className="rounded-md border border-primary/25 bg-primary/10 p-2 text-primary">
                     <Database className="h-4 w-4" />
                   </span>
                   <span className="min-w-0">
-                    <span className="block text-sm font-semibold text-foreground">
+                    <span className="block text-sm font-bold text-foreground">
                       Historial de tickets
                     </span>
                     <span className="block truncate text-xs text-muted-foreground">
@@ -1350,21 +1411,21 @@ export default function Home() {
                     </span>
                   </span>
                 </span>
-                <Badge variant="outline">
+                <Badge variant="outline" className="rounded px-2 font-mono text-[11px]">
                   {localHistoryFiles.length.toLocaleString("es-AR")}
                 </Badge>
               </button>
               <button
                 type="button"
-                className="mt-3 flex w-full items-center justify-between gap-3 rounded-lg border border-border bg-background/70 px-3 py-3 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
-                onClick={() => setNeotelModalOpen(true)}
+                className="hidden"
+                onClick={openNeotelDrawerTarget}
               >
                 <span className="flex min-w-0 items-center gap-3">
-                  <span className="rounded-lg border border-primary/20 bg-primary/10 p-2 text-primary">
+                  <span className="rounded-md border border-primary/25 bg-primary/10 p-2 text-primary">
                     <Database className="h-4 w-4" />
                   </span>
                   <span className="min-w-0">
-                    <span className="block text-sm font-semibold text-foreground">
+                    <span className="block text-sm font-bold text-foreground">
                       Conexión Neotel
                     </span>
                     <span className="block truncate text-xs text-muted-foreground">
@@ -1372,8 +1433,117 @@ export default function Home() {
                     </span>
                   </span>
                 </span>
-                <Badge variant="outline">FTP</Badge>
+                <Badge variant="outline" className="rounded px-2 font-mono text-[11px]">FTP</Badge>
               </button>
+            </div>
+          </aside>
+
+          <button
+            type="button"
+            aria-label="Cerrar historial rapido"
+            className={cn(
+              "fixed inset-0 z-[65] bg-black/72 backdrop-blur-[1px] transition-opacity duration-300 ease-out",
+              quickHistoryOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
+            )}
+            onClick={() => setQuickHistoryOpen(false)}
+          />
+
+          <aside
+            className={cn(
+              "fixed inset-y-0 right-0 z-[75] w-[520px] max-w-[92vw] border-l border-primary/25 bg-background shadow-2xl shadow-black/40 transition-transform duration-300 ease-out dark:bg-[#0b1114]",
+              quickHistoryOpen ? "translate-x-0" : "translate-x-full",
+            )}
+            aria-hidden={!quickHistoryOpen}
+          >
+            <div className="flex h-14 items-center justify-between border-b border-primary/20 px-5">
+              <div className="min-w-0">
+                <h2 className="font-display text-base font-bold text-foreground">
+                  Historial de tickets
+                </h2>
+                <p className="text-xs text-muted-foreground">
+                  {quickHistoryFiles.length.toLocaleString("es-AR")} guardados para carga rapida
+                </p>
+              </div>
+              <button
+                type="button"
+                className="flex h-8 w-8 items-center justify-center rounded-md border border-primary/35 bg-primary/10 text-primary transition-colors hover:bg-primary hover:text-primary-foreground"
+                onClick={() => setQuickHistoryOpen(false)}
+                aria-label="Cerrar historial rapido"
+                title="Cerrar"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="h-[calc(100vh-56px)] overflow-auto">
+              <div className="grid grid-cols-[1.3fr_0.8fr_0.8fr_0.7fr] gap-4 border-b border-primary/20 px-5 py-3 text-[11px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
+                <div>Fecha</div>
+                <div className="text-right">Registros</div>
+                <div className="text-center">Estado</div>
+                <div className="text-right">Accion</div>
+              </div>
+
+              {quickHistoryFiles.length === 0 ? (
+                <div className="px-5 py-8 text-sm text-muted-foreground">
+                  Todavia no hay tickets recientes para mostrar.
+                </div>
+              ) : (
+                <div className="divide-y divide-border/60">
+                  {quickHistoryFiles.map((file) => {
+                    const uploadedDate = new Date(file.uploadedAt);
+                    const dateLabel = file.fechaArchivo || uploadedDate.toLocaleDateString("es-AR");
+                    const timeLabel = uploadedDate.toLocaleTimeString("es-AR", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    });
+
+                    return (
+                      <div
+                        key={file.id}
+                        className="grid grid-cols-[1.3fr_0.8fr_0.8fr_0.7fr] items-center gap-4 px-5 py-4 text-sm transition-colors hover:bg-primary/[0.045]"
+                      >
+                        <div className="min-w-0">
+                          <p className="font-display text-[15px] font-bold text-foreground">
+                            {dateLabel} <span className="text-muted-foreground">{timeLabel}</span>
+                          </p>
+                          <p className="mt-1 truncate font-mono text-[11px] text-muted-foreground">
+                            {file.fileHash.slice(0, 4)}...{file.fileHash.slice(-4)}
+                          </p>
+                        </div>
+
+                        <div className="text-right font-display text-sm font-bold text-foreground">
+                          {file.totalRecords.toLocaleString("es-AR")}
+                        </div>
+
+                        <div className="flex justify-center">
+                          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary">
+                            <span className="h-1.5 w-1.5 rounded-full bg-primary" />
+                            Guardado
+                          </span>
+                        </div>
+
+                        <div className="text-right">
+                          <button
+                            type="button"
+                            className="text-xs font-bold uppercase tracking-[0.08em] text-primary transition-colors hover:text-primary/75 disabled:opacity-50"
+                            disabled={
+                              analyzeHistoryFileMutation.isPending ||
+                              analyzeAllHistoryMutation.isPending ||
+                              uploadMutation.isPending
+                            }
+                            onClick={() => {
+                              setQuickHistoryOpen(false);
+                              analyzeHistoryFileMutation.mutate(file);
+                            }}
+                          >
+                            Cargar
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </aside>
 
@@ -2381,8 +2551,58 @@ export default function Home() {
         )}
 
         {!analysisResult && !uploadMutation.isPending && !uploadError && (
-          <Card className="glass-card">
-            <CardContent className="flex min-h-[280px] flex-col items-center justify-center p-10 text-center">
+          <Card className="border-primary/20 bg-card/70 shadow-none">
+            <CardContent className="grid gap-5 p-5 md:grid-cols-[1fr_auto] md:items-center">
+              <div className="flex min-w-0 items-start gap-3">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-primary/25 bg-primary/10 text-primary">
+                  <BarChart3 className="h-5 w-5" />
+                </div>
+
+                <div className="min-w-0">
+                  <p className="font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-primary">
+                    Análisis pendiente
+                  </p>
+                  <h3 className="mt-1 text-xl font-extrabold text-foreground">
+                    Todavía no hay análisis activo
+                  </h3>
+                  <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+                    Para ver resultados podés analizar tickets guardados, elegir un período del historial o cargar una base puntual.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2 md:justify-end">
+                <button
+                  type="button"
+                  className="inline-flex h-9 items-center gap-2 rounded-md border border-primary bg-primary px-3 text-xs font-bold text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={
+                    analyzeAllHistoryMutation.isPending ||
+                    localHistoryFiles.length === 0
+                  }
+                  onClick={() => analyzeAllHistoryMutation.mutate()}
+                >
+                  <PlayCircle className="h-4 w-4" />
+                  Analizar tickets
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-xs font-bold text-foreground transition-colors hover:border-primary/30 hover:bg-primary/5"
+                  onClick={() => setHistoryModalOpen(true)}
+                >
+                  <Database className="h-4 w-4 text-primary" />
+                  Elegir período
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-xs font-bold text-foreground transition-colors hover:border-primary/30 hover:bg-primary/5"
+                  onClick={() => setNeotelModalOpen(true)}
+                >
+                  <Database className="h-4 w-4 text-primary" />
+                  Ver conexión
+                </button>
+              </div>
+
+              <div className="hidden">
               <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-muted">
                 <BarChart3 className="h-7 w-7 text-muted-foreground" />
               </div>
@@ -2392,6 +2612,7 @@ export default function Home() {
               <p className="mt-3 max-w-[540px] text-base leading-relaxed text-muted-foreground">
                 Subí al menos un archivo de Neotel (CSV, TXT, XLS o XLSX) para habilitar las pestañas de análisis.
               </p>
+              </div>
             </CardContent>
           </Card>
         )}

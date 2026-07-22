@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -119,16 +119,31 @@
 
   body {
     @apply bg-background text-foreground font-sans antialiased;
+    font-size: 15px;
+    line-height: 1.5;
+    letter-spacing: -0.006em;
+    text-rendering: geometricPrecision;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
   h1, h2, h3, h4, h5, h6 {
-    @apply font-sans;
+    @apply font-display;
+    letter-spacing: -0.018em;
   }
 
   /* Superficie operativa sobria */
   body {
     background-image: none;
-    font-feature-settings: "ss01", "cv11", "tnum";
+    font-feature-settings: "cv11", "tnum";
+  }
+
+  code,
+  kbd,
+  pre,
+  .font-mono {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "liga" 1, "calt" 1, "zero" 1, "tnum" 1;
   }
 
   /* Scrollbar estilizado */
@@ -182,6 +197,7 @@
 
 .soft-cyan-hover:hover {
   transform: translateY(-1px);
+  background-color: hsl(var(--primary) / 0.035);
   border-color: hsl(var(--primary) / 0.35);
   box-shadow:
     0 0 0 1px hsl(var(--primary) / 0.16),
@@ -199,7 +215,7 @@
   }
 
   .stat-value {
-    @apply text-3xl font-sans font-extrabold tracking-tight;
+    @apply text-3xl font-display font-extrabold tracking-tight;
   }
 
   .stat-label {
@@ -220,7 +236,7 @@
   }
 
   .section-title {
-    @apply text-xl font-sans font-bold flex items-center justify-center gap-2;
+    @apply text-xl font-display font-bold flex items-center justify-center gap-2;
   }
 
   .section-subtitle {

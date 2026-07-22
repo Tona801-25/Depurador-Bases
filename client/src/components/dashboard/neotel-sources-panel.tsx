@@ -494,6 +494,83 @@ export function NeotelSourcesPanel({
           ? `Ultimo intento: ${formatSyncDate(syncStatus.lastAttemptAt)}`
           : "Todavia no se registro una sincronizacion.";
 
+  if (sidebar) {
+    return (
+      <Card className="rounded-none border-0 bg-transparent shadow-none">
+        <CardContent className="p-0">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+              Conexión Neotel
+            </p>
+            <Badge
+              variant="outline"
+              className={cn(
+                "rounded px-2 font-mono text-[10px]",
+                status?.ftp.configured
+                  ? "border-primary/45 bg-primary/10 text-primary"
+                  : "border-warning/35 text-warning",
+              )}
+            >
+              {status?.ftp.configured ? "FTP · OK" : "FTP pendiente"}
+            </Badge>
+          </div>
+
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <input
+              ref={reportInputRef}
+              type="file"
+              multiple
+              accept=".csv"
+              className="hidden"
+              onChange={(event) => handleReportUpload(event.target.files)}
+            />
+            <Button
+              type="button"
+              size="sm"
+              disabled={!status?.ftp.configured || syncing}
+              onClick={handleSync}
+              className="h-9 rounded-none text-[11px] font-bold uppercase tracking-[0.08em]"
+            >
+              {syncing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+              Sincronizar
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={uploading}
+              onClick={() => reportInputRef.current?.click()}
+              className="h-9 rounded-none text-[11px] font-bold uppercase tracking-[0.08em]"
+            >
+              {uploading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+              Importar
+            </Button>
+          </div>
+
+          <div className="mt-3 grid grid-cols-2 overflow-hidden rounded-none border border-primary/25">
+            {[
+              ["Gestiones", displayedStats?.totalGestiones ?? 0],
+              ["ANIs", displayedStats?.totalGestionAnis ?? 0],
+              ["Buzones", displayedStats?.mailboxAnis ?? 0],
+              ["Asesores", displayedStats?.totalAgents ?? 0],
+            ].map(([label, value]) => (
+              <div key={String(label)} className="border-b border-r border-primary/20 px-3 py-3 odd:border-r last:border-b-0 [&:nth-last-child(2)]:border-b-0">
+                <p className="text-[10px] text-muted-foreground">{label}</p>
+                <p className="mt-1 text-lg font-black text-foreground">
+                  {Number(value).toLocaleString("es-AR")}
+                </p>
+              </div>
+            ))}
+          </div>
+
+          <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
+            {syncDetail}
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <Card className={cn(sidebar ? "h-full rounded-none border-0 bg-transparent shadow-none" : "glass-card border-primary/15 bg-background/70")}>
       <CardContent className={sidebar ? "p-3" : "p-4"}>
