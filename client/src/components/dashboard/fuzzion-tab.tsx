@@ -1335,6 +1335,229 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
             </div>
           </section>
 
+          <section className="overflow-hidden rounded-md border border-primary/25 bg-card/80 dark:bg-[#05090b]">
+            <button
+              type="button"
+              className="soft-cyan-hover flex w-full items-center justify-between gap-3 border-b border-primary/20 px-5 py-3 text-left"
+              onClick={() => setConfigOpen((current) => !current)}
+              aria-expanded={configOpen}
+            >
+              <span className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className="flex items-center gap-2 font-display text-sm font-bold text-foreground">
+                  <SlidersHorizontal className="h-4 w-4 text-primary" />
+                  Configurar lote
+                </span>
+                <Badge variant="outline" className="rounded px-2 text-[11px]">
+                  {exportMode === "DEPURADO"
+                    ? "Lote depurado"
+                    : rangeDays > 0
+                      ? `Ultimos ${rangeDays} dias`
+                      : "Grupo puntual"}
+                </Badge>
+                <Badge variant="outline" className="rounded border-primary/30 px-2 text-[11px] text-primary">
+                  {countingSelection
+                    ? "Contando..."
+                    : selectedExportCount === null
+                      ? "Conteo pendiente"
+                      : `${selectedExportCount.toLocaleString("es-AR")} lineas quedan`}
+                </Badge>
+              </span>
+              <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${configOpen ? "rotate-180" : ""}`} />
+            </button>
+
+            {configOpen ? (
+              <div className="space-y-3 px-5 py-4">
+                <div className="grid gap-3 lg:grid-cols-4">
+                  <label className="space-y-2">
+                    <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                      Quiero descargar
+                    </span>
+                    <FlatSelect
+                      value={exportMode}
+                      onChange={(value) => {
+                        const mode = value as FuzzionExportMode;
+                        setExportMode(mode);
+                        if (mode === "DEPURADO") {
+                          setFilterMode("RECOMENDACION");
+                          setSelectedCategories([]);
+                          setFilterValues([]);
+                          setRangeDays(0);
+                        }
+                      }}
+                      options={[
+                        { value: "DEPURADO", label: "Lote depurado para llamar" },
+                        { value: "SEGMENTO", label: "Un grupo puntual" },
+                      ]}
+                    />
+                  </label>
+
+                  <label className="space-y-2">
+                    <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                      Filtrar segun
+                    </span>
+                    <FlatSelect
+                      disabled={exportMode === "DEPURADO"}
+                      value={filterMode}
+                      onChange={(value) => {
+                        setFilterMode(value as FuzzionFilterMode);
+                        setSelectedCategories([]);
+                        setFilterValues([]);
+                      }}
+                      options={[
+                        { value: "RECOMENDACION", label: "Recomendacion operativa" },
+                        { value: "CATALOGACION", label: "Catalogacion comercial" },
+                        { value: "ESTADO", label: "Estado gateway" },
+                      ]}
+                    />
+                  </label>
+
+                  <div className="space-y-2">
+                    <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                      Valores
+                    </span>
+                    <MultiCheckSelect
+                      disabled={exportMode === "DEPURADO"}
+                      options={multiOptions}
+                      values={filterMode === "RECOMENDACION" ? selectedCategories : filterValues}
+                      onChange={(values) => {
+                        if (filterMode === "RECOMENDACION") {
+                          setSelectedCategories(values as FuzzionCategory[]);
+                        } else {
+                          setFilterValues(values);
+                        }
+                      }}
+                    />
+                  </div>
+
+                  <label className="space-y-2">
+                    <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                      Rango historico
+                    </span>
+                    <FlatSelect
+                      disabled={exportMode === "DEPURADO"}
+                      value={String(rangeDays)}
+                      onChange={(value) => setRangeDays(Number(value))}
+                      options={[
+                        { value: "0", label: "Todo el historial" },
+                        { value: "7", label: "Ultimos 7 dias" },
+                        { value: "30", label: "Ultimos 30 dias" },
+                        { value: "60", label: "Ultimos 60 dias" },
+                        { value: "90", label: "Ultimos 90 dias" },
+                      ]}
+                    />
+                  </label>
+                </div>
+
+                <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
+                  <div className="soft-cyan-hover flex h-11 items-center gap-2 border border-primary/25 bg-background px-3">
+                    <Search className="h-4 w-4 text-muted-foreground" />
+                    <Input
+                      value={search}
+                      onChange={(event) => setSearch(event.target.value)}
+                      placeholder="Linea, nombre, DNI, estado o catalogacion..."
+                      className="h-9 border-0 bg-transparent px-0 focus-visible:ring-0"
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    className="h-11 rounded-none px-5 text-sm font-bold"
+                    onClick={handleExport}
+                    disabled={exporting || !data || selectedExportCount === 0}
+                  >
+                    <Download className="mr-2 h-4 w-4" />
+                    {exporting
+                      ? "Generando..."
+                      : selectedExportCount === null
+                        ? "Descargar seleccion"
+                        : `Descargar (${selectedExportCount.toLocaleString("es-AR")})`}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
+          </section>
+
+          <section className="overflow-hidden rounded-md border border-primary/25 bg-card/80 dark:bg-[#05090b]">
+            <button
+              type="button"
+              className="soft-cyan-hover flex w-full items-center justify-between gap-3 border-b border-primary/20 px-5 py-3 text-left"
+              onClick={() => setRulesOpen((current) => !current)}
+              aria-expanded={rulesOpen}
+            >
+              <span className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className="flex items-center gap-2 font-display text-sm font-bold text-foreground">
+                  <SlidersHorizontal className="h-4 w-4 text-primary" />
+                  Reglas de depuracion
+                </span>
+                <Badge variant="outline" className="rounded px-2 text-[11px]">
+                  UNALLOCATED {fuzzionRules.unallocatedDescartar}+ · REJECTED {fuzzionRules.rejectedDescartar}+ · Saturacion {fuzzionRules.totalSaturado} intentos
+                </Badge>
+              </span>
+              <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${rulesOpen ? "rotate-180" : ""}`} />
+            </button>
+
+            {rulesOpen ? (
+              <div className="space-y-4 px-5 py-4">
+                <p className="text-xs text-muted-foreground">
+                  Estas reglas afectan el conteo, el lote depurado y los grupos operativos. Ajustalas antes de descargar si queres endurecer o aflojar el criterio.
+                </p>
+
+                <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+                  {([
+                    ["unallocatedDescartar", "Descartar UNALLOCATED desde"],
+                    ["rejectedDescartar", "Descartar REJECTED desde"],
+                    ["intentosDescartar", "Descartar intentos desde"],
+                    ["totalSaturado", "Saturado por intentos desde"],
+                    ["noAnswerSaturado", "Saturado NOANSWER desde"],
+                    ["buzonSaturado", "Saturado buzon desde"],
+                  ] as Array<[keyof FuzzionRules, string]>).map(([key, label]) => (
+                    <label key={key} className="space-y-2 text-xs text-muted-foreground">
+                      <span className="block min-h-[28px] text-[10px] font-bold uppercase tracking-[0.12em]">
+                        {label}
+                      </span>
+                      <div className="grid h-10 grid-cols-[2.25rem_1fr_2.25rem] overflow-hidden border border-primary/25 bg-background transition-colors focus-within:border-primary/70 focus-within:ring-1 focus-within:ring-primary/50">
+                        <button
+                          type="button"
+                          className="flex items-center justify-center border-r border-primary/20 text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary disabled:opacity-40"
+                          disabled={fuzzionRules[key] <= 1}
+                          onClick={() => updateFuzzionRule(key, fuzzionRules[key] - 1)}
+                          aria-label={`Bajar ${label}`}
+                        >
+                          <Minus className="h-3.5 w-3.5" />
+                        </button>
+                        <Input
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          value={fuzzionRules[key]}
+                          onChange={(event) => updateFuzzionRule(key, Number(event.target.value))}
+                          className="h-10 rounded-none border-0 bg-transparent px-2 text-center font-semibold shadow-none focus-visible:ring-0"
+                        />
+                        <button
+                          type="button"
+                          className="flex items-center justify-center border-l border-primary/20 text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
+                          onClick={() => updateFuzzionRule(key, fuzzionRules[key] + 1)}
+                          aria-label={`Subir ${label}`}
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="rounded-none"
+                  onClick={() => setFuzzionRules(DEFAULT_FUZZION_RULES)}
+                >
+                  Restaurar reglas estandar
+                </Button>
+              </div>
+            ) : null}
+          </section>
+
           <section className="soft-cyan-hover overflow-hidden rounded-md border border-primary/25 bg-card/80 dark:bg-[#05090b]">
             <div className="flex flex-col gap-3 border-b border-primary/20 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
               <div>
