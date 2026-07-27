@@ -342,6 +342,41 @@ function buildNeotelWorksheet(rows: any[]) {
   return worksheet;
 }
 
+const MAX_LEGACY_EXCEL_DATA_ROWS = 65_535;
+const MAX_XLSX_DATA_ROWS = 1_048_575;
+
+function buildNeotelFile(rows: any[]) {
+  if (rows.length > MAX_XLSX_DATA_ROWS) {
+    throw new Error(
+      `El lote supera el máximo de ${MAX_XLSX_DATA_ROWS.toLocaleString("es-AR")} líneas por archivo.`,
+    );
+  }
+
+  const modernFormat = rows.length > MAX_LEGACY_EXCEL_DATA_ROWS;
+  const worksheet = buildNeotelWorksheet(rows);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Contactos");
+  const buffer = XLSX.write(workbook, {
+    type: "buffer",
+    bookType: modernFormat ? "xlsx" : "biff8",
+  });
+
+  return {
+    buffer,
+    extension: modernFormat ? "xlsx" : "xls",
+    contentType: modernFormat
+      ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      : "application/vnd.ms-excel",
+  };
+}
+
+function getLocalFileDate(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 type FuzzionCategory =
   | "TODOS"
   | "NUNCA_TRABAJADO"
@@ -365,11 +400,15 @@ type FuzzionLead = {
   linea: string;
   razonSocial: string;
   documento: string;
+  direccion: string;
+  fechaNacimiento: string;
   mercadoActual: string;
   planActual: string;
   planSugerido: string;
+  precio: string;
+  fuenteSolicitud: string;
   localidad: string;
-  originalRow: Record<string, unknown>;
+  cp: string;
   intentosTotales: number;
   contactosEfectivos: number;
   buzones: number;
@@ -407,7 +446,7 @@ const fuzzionSessions = new Map<string, FuzzionSession>();
 const DEFAULT_FUZZION_RULES: FuzzionRules = {
   unallocatedDescartar: 3,
   rejectedDescartar: 3,
-  intentosDescartar: 100,
+  intentosDescartar: 20,
   totalSaturado: 9,
   noAnswerSaturado: 6,
   buzonSaturado: 5,
@@ -417,7 +456,9 @@ function parseFuzzionRules(input: unknown): FuzzionRules {
   const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   const read = (key: keyof FuzzionRules) => {
     const value = Math.floor(Number(raw[key]));
-    return Number.isFinite(value) && value > 0 ? value : DEFAULT_FUZZION_RULES[key];
+    return Number.isFinite(value) && value > 0
+      ? Math.min(value, 100)
+      : DEFAULT_FUZZION_RULES[key];
   };
 
   return {
@@ -439,24 +480,40 @@ function normalizeHeader(value: unknown) {
     .replace(/[^A-Z0-9]/g, "");
 }
 
-function getFuzzionValue(
-  row: Record<string, unknown>,
-  candidates: string[],
-): unknown {
-  const candidateSet = new Set(candidates.map(normalizeHeader));
+function resolveFuzzionColumns(row: Record<string, unknown>) {
+  const columnsByNormalizedName = new Map(
+    Object.keys(row).map((key) => [normalizeHeader(key), key]),
+  );
+  const find = (candidates: string[]) => {
+    for (const candidate of candidates) {
+      const key = columnsByNormalizedName.get(normalizeHeader(candidate));
+      if (key) return key;
+    }
+    return "";
+  };
 
-  for (const [key, value] of Object.entries(row)) {
-    if (candidateSet.has(normalizeHeader(key))) return value;
-  }
-
-  return "";
+  return {
+    linea: find(["LINEA", "ANI", "ANIS", "TELEFONO", "TELÉFONO", "DNI/TELEFONO"]),
+    razonSocial: find(["RAZON SOCIAL", "NOMBRE", "APELLIDO Y NOMBRE"]),
+    documento: find(["DOCUMENTO", "DNI"]),
+    direccion: find(["DIRECCION del CLIENTE", "DIRECCION"]),
+    fechaNacimiento: find(["FECHA DE NACIMIENTO", "FECHA NACIMIENTO"]),
+    mercadoActual: find(["MERCADO ACTUAL", "COMPAÑIA", "COMPANIA"]),
+    planActual: find([
+      "PLAN ACTUAL",
+      "DEUDA/LINEAS/FECHA DE PORTACION",
+      "DEUDA LINEAS FECHA DE PORTACION",
+    ]),
+    planSugerido: find(["PLAN SUGERIDO", "PODES VENDER PLAN CORPORATIVO"]),
+    precio: find(["PRECIO"]),
+    fuenteSolicitud: find(["FUENTE DE SOLICITUD"]),
+    localidad: find(["LOCALIDAD"]),
+    cp: find(["CP", "CODIGO POSTAL"]),
+  };
 }
 
-function getFuzzionText(
-  row: Record<string, unknown>,
-  candidates: string[],
-) {
-  return String(getFuzzionValue(row, candidates) ?? "").trim();
+function getFuzzionColumnText(row: Record<string, unknown>, column: string) {
+  return column ? String(row[column] ?? "").trim() : "";
 }
 
 function classifyFuzzionLead(
@@ -532,6 +589,24 @@ function getFuzzionLeadCategories(
   return categories;
 }
 
+function isFuzzionLeadSaturated(
+  lead: FuzzionLead,
+  rules: FuzzionRules = DEFAULT_FUZZION_RULES,
+) {
+  return lead.intentosTotales >= rules.totalSaturado ||
+    lead.noAnswer >= rules.noAnswerSaturado ||
+    lead.buzones >= rules.buzonSaturado;
+}
+
+function isFuzzionLeadCallable(
+  lead: FuzzionLead,
+  rules: FuzzionRules = DEFAULT_FUZZION_RULES,
+) {
+  const categories = getFuzzionLeadCategories(lead, rules);
+  return !categories.includes("DESCARTAR") &&
+    (lead.contactosEfectivos > 0 || !isFuzzionLeadSaturated(lead, rules));
+}
+
 type FuzzionFilterMode = "RECOMENDACION" | "ESTADO" | "CATALOGACION";
 type FuzzionExportMode = "DEPURADO" | "SEGMENTO";
 
@@ -541,6 +616,7 @@ function isExcludedCommercialCatalog(value: string) {
     .replace(/[\u0300-\u036f]/g, "")
     .toUpperCase();
   return normalized.startsWith("COMPRA |") ||
+    normalized.includes("DEUDA") ||
     normalized.includes("FRAUDE") ||
     normalized.includes("CLIENTE MOLESTO") ||
     normalized.includes("ES PREPAGO") ||
@@ -556,13 +632,18 @@ function filterFuzzionLeads(
   rangeDays = 0,
   exportMode: FuzzionExportMode = "SEGMENTO",
   rules: FuzzionRules = DEFAULT_FUZZION_RULES,
+  applyExportPolicy = true,
 ) {
   const query = search.trim().toLowerCase();
   const cutoff = rangeDays > 0 ? Date.now() - rangeDays * 86400000 : 0;
 
   return leads.filter((lead) => {
     const leadCategories = getFuzzionLeadCategories(lead, rules);
-    if (exportMode === "DEPURADO" && leadCategories.includes("DESCARTAR")) return false;
+    if (
+      applyExportPolicy &&
+      exportMode === "DEPURADO" &&
+      !isFuzzionLeadCallable(lead, rules)
+    ) return false;
     const reviewingExcludedCatalog =
       exportMode === "SEGMENTO" &&
       filterMode === "CATALOGACION" &&
@@ -572,6 +653,7 @@ function filterFuzzionLeads(
       filterMode === "RECOMENDACION" &&
       categories.includes("DESCARTAR");
     if (
+      applyExportPolicy &&
       exportMode === "SEGMENTO" &&
       lead.exclusionComercial &&
       !reviewingExcludedCatalog &&
@@ -633,12 +715,17 @@ function buildFuzzionComposition(
   rules: FuzzionRules = DEFAULT_FUZZION_RULES,
 ) {
   const discarded = leads.filter((lead) => getFuzzionLeadCategories(lead, rules).includes("DESCARTAR"));
+  const paused = leads.filter((lead) =>
+    !getFuzzionLeadCategories(lead, rules).includes("DESCARTAR") &&
+    lead.contactosEfectivos === 0 &&
+    isFuzzionLeadSaturated(lead, rules)
+  );
   const technicalDiscarded = discarded.filter(
     (lead) => getFuzzionDiscardReason(lead, rules).length > 0,
   );
   const commercialDiscarded = discarded.filter((lead) => lead.exclusionComercial);
   const bothDiscarded = discarded.filter(
-    (lead) => lead.exclusionComercial && getFuzzionDiscardReason(lead).length > 0,
+    (lead) => lead.exclusionComercial && getFuzzionDiscardReason(lead, rules).length > 0,
   );
 
   const countBy = (values: string[]) => {
@@ -662,8 +749,9 @@ function buildFuzzionComposition(
 
   return {
     totalLineas: leads.length,
-    loteDepurado: leads.length - discarded.length,
+    loteDepurado: leads.length - discarded.length - paused.length,
     descartadas: discarded.length,
+    pausadasSaturacion: paused.length,
     descarteTecnico: technicalDiscarded.length,
     descarteComercial: commercialDiscarded.length,
     descarteTecnicoYComercial: bothDiscarded.length,
@@ -684,13 +772,13 @@ function buildFuzzionComposition(
       ultimoSubestado: lead.ultimoSubestado,
       lectura: lead.exclusionComercial
         ? lead.motivoExclusion
+        : getFuzzionLeadCategories(lead, rules).includes("DESCARTAR")
+          ? "Descarte tecnico"
         : getFuzzionLeadCategories(lead, rules).includes("CONTACTADO")
           ? "Contacto efectivo"
           : getFuzzionLeadCategories(lead, rules).includes("BUZON_SIN_CONTACTO")
             ? "Buzon sin contacto"
-            : getFuzzionLeadCategories(lead, rules).includes("DESCARTAR")
-              ? "Descarte tecnico"
-              : "Con historial",
+            : "Con historial",
     })),
   };
 }
@@ -703,17 +791,26 @@ function buildFuzzionStats(
   leads: FuzzionLead[],
   rules: FuzzionRules = DEFAULT_FUZZION_RULES,
 ) {
-  const countCategory = (category: FuzzionCategory) =>
-    leads.filter((lead) => getFuzzionLeadCategories(lead, rules).includes(category)).length;
-
-  return {
-    nuncaTrabajados: countCategory("NUNCA_TRABAJADO"),
-    contactados: countCategory("CONTACTADO"),
-    buzonesSinContacto: countCategory("BUZON_SIN_CONTACTO"),
-    noSaturados: countCategory("NO_SATURADO"),
-    reintentarMejorFranja: countCategory("REINTENTAR_MEJOR_FRANJA"),
-    descartar: countCategory("DESCARTAR"),
+  const stats = {
+    nuncaTrabajados: 0,
+    contactados: 0,
+    buzonesSinContacto: 0,
+    noSaturados: 0,
+    reintentarMejorFranja: 0,
+    descartar: 0,
   };
+
+  for (const lead of leads) {
+    const categories = getFuzzionLeadCategories(lead, rules);
+    if (categories.includes("NUNCA_TRABAJADO")) stats.nuncaTrabajados++;
+    if (categories.includes("CONTACTADO")) stats.contactados++;
+    if (categories.includes("BUZON_SIN_CONTACTO")) stats.buzonesSinContacto++;
+    if (categories.includes("NO_SATURADO")) stats.noSaturados++;
+    if (categories.includes("REINTENTAR_MEJOR_FRANJA")) stats.reintentarMejorFranja++;
+    if (categories.includes("DESCARTAR")) stats.descartar++;
+  }
+
+  return stats;
 }
 
 function buildFuzzionSelectionBreakdown(
@@ -763,23 +860,15 @@ function buildFuzzionNeotelRows(leads: FuzzionLead[]) {
       LINEA: lead.linea,
       "RAZON SOCIAL": lead.razonSocial,
       DOCUMENTO: lead.documento,
-      "DIRECCION del CLIENTE": getFuzzionText(lead.originalRow, [
-        "DIRECCION del CLIENTE",
-        "DIRECCION",
-      ]),
-      "FECHA DE NACIMIENTO": getFuzzionText(lead.originalRow, [
-        "FECHA DE NACIMIENTO",
-        "FECHA NACIMIENTO",
-      ]),
+      "DIRECCION del CLIENTE": lead.direccion,
+      "FECHA DE NACIMIENTO": lead.fechaNacimiento,
       "MERCADO ACTUAL": lead.mercadoActual,
       "PLAN ACTUAL": lead.planActual,
       "PLAN SUGERIDO": lead.planSugerido,
-      PRECIO: getFuzzionText(lead.originalRow, ["PRECIO"]),
-      "FUENTE DE SOLICITUD": getFuzzionText(lead.originalRow, [
-        "FUENTE DE SOLICITUD",
-      ]),
+      PRECIO: lead.precio,
+      "FUENTE DE SOLICITUD": lead.fuenteSolicitud,
       LOCALIDAD: lead.localidad,
-      CP: getFuzzionText(lead.originalRow, ["CP", "CODIGO POSTAL"]),
+      CP: lead.cp,
     }));
 }
 
@@ -1229,17 +1318,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         LOCALIDAD: row.localidad ?? "",
         CP: "",
       }));
-      const worksheet = buildNeotelWorksheet(neotelRows);
-      const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, worksheet, "Contactos");
-      const buffer = XLSX.write(workbook, { type: "buffer", bookType: "biff8" });
+      const file = buildNeotelFile(neotelRows);
 
-      res.setHeader("Content-Type", "application/vnd.ms-excel");
+      res.setHeader("Content-Type", file.contentType);
       res.setHeader(
         "Content-Disposition",
-        `attachment; filename=catalogacion_neotel_${reportDate ?? "historial"}.xls`,
+        `attachment; filename=catalogacion_neotel_${reportDate ?? "historial"}.${file.extension}`,
       );
-      return res.send(buffer);
+      return res.send(file.buffer);
     } catch (error) {
       return res.status(500).json({
         message: "No se pudo exportar la catalogación.",
@@ -1280,19 +1366,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         });
       }
 
+      const columns = resolveFuzzionColumns(rows[0] ?? {});
       const parsedRows = rows
         .map((row, index) => ({
           row,
           rowNumber: index + 2,
           linea: limpiarLineaNeotel(
-            getFuzzionValue(row, [
-              "LINEA",
-              "ANI",
-              "ANIS",
-              "TELEFONO",
-              "TELÉFONO",
-              "DNI/TELEFONO",
-            ]),
+            getFuzzionColumnText(row, columns.linea),
           ),
         }))
         .filter((item) => item.linea.length >= 7);
@@ -1304,11 +1384,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         });
       }
 
-      const lineas = parsedRows.map((item) => item.linea);
+      const seenLines = new Set<string>();
+      const uniqueParsedRows = parsedRows.filter(({ linea }) => {
+        if (seenLines.has(linea)) return false;
+        seenLines.add(linea);
+        return true;
+      });
+      const duplicateRows = parsedRows.length - uniqueParsedRows.length;
+      const lineas = uniqueParsedRows.map((item) => item.linea);
       const history = getHistorySummaryForAnis(lineas);
       const gestiones = getLatestGestionForAnis(lineas);
 
-      const leads: FuzzionLead[] = parsedRows.map(({ row, rowNumber, linea }) => {
+      const leads: FuzzionLead[] = uniqueParsedRows.map(({ row, rowNumber, linea }) => {
         const summary = history.get(linea);
         const gestion = gestiones.get(linea);
         const categorias = classifyFuzzionLead(summary);
@@ -1319,28 +1406,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return {
           rowNumber,
           linea,
-          razonSocial: getFuzzionText(row, [
-            "RAZON SOCIAL",
-            "NOMBRE",
-            "APELLIDO Y NOMBRE",
-          ]),
-          documento: getFuzzionText(row, ["DOCUMENTO", "DNI"]),
-          mercadoActual: getFuzzionText(row, [
-            "MERCADO ACTUAL",
-            "COMPAÑIA",
-            "COMPANIA",
-          ]),
-          planActual: getFuzzionText(row, [
-            "PLAN ACTUAL",
-            "DEUDA/LINEAS/FECHA DE PORTACION",
-            "DEUDA LINEAS FECHA DE PORTACION",
-          ]),
-          planSugerido: getFuzzionText(row, [
-            "PLAN SUGERIDO",
-            "PODES VENDER PLAN CORPORATIVO",
-          ]),
-          localidad: getFuzzionText(row, ["LOCALIDAD"]),
-          originalRow: row,
+          razonSocial: getFuzzionColumnText(row, columns.razonSocial),
+          documento: getFuzzionColumnText(row, columns.documento),
+          direccion: getFuzzionColumnText(row, columns.direccion),
+          fechaNacimiento: getFuzzionColumnText(row, columns.fechaNacimiento),
+          mercadoActual: getFuzzionColumnText(row, columns.mercadoActual),
+          planActual: getFuzzionColumnText(row, columns.planActual),
+          planSugerido: getFuzzionColumnText(row, columns.planSugerido),
+          precio: getFuzzionColumnText(row, columns.precio),
+          fuenteSolicitud: getFuzzionColumnText(row, columns.fuenteSolicitud),
+          localidad: getFuzzionColumnText(row, columns.localidad),
+          cp: getFuzzionColumnText(row, columns.cp),
           intentosTotales: summary?.intentosTotales ?? 0,
           contactosEfectivos: summary?.intentosAnswerAgent ?? 0,
           buzones: summary?.intentosAnsweringMachine ?? 0,
@@ -1377,19 +1453,20 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         if (oldest) fuzzionSessions.delete(oldest.id);
       }
 
-      const allCatalogOptions = Array.from(new Set(getGestionCatalog()
-        .map((item) => {
-          const catalog = item as { resultado?: string; subresultado?: string };
-          return `${catalog.resultado ?? ""} | ${catalog.subresultado ?? ""}`;
-        })
-        .filter((value) => value.replace(/\s|\|/g, "").length > 0)));
+      const allCatalogOptions = Array.from(new Set(
+        leads.flatMap((lead) => lead.catalogacionesGestion)
+          .map((item) => `${item.resultado} | ${item.subresultado}`)
+          .filter((value) => value.replace(/\s|\|/g, "").length > 0),
+      )).sort();
 
       return res.json({
         id: session.id,
         fileName: session.fileName,
         totalRows: rows.length,
-        validRows: leads.length,
-        uniqueAnis: new Set(leads.map((lead) => lead.linea)).size,
+        validRows: parsedRows.length,
+        uniqueAnis: leads.length,
+        invalidRows: rows.length - parsedRows.length,
+        duplicateRows,
         stats: buildFuzzionStats(leads),
         composition: buildFuzzionComposition(leads),
         filterOptions: {
@@ -1398,7 +1475,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             .map((lead) => `${lead.ultimoEstado} | ${lead.ultimoSubestado}`))).sort(),
           catalogaciones: allCatalogOptions,
         },
-        preview: leads.slice(0, 250).map(({ originalRow, ...lead }) => lead),
+        preview: leads.slice(0, 250),
       });
     } catch (error) {
       console.error("Error procesando base Fuzzión:", error);
@@ -1466,11 +1543,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       exportMode,
       rules,
     );
+    const scoped = filterFuzzionLeads(
+      session.leads,
+      categories,
+      search,
+      filterMode,
+      filterValues,
+      rangeDays,
+      exportMode,
+      rules,
+      false,
+    );
 
     return res.json({
       rows: filtered.length,
       exportableLines: countUniqueFuzzionLines(filtered),
-      composition: buildFuzzionComposition(filtered, rules),
+      composition: buildFuzzionComposition(scoped, rules),
       selections: buildFuzzionSelectionBreakdown(
         session,
         filterMode,
@@ -1536,19 +1624,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (neotelRows.length === 0) {
       return res.status(422).json({ message: "No hay líneas para exportar con este filtro." });
     }
+    if (neotelRows.length > MAX_XLSX_DATA_ROWS) {
+      return res.status(413).json({
+        message: `El lote supera el máximo de ${MAX_XLSX_DATA_ROWS.toLocaleString("es-AR")} líneas. Dividilo en segmentos antes de descargar.`,
+      });
+    }
 
-    const worksheet = buildNeotelWorksheet(neotelRows);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Contactos");
-    const buffer = XLSX.write(workbook, { type: "buffer", bookType: "biff8" });
+    const file = buildNeotelFile(neotelRows);
 
-    res.setHeader("Content-Type", "application/vnd.ms-excel");
+    res.setHeader("Content-Type", file.contentType);
+    res.setHeader("Cache-Control", "no-store");
     res.setHeader("X-Exported-Count", String(neotelRows.length));
+    res.setHeader("X-Input-Count", String(session.leads.length));
+    res.setHeader("X-Excluded-Count", String(session.leads.length - neotelRows.length));
+    res.setHeader("X-Export-Format", file.extension);
+    const date = getLocalFileDate();
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename=fuzzion_${exportMode === "DEPURADO" ? "depurado" : "grupo"}.xls`,
+      `attachment; filename=lote_neotel_${exportMode === "DEPURADO" ? "depurado" : "segmento"}_${date}.${file.extension}`,
     );
-    return res.send(buffer);
+    return res.send(file.buffer);
   });
 
   app.get("/api/history/stats", (_req, res) => {
@@ -2046,20 +2141,20 @@ const textoBusqueda = (busqueda ?? "").trim().toLowerCase();
         "No hay líneas para exportar con los filtros actuales. Revisá la tabla de decisión por ANI.",
     });
   }
+  if (neotelRows.length > MAX_XLSX_DATA_ROWS) {
+    return res.status(413).json({
+      message: `El lote supera el máximo de ${MAX_XLSX_DATA_ROWS.toLocaleString("es-AR")} líneas. Dividilo en segmentos antes de descargar.`,
+    });
+  }
 
-  const worksheet = buildNeotelWorksheet(neotelRows);
+  const file = buildNeotelFile(neotelRows);
 
-  const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, "Contactos");
-
-  const buffer = XLSX.write(workbook, {
-    type: "buffer",
-    bookType: "biff8",
-  });
-
-  res.setHeader("Content-Type", "application/vnd.ms-excel");
-  res.setHeader("Content-Disposition", "attachment; filename=contactos_neotel_depurados.xls");
-  res.send(buffer);
+  res.setHeader("Content-Type", file.contentType);
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename=contactos_neotel_depurados.${file.extension}`,
+  );
+  res.send(file.buffer);
 });
 
   app.post("/api/export/accion", async (req, res) => {

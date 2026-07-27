@@ -158,6 +158,10 @@ export function getGestionCommercialAction(
     return { action: "EXCLUIR", reason: "Catalogado como cliente molesto" };
   }
 
+  if (result.includes("DEUDA") || subresult.includes("DEUDA")) {
+    return { action: "EXCLUIR", reason: "Catalogado con deuda" };
+  }
+
   if (subresult.includes("ES PREPAGO")) {
     return { action: "EXCLUIR", reason: "Catalogado como prepago" };
   }

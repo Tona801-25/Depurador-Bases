@@ -923,9 +923,18 @@ export default function Home() {
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement("a");
+      const serverFileName = response.headers
+        .get("Content-Disposition")
+        ?.match(/filename="?([^";]+)"?/i)?.[1];
+      const serverExtension = serverFileName?.match(/\.(xlsx?)$/i)?.[1];
+      const downloadFileName = serverExtension
+        ? fileName.match(/\.xlsx?$/i)
+          ? fileName.replace(/\.xlsx?$/i, `.${serverExtension}`)
+          : `${fileName}.${serverExtension}`
+        : fileName;
 
       a.href = url;
-      a.download = fileName;
+      a.download = downloadFileName;
       a.click();
 
       window.URL.revokeObjectURL(url);

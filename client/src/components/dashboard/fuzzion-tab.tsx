@@ -98,6 +98,7 @@ type FuzzionComposition = {
   totalLineas: number;
   loteDepurado: number;
   descartadas: number;
+  pausadasSaturacion?: number;
   descarteTecnico: number;
   descarteComercial: number;
   descarteTecnicoYComercial: number;
@@ -128,6 +129,8 @@ type FuzzionPreview = {
   totalRows: number;
   validRows: number;
   uniqueAnis: number;
+  invalidRows?: number;
+  duplicateRows?: number;
   stats: FuzzionStats;
   filterOptions: { estados: string[]; catalogaciones: string[] };
   preview: FuzzionLeadPreview[];
@@ -177,7 +180,7 @@ const categoryOptions: Array<{
     value: "NO_SATURADO",
     label: "Sin saturación",
     description:
-      "Tienen menos de 9 intentos totales, 6 NOANSWER y 5 buzones.",
+      "No alcanzan los límites de intentos, NOANSWER o buzón configurados.",
     stat: "noSaturados",
   },
   {
@@ -191,7 +194,7 @@ const categoryOptions: Array<{
     value: "DESCARTAR",
     label: "Con señal de descarte",
     description:
-      "Acumulan 3 UNALLOCATED o 3 REJECTED sin contacto efectivo.",
+      "Tienen descarte técnico o catalogación comercial de no llamada.",
     stat: "descartar",
   },
 ];
@@ -207,6 +210,7 @@ function isExcludedCommercialCatalog(value: string) {
     .replace(/[\u0300-\u036f]/g, "")
     .toUpperCase();
   return normalized.startsWith("COMPRA |") ||
+    normalized.includes("DEUDA") ||
     normalized.includes("FRAUDE") ||
     normalized.includes("CLIENTE MOLESTO") ||
     normalized.includes("ES PREPAGO") ||
@@ -218,11 +222,40 @@ type MultiOption = { value: string; label: string };
 const DEFAULT_FUZZION_RULES: FuzzionRules = {
   unallocatedDescartar: 3,
   rejectedDescartar: 3,
-  intentosDescartar: 100,
+  intentosDescartar: 20,
   totalSaturado: 9,
   noAnswerSaturado: 6,
   buzonSaturado: 5,
 };
+
+const MAX_LEGACY_EXCEL_DATA_ROWS = 65_535;
+const FUZZION_RULES_STORAGE_KEY = "depurador:fuzzion-rules:v1";
+const FUZZION_RULE_KEYS: Array<keyof FuzzionRules> = [
+  "unallocatedDescartar",
+  "rejectedDescartar",
+  "intentosDescartar",
+  "totalSaturado",
+  "noAnswerSaturado",
+  "buzonSaturado",
+];
+
+function loadStoredFuzzionRules() {
+  if (typeof window === "undefined") return DEFAULT_FUZZION_RULES;
+  try {
+    const stored = JSON.parse(
+      window.localStorage.getItem(FUZZION_RULES_STORAGE_KEY) || "{}",
+    ) as Partial<FuzzionRules>;
+    return FUZZION_RULE_KEYS.reduce((rules, key) => {
+      const value = Math.floor(Number(stored[key]));
+      rules[key] = Number.isFinite(value) && value > 0
+        ? Math.min(value, 100)
+        : DEFAULT_FUZZION_RULES[key];
+      return rules;
+    }, { ...DEFAULT_FUZZION_RULES });
+  } catch {
+    return DEFAULT_FUZZION_RULES;
+  }
+}
 
 function getLeadCategories(lead: FuzzionLeadPreview, rules: FuzzionRules) {
   const categories: FuzzionCategory[] = [];
@@ -251,6 +284,17 @@ function getLeadCategories(lead: FuzzionLeadPreview, rules: FuzzionRules) {
   }
   if (descartar) categories.push("DESCARTAR");
   return categories;
+}
+
+function isLeadSaturated(lead: FuzzionLeadPreview, rules: FuzzionRules) {
+  return lead.intentosTotales >= rules.totalSaturado ||
+    lead.noAnswer >= rules.noAnswerSaturado ||
+    lead.buzones >= rules.buzonSaturado;
+}
+
+function isLeadCallable(lead: FuzzionLeadPreview, rules: FuzzionRules) {
+  return !getLeadCategories(lead, rules).includes("DESCARTAR") &&
+    (lead.contactosEfectivos > 0 || !isLeadSaturated(lead, rules));
 }
 
 function getLeadReading(
@@ -497,7 +541,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
   const [highAttemptsOpen, setHighAttemptsOpen] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
-  const [fuzzionRules, setFuzzionRules] = useState<FuzzionRules>(DEFAULT_FUZZION_RULES);
+  const [fuzzionRules, setFuzzionRules] = useState<FuzzionRules>(loadStoredFuzzionRules);
   const [uploading, setUploading] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportReviewOpen, setExportReviewOpen] = useState(false);
@@ -535,9 +579,23 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
     : 0;
 
   const updateFuzzionRule = (key: keyof FuzzionRules, value: number) => {
-    const nextValue = Math.max(1, Math.floor(value || DEFAULT_FUZZION_RULES[key]));
+    const nextValue = Math.min(
+      100,
+      Math.max(1, Math.floor(value || DEFAULT_FUZZION_RULES[key])),
+    );
     setFuzzionRules((current) => ({ ...current, [key]: nextValue }));
   };
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        FUZZION_RULES_STORAGE_KEY,
+        JSON.stringify(fuzzionRules),
+      );
+    } catch {
+      // El lote sigue operativo aunque el navegador bloquee almacenamiento local.
+    }
+  }, [fuzzionRules]);
 
   useEffect(() => {
     if (!data) {
@@ -731,14 +789,14 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
       const leadCategories = getLeadCategories(lead, fuzzionRules);
       const descartar = leadCategories.includes("DESCARTAR");
       const contactado = leadCategories.includes("CONTACTADO");
-      const noSaturado = leadCategories.includes("NO_SATURADO");
       const reintentar = leadCategories.includes("REINTENTAR_MEJOR_FRANJA");
       const buzonSinContacto = leadCategories.includes("BUZON_SIN_CONTACTO");
+      const callable = isLeadCallable(lead, fuzzionRules);
 
       if (descartar) summary.noLlamar += 1;
-      if (!descartar && !contactado && !noSaturado) summary.pausar += 1;
+      if (!descartar && !callable) summary.pausar += 1;
       if (!descartar && reintentar) summary.reintentar += 1;
-      if (!descartar && (contactado || buzonSinContacto)) summary.segmentar += 1;
+      if (callable && (contactado || buzonSinContacto)) summary.segmentar += 1;
     }
 
     return summary;
@@ -759,14 +817,15 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
       const leadCategories = getLeadCategories(lead, fuzzionRules);
       const contactado = leadCategories.includes("CONTACTADO");
       const descartar = leadCategories.includes("DESCARTAR");
+      const callable = isLeadCallable(lead, fuzzionRules);
       const descartePorIntentos = lead.intentosTotales >= fuzzionRules.intentosDescartar;
       const descartePorUnallocatedRejected =
         lead.invalidos >= fuzzionRules.unallocatedDescartar ||
         (lead.rechazados >= fuzzionRules.rejectedDescartar && lead.contactosEfectivos === 0);
 
       if (contactado) summary.contactosEfectivos += 1;
-      if (contactado && !descartar) summary.contactosSegmentables += 1;
-      if (contactado && descartar) summary.contactosNoLlamar += 1;
+      if (contactado && callable) summary.contactosSegmentables += 1;
+      if (contactado && !callable) summary.contactosNoLlamar += 1;
       if (descartar) summary.descartes += 1;
       if (descartePorIntentos) summary.descarteIntentos += 1;
       if (lead.exclusionComercial) summary.descarteComercial += 1;
@@ -783,7 +842,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
 
     return data.preview.filter((lead) => {
       const leadCategories = getLeadCategories(lead, fuzzionRules);
-      if (exportMode === "DEPURADO" && leadCategories.includes("DESCARTAR")) return false;
+      if (exportMode === "DEPURADO" && !isLeadCallable(lead, fuzzionRules)) return false;
       const reviewingExcludedCatalog =
         exportMode === "SEGMENTO" &&
         filterMode === "CATALOGACION" &&
@@ -835,10 +894,10 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
   const flatDbName = data?.fileName
     ? data.fileName.replace(/\.[^.]+$/, "")
     : "Sin base cargada";
-  const flatTotalRows = data?.validRows ?? 0;
+  const flatTotalRows = data?.uniqueAnis ?? 0;
   const flatUniqueRows = data?.uniqueAnis ?? 0;
   const flatRemainingRows = selectedExportCount ?? displayedComposition?.loteDepurado ?? 0;
-  const flatEliminatedRows = displayedComposition?.descartadas ?? 0;
+  const flatEliminatedRows = data ? Math.max(0, flatTotalRows - flatRemainingRows) : 0;
   const flatRangeLabel = rangeDays > 0 ? `Últimos ${rangeDays} días` : "Todo el historial";
   const flatCatalogLabel = filterMode === "CATALOGACION"
     ? filterValues.length === 0
@@ -953,13 +1012,17 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
         kind: "filter",
         title: "Base Fuzzión cruzada",
         detail: `${payload.fileName} · ${payload.uniqueAnis.toLocaleString("es-AR")} líneas únicas (ANIs)`,
-        count: payload.validRows,
+        count: payload.uniqueAnis,
       });
       toast({
         title: "Base Fuzzión lista",
-        description: `Se cruzaron ${payload.validRows.toLocaleString(
+        description: `Se cruzaron ${payload.uniqueAnis.toLocaleString(
           "es-AR",
-        )} filas contra el historial SQLite.`,
+        )} ANI únicos contra el historial SQLite${
+          payload.duplicateRows
+            ? `; se ignoraron ${payload.duplicateRows.toLocaleString("es-AR")} duplicados`
+            : ""
+        }.`,
       });
     } catch (error) {
       const message =
@@ -1498,7 +1561,9 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
             {rulesOpen ? (
               <div className="space-y-4 px-5 py-4">
                 <p className="text-xs text-muted-foreground">
-                  Estas reglas afectan el conteo, el lote depurado y los grupos operativos. Ajustalas antes de descargar si queres endurecer o aflojar el criterio.
+                  Descarte quita una línea por señal técnica o comercial. Saturación pausa
+                  líneas sin contacto efectivo para el lote diario, sin borrarlas del
+                  historial. La configuración queda guardada en este navegador.
                 </p>
 
                 <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
@@ -1506,9 +1571,9 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                     ["unallocatedDescartar", "Descartar UNALLOCATED desde"],
                     ["rejectedDescartar", "Descartar REJECTED desde"],
                     ["intentosDescartar", "Descartar intentos desde"],
-                    ["totalSaturado", "Saturado por intentos desde"],
-                    ["noAnswerSaturado", "Saturado NOANSWER desde"],
-                    ["buzonSaturado", "Saturado buzon desde"],
+                    ["totalSaturado", "Pausar por intentos desde"],
+                    ["noAnswerSaturado", "Pausar NOANSWER desde"],
+                    ["buzonSaturado", "Pausar buzón desde"],
                   ] as Array<[keyof FuzzionRules, string]>).map(([key, label]) => (
                     <label key={key} className="space-y-2 text-xs text-muted-foreground">
                       <span className="block min-h-[28px] text-[10px] font-bold uppercase tracking-[0.12em]">
@@ -1552,7 +1617,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                   className="rounded-none"
                   onClick={() => setFuzzionRules(DEFAULT_FUZZION_RULES)}
                 >
-                  Restaurar reglas estandar
+                  Restaurar configuración recomendada
                 </Button>
               </div>
             ) : null}
@@ -1675,7 +1740,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
             { category: "DESCARTAR" as const, label: "Con señal de descarte", count: data?.stats.descartar ?? 0, valueClass: "text-destructive", cardClass: "border-destructive/25 bg-destructive/5" },
           ].map((item) => {
             const countByCategory: Record<FuzzionCategory, number> = {
-              TODOS: data?.validRows ?? 0,
+              TODOS: data?.uniqueAnis ?? 0,
               NUNCA_TRABAJADO: dynamicStats.nuncaTrabajados,
               CONTACTADO: dynamicStats.contactados,
               BUZON_SIN_CONTACTO: dynamicStats.buzonesSinContacto,
@@ -1758,7 +1823,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                     <strong className="text-foreground">{cardDetailSummary.descarteIntentos.toLocaleString("es-AR")}</strong>
                   </div>
                   <div className="flex items-center justify-between gap-3">
-                    <span className="text-muted-foreground">Compra / fraude / cliente molesto / Personal / prepago</span>
+                    <span className="text-muted-foreground">Compra / deuda / fraude / cliente molesto / Personal / prepago</span>
                     <strong className="text-foreground">{cardDetailSummary.descarteComercial.toLocaleString("es-AR")}</strong>
                   </div>
                   <div className="flex items-center justify-between gap-3">
@@ -1794,7 +1859,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
               {
                 label: "No llamar",
                 value: operationalSummary.noLlamar,
-                description: "Compra, fraude, cliente molesto, Personal, prepago o descarte técnico.",
+                description: "Compra, deuda, fraude, cliente molesto, Personal, prepago o descarte técnico.",
                 className: "border-destructive/30 bg-destructive/5 text-destructive",
               },
               {
@@ -1846,7 +1911,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                   <div>
                     <p className="text-sm font-semibold text-foreground">{showingSelectionComposition ? "Composición de la selección actual" : "Composición del lote cargado"}</p>
                     <p className="text-xs text-muted-foreground">
-                      {displayedComposition.loteDepurado.toLocaleString("es-AR")} quedan · {displayedComposition.descartadas.toLocaleString("es-AR")} se quitan · máximo {displayedComposition.maxIntentos} intentos
+                      {displayedComposition.loteDepurado.toLocaleString("es-AR")} quedan · {(displayedComposition.pausadasSaturacion ?? 0).toLocaleString("es-AR")} se pausan · {displayedComposition.descartadas.toLocaleString("es-AR")} se descartan
                     </p>
                   </div>
                   <span className="flex flex-wrap items-center gap-2">
@@ -1869,11 +1934,12 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
 
                 {compositionOpen ? (
                   <>
-                    <div className="mt-3 grid gap-2 md:grid-cols-4">
+                    <div className="mt-3 grid gap-2 md:grid-cols-5">
                       {[
                         [showingSelectionComposition ? "Total selección" : "Total cargado", displayedComposition.totalLineas],
                         ["Queda en lote depurado", displayedComposition.loteDepurado],
-                        ["Se quita del lote", displayedComposition.descartadas],
+                        ["Pausa saturada sin contacto", displayedComposition.pausadasSaturacion ?? 0],
+                        ["Descarte definitivo", displayedComposition.descartadas],
                         ["Máximo de intentos", displayedComposition.maxIntentos],
                       ].map(([label, value]) => (
                         <div key={String(label)} className="border border-border px-3 py-2">
@@ -2088,8 +2154,9 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                     </p>
                     {exportMode === "DEPURADO" ? (
                       <>
-                        Se conservarán las líneas aptas y se quitarán del archivo las
-                        catalogadas como compra, fraude, cliente molesto, prepago o ya
+                        Se conservarán las líneas aptas, se pausarán las saturadas sin
+                        contacto efectivo y se quitarán del archivo las
+                        catalogadas como compra, deuda, fraude, cliente molesto, prepago o ya
                         pertenecientes a Personal, además de los descartes técnicos. Los
                         datos continúan guardados en SQLite.
                       </>
@@ -2147,16 +2214,18 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
               {rulesOpen ? (
                 <div className="space-y-3 border-t border-border p-3">
                   <p className="text-xs text-muted-foreground">
-                    Estas reglas afectan el conteo, el lote depurado y los grupos operativos. Ajustalas antes de descargar si querés endurecer o aflojar el criterio.
+                    Descarte quita una línea por señal técnica o comercial. Saturación pausa
+                    líneas sin contacto efectivo para el lote diario, sin borrarlas del
+                    historial. La configuración queda guardada en este navegador.
                   </p>
                   <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">
                     {([
                       ["unallocatedDescartar", "Descartar UNALLOCATED desde"],
                       ["rejectedDescartar", "Descartar REJECTED desde"],
                       ["intentosDescartar", "Descartar intentos desde"],
-                      ["totalSaturado", "Saturado por intentos desde"],
-                      ["noAnswerSaturado", "Saturado NOANSWER desde"],
-                      ["buzonSaturado", "Saturado buzón desde"],
+                      ["totalSaturado", "Pausar por intentos desde"],
+                      ["noAnswerSaturado", "Pausar NOANSWER desde"],
+                      ["buzonSaturado", "Pausar buzón desde"],
                     ] as Array<[keyof FuzzionRules, string]>).map(([key, label]) => (
                       <label key={key} className="space-y-1 text-xs text-muted-foreground">
                         <span>{label}</span>
@@ -2198,7 +2267,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                     size="sm"
                     onClick={() => setFuzzionRules(DEFAULT_FUZZION_RULES)}
                   >
-                    Restaurar reglas estándar
+                    Restaurar configuración recomendada
                   </Button>
                 </div>
               ) : null}
@@ -2324,7 +2393,14 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                 </p>
               </div>
 
-              <div className="grid gap-2 sm:grid-cols-3">
+              {exportReviewCount > MAX_LEGACY_EXCEL_DATA_ROWS ? (
+                <div className="rounded-lg border border-amber-500/35 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
+                  El lote supera el límite seguro del formato .xls. Se descargará
+                  automáticamente como .xlsx para conservar todas las líneas.
+                </div>
+              ) : null}
+
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                 <div className="rounded-lg border border-border p-3">
                   <p className="text-[11px] uppercase text-muted-foreground">Total evaluado</p>
                   <p className="mt-1 text-2xl font-bold text-foreground">
@@ -2332,9 +2408,15 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                   </p>
                 </div>
                 <div className="rounded-lg border border-border p-3">
-                  <p className="text-[11px] uppercase text-muted-foreground">Se excluyen</p>
+                  <p className="text-[11px] uppercase text-muted-foreground">Descartes definitivos</p>
                   <p className="mt-1 text-2xl font-bold text-destructive">
                     {(exportReviewComposition?.descartadas ?? 0).toLocaleString("es-AR")}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-amber-500/35 p-3">
+                  <p className="text-[11px] uppercase text-muted-foreground">Pausas sin contacto</p>
+                  <p className="mt-1 text-2xl font-bold text-amber-600 dark:text-amber-400">
+                    {(exportReviewComposition?.pausadasSaturacion ?? 0).toLocaleString("es-AR")}
                   </p>
                 </div>
                 <div className="rounded-lg border border-primary/35 p-3">
@@ -2349,7 +2431,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                 <div className="grid gap-3 lg:grid-cols-2">
                   <div className="rounded-lg border border-border p-3">
                     <p className="text-xs font-semibold uppercase text-muted-foreground">
-                      Motivos de exclusión
+                      Motivos de descarte definitivo
                     </p>
                     <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
                       <span><strong className="text-foreground">{exportReviewComposition.descarteTecnico.toLocaleString("es-AR")}</strong> técnicas</span>
@@ -2372,7 +2454,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
 
                   <div className="rounded-lg border border-border p-3">
                     <p className="text-xs font-semibold uppercase text-muted-foreground">
-                      Estados de las líneas excluidas
+                      Estados de los descartes definitivos
                     </p>
                     <div className="mt-2 space-y-1">
                       {exportReviewComposition.descartesPorEstado.length > 0 ? (
@@ -2491,7 +2573,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
               <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
                 {quickCategory === "DESCARTAR"
                   ? "Este es un archivo de control: incluye descartes técnicos y exclusiones comerciales. No está pensado para volver a llamar."
-                  : "Las compras, fraudes, clientes molestos, líneas prepagas y líneas que ya pertenecen a Personal se excluirán por seguridad."}
+                  : "Las compras, deudas, fraudes, clientes molestos, líneas prepagas y líneas que ya pertenecen a Personal se excluirán por seguridad."}
               </p>
             </div>
 

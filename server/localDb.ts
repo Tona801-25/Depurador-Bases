@@ -15,6 +15,7 @@ if (!fs.existsSync(DATA_DIR)) {
 }
 
 const db = new Database(DB_PATH);
+let localDbInitialized = false;
 
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
@@ -61,6 +62,7 @@ function getCommercialExclusionReason(resultado: string, subresultado: string) {
   if (resultado.trim().toUpperCase() === "COMPRA") return "Compra registrada";
   if (value.includes("FRAUDE")) return "Catalogado como fraude";
   if (value.includes("CLIENTE MOLESTO")) return "Catalogado como cliente molesto";
+  if (value.includes("DEUDA")) return "Catalogado con deuda";
   if (value.includes("ES PREPAGO")) return "Catalogado como prepago";
   if (value.includes("ES PERSONAL")) return "La linea ya pertenece a Personal";
   return "";
@@ -345,6 +347,8 @@ function buildFileHash(_fileName: string, records: CallRecord[]): string {
 }
 
 export function initLocalDb() {
+  if (localDbInitialized) return;
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS imported_files (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -372,6 +376,37 @@ export function initLocalDb() {
       raw_json TEXT NOT NULL,
       created_at TEXT NOT NULL,
       FOREIGN KEY (file_id) REFERENCES imported_files(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS ani_history_summary (
+      ani TEXT PRIMARY KEY,
+      intentos_totales INTEGER NOT NULL DEFAULT 0,
+      intentos_answer_agent INTEGER NOT NULL DEFAULT 0,
+      intentos_answering_machine INTEGER NOT NULL DEFAULT 0,
+      intentos_no_answer INTEGER NOT NULL DEFAULT 0,
+      intentos_busy INTEGER NOT NULL DEFAULT 0,
+      intentos_unallocated INTEGER NOT NULL DEFAULT 0,
+      intentos_rejected INTEGER NOT NULL DEFAULT 0,
+      ultimo_registro TEXT NOT NULL DEFAULT ''
+    );
+
+    CREATE TABLE IF NOT EXISTS ani_history_bases (
+      ani TEXT NOT NULL,
+      base TEXT NOT NULL,
+      PRIMARY KEY (ani, base)
+    );
+
+    CREATE TABLE IF NOT EXISTS ani_history_prefijos (
+      ani TEXT NOT NULL,
+      prefijo TEXT NOT NULL,
+      PRIMARY KEY (ani, prefijo)
+    );
+
+    CREATE TABLE IF NOT EXISTS ani_history_cache_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      last_record_id INTEGER NOT NULL DEFAULT 0,
+      total_records INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS analysis_runs (
@@ -457,6 +492,8 @@ export function initLocalDb() {
     CREATE INDEX IF NOT EXISTS idx_call_records_base ON call_records(base);
     CREATE INDEX IF NOT EXISTS idx_call_records_estado_subestado ON call_records(estado, subestado);
     CREATE INDEX IF NOT EXISTS idx_call_records_prefijo ON call_records(prefijo);
+    CREATE INDEX IF NOT EXISTS idx_ani_history_bases_ani ON ani_history_bases(ani);
+    CREATE INDEX IF NOT EXISTS idx_ani_history_prefijos_ani ON ani_history_prefijos(ani);
     CREATE INDEX IF NOT EXISTS idx_imported_files_fecha_archivo ON imported_files(fecha_archivo);
     CREATE INDEX IF NOT EXISTS idx_neotel_report_imports_type_date ON neotel_report_imports(report_type, report_date);
     CREATE INDEX IF NOT EXISTS idx_gestion_records_ani ON gestion_records(ani);
@@ -510,6 +547,277 @@ export function initLocalDb() {
 
     applyMigration();
   }
+
+  const aniSummaryMigrationId = "ani_history_summary_v1";
+  const applyAniSummaryMigration = db.transaction(() => {
+    const alreadyApplied = db
+      .prepare(`SELECT 1 FROM local_db_migrations WHERE id = ?`)
+      .get(aniSummaryMigrationId);
+    if (alreadyApplied) return;
+
+    db.prepare(`
+      INSERT OR REPLACE INTO ani_history_summary (
+        ani,
+        intentos_totales,
+        intentos_answer_agent,
+        intentos_answering_machine,
+        intentos_no_answer,
+        intentos_busy,
+        intentos_unallocated,
+        intentos_rejected,
+        ultimo_registro
+      )
+      SELECT
+        ani,
+        COUNT(*),
+        SUM(is_contacto_efectivo),
+        SUM(
+          CASE
+            WHEN UPPER(REPLACE(TRIM(COALESCE(estado, '')), ' ', '')) = 'ANSWER'
+              AND (
+                UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) LIKE '%MACHINE%'
+                OR UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) LIKE '%ANSWERING%'
+                OR UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) LIKE '%BUZON%'
+                OR UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) LIKE '%VOICEMAIL%'
+              )
+            THEN 1 ELSE 0
+          END
+        ),
+        SUM(
+          CASE WHEN UPPER(REPLACE(TRIM(COALESCE(estado, '')), ' ', '')) = 'NOANSWER'
+            THEN 1 ELSE 0 END
+        ),
+        SUM(
+          CASE WHEN UPPER(REPLACE(TRIM(COALESCE(estado, '')), ' ', '')) = 'BUSY'
+            THEN 1 ELSE 0 END
+        ),
+        SUM(
+          CASE
+            WHEN UPPER(REPLACE(TRIM(COALESCE(estado, '')), ' ', '')) = 'UNALLOCATED'
+              OR UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) = 'UNALLOCATED'
+            THEN 1 ELSE 0
+          END
+        ),
+        SUM(
+          CASE
+            WHEN UPPER(REPLACE(TRIM(COALESCE(estado, '')), ' ', '')) = 'REJECTED'
+              OR UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) = 'REJECTED'
+            THEN 1 ELSE 0
+          END
+        ),
+        COALESCE(MAX(
+          CASE
+            WHEN TRIM(COALESCE(fecha, '')) <> ''
+            THEN fecha || CHAR(31) || PRINTF('%020d', id) || CHAR(31)
+              || COALESCE(estado, '') || CHAR(31) || COALESCE(subestado, '')
+            ELSE NULL
+          END
+        ), '')
+      FROM call_records NOT INDEXED
+      WHERE TRIM(COALESCE(ani, '')) <> ''
+      GROUP BY ani
+    `).run();
+
+    db.prepare(`
+      INSERT OR IGNORE INTO ani_history_bases (ani, base)
+      SELECT DISTINCT ani, TRIM(base)
+      FROM call_records NOT INDEXED
+      WHERE TRIM(COALESCE(ani, '')) <> ''
+        AND TRIM(COALESCE(base, '')) <> ''
+    `).run();
+
+    db.prepare(`
+      INSERT OR IGNORE INTO ani_history_prefijos (ani, prefijo)
+      SELECT DISTINCT ani, TRIM(prefijo)
+      FROM call_records NOT INDEXED
+      WHERE TRIM(COALESCE(ani, '')) <> ''
+        AND TRIM(COALESCE(prefijo, '')) <> ''
+    `).run();
+
+    db.prepare(`
+      INSERT INTO local_db_migrations (id, applied_at)
+      VALUES (?, ?)
+    `).run(aniSummaryMigrationId, new Date().toISOString());
+  });
+
+  applyAniSummaryMigration();
+
+  const applySummaryIncrement = (afterRecordId: number) => {
+    db.prepare(`
+      INSERT INTO ani_history_summary (
+        ani,
+        intentos_totales,
+        intentos_answer_agent,
+        intentos_answering_machine,
+        intentos_no_answer,
+        intentos_busy,
+        intentos_unallocated,
+        intentos_rejected,
+        ultimo_registro
+      )
+      SELECT
+        ani,
+        COUNT(*),
+        SUM(is_contacto_efectivo),
+        SUM(
+          CASE
+            WHEN UPPER(REPLACE(TRIM(COALESCE(estado, '')), ' ', '')) = 'ANSWER'
+              AND (
+                UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) LIKE '%MACHINE%'
+                OR UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) LIKE '%ANSWERING%'
+                OR UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) LIKE '%BUZON%'
+                OR UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) LIKE '%VOICEMAIL%'
+              )
+            THEN 1 ELSE 0
+          END
+        ),
+        SUM(CASE WHEN UPPER(REPLACE(TRIM(COALESCE(estado, '')), ' ', '')) = 'NOANSWER' THEN 1 ELSE 0 END),
+        SUM(CASE WHEN UPPER(REPLACE(TRIM(COALESCE(estado, '')), ' ', '')) = 'BUSY' THEN 1 ELSE 0 END),
+        SUM(
+          CASE
+            WHEN UPPER(REPLACE(TRIM(COALESCE(estado, '')), ' ', '')) = 'UNALLOCATED'
+              OR UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) = 'UNALLOCATED'
+            THEN 1 ELSE 0
+          END
+        ),
+        SUM(
+          CASE
+            WHEN UPPER(REPLACE(TRIM(COALESCE(estado, '')), ' ', '')) = 'REJECTED'
+              OR UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) = 'REJECTED'
+            THEN 1 ELSE 0
+          END
+        ),
+        COALESCE(MAX(
+          CASE
+            WHEN TRIM(COALESCE(fecha, '')) <> ''
+            THEN fecha || CHAR(31) || PRINTF('%020d', id) || CHAR(31)
+              || COALESCE(estado, '') || CHAR(31) || COALESCE(subestado, '')
+            ELSE NULL
+          END
+        ), '')
+      FROM call_records
+      WHERE id > ?
+        AND TRIM(COALESCE(ani, '')) <> ''
+      GROUP BY ani
+      ON CONFLICT(ani) DO UPDATE SET
+        intentos_totales = ani_history_summary.intentos_totales + excluded.intentos_totales,
+        intentos_answer_agent = ani_history_summary.intentos_answer_agent + excluded.intentos_answer_agent,
+        intentos_answering_machine = ani_history_summary.intentos_answering_machine + excluded.intentos_answering_machine,
+        intentos_no_answer = ani_history_summary.intentos_no_answer + excluded.intentos_no_answer,
+        intentos_busy = ani_history_summary.intentos_busy + excluded.intentos_busy,
+        intentos_unallocated = ani_history_summary.intentos_unallocated + excluded.intentos_unallocated,
+        intentos_rejected = ani_history_summary.intentos_rejected + excluded.intentos_rejected,
+        ultimo_registro = CASE
+          WHEN excluded.ultimo_registro > ani_history_summary.ultimo_registro
+          THEN excluded.ultimo_registro
+          ELSE ani_history_summary.ultimo_registro
+        END
+    `).run(afterRecordId);
+
+    db.prepare(`
+      INSERT OR IGNORE INTO ani_history_bases (ani, base)
+      SELECT DISTINCT ani, TRIM(base)
+      FROM call_records
+      WHERE id > ?
+        AND TRIM(COALESCE(ani, '')) <> ''
+        AND TRIM(COALESCE(base, '')) <> ''
+    `).run(afterRecordId);
+
+    db.prepare(`
+      INSERT OR IGNORE INTO ani_history_prefijos (ani, prefijo)
+      SELECT DISTINCT ani, TRIM(prefijo)
+      FROM call_records
+      WHERE id > ?
+        AND TRIM(COALESCE(ani, '')) <> ''
+        AND TRIM(COALESCE(prefijo, '')) <> ''
+    `).run(afterRecordId);
+  };
+
+  const synchronizeAniCache = db.transaction(() => {
+    const state = db.prepare(`
+      SELECT last_record_id AS lastRecordId, total_records AS totalRecords
+      FROM ani_history_cache_state
+      WHERE id = 1
+    `).get() as { totalRecords: number; lastRecordId: number } | undefined;
+    const currentLastRecordId = Number(
+      (db.prepare(`
+        SELECT COALESCE(MAX(id), 0) AS lastRecordId
+        FROM call_records
+      `).get() as { lastRecordId: number }).lastRecordId,
+    );
+
+    if (state && currentLastRecordId === state.lastRecordId) return;
+
+    const currentTotalRecords = Number(
+      (db.prepare(`
+        SELECT COUNT(*) AS totalRecords
+        FROM call_records
+      `).get() as { totalRecords: number }).totalRecords,
+    );
+
+    let cachedTotal = state?.totalRecords ?? Number(
+      (db.prepare(`
+        SELECT COALESCE(SUM(intentos_totales), 0) AS total
+        FROM ani_history_summary
+      `).get() as { total: number }).total,
+    );
+    let lastRecordId = state?.lastRecordId ?? currentLastRecordId;
+
+    if (!state && cachedTotal < currentTotalRecords) {
+      const migration = db.prepare(`
+        SELECT applied_at AS appliedAt
+        FROM local_db_migrations
+        WHERE id = ?
+      `).get(aniSummaryMigrationId) as { appliedAt: string } | undefined;
+      lastRecordId = Number(
+        (db.prepare(`
+          SELECT COALESCE(MAX(id), 0) AS lastRecordId
+          FROM call_records
+          WHERE created_at <= ?
+        `).get(migration?.appliedAt ?? "") as { lastRecordId: number }).lastRecordId,
+      );
+    }
+
+    if (
+      currentLastRecordId !== lastRecordId ||
+      currentTotalRecords !== cachedTotal
+    ) {
+      const newRecords = Number(
+        (db.prepare(`
+          SELECT COUNT(*) AS total
+          FROM call_records
+          WHERE id > ?
+        `).get(lastRecordId) as { total: number }).total,
+      );
+
+      if (
+        currentLastRecordId < lastRecordId ||
+        currentTotalRecords !== cachedTotal + newRecords
+      ) {
+        throw new Error(
+          "El resumen rápido por ANI quedó desincronizado por una eliminación externa. Reiniciá la caché histórica antes de continuar.",
+        );
+      }
+
+      applySummaryIncrement(lastRecordId);
+      cachedTotal += newRecords;
+      lastRecordId = currentLastRecordId;
+    }
+
+    db.prepare(`
+      INSERT INTO ani_history_cache_state (
+        id, last_record_id, total_records, updated_at
+      )
+      VALUES (1, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        last_record_id = excluded.last_record_id,
+        total_records = excluded.total_records,
+        updated_at = excluded.updated_at
+    `).run(lastRecordId, cachedTotal, new Date().toISOString());
+  });
+
+  synchronizeAniCache();
+  localDbInitialized = true;
 }
 
 export function saveAnalysisToLocalDb(analysis: AnalysisResult) {
@@ -590,11 +898,60 @@ export function saveAnalysisToLocalDb(analysis: AnalysisResult) {
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
 
+  const upsertAniSummary = db.prepare(`
+    INSERT INTO ani_history_summary (
+      ani,
+      intentos_totales,
+      intentos_answer_agent,
+      intentos_answering_machine,
+      intentos_no_answer,
+      intentos_busy,
+      intentos_unallocated,
+      intentos_rejected,
+      ultimo_registro
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(ani) DO UPDATE SET
+      intentos_totales = ani_history_summary.intentos_totales + excluded.intentos_totales,
+      intentos_answer_agent = ani_history_summary.intentos_answer_agent + excluded.intentos_answer_agent,
+      intentos_answering_machine = ani_history_summary.intentos_answering_machine + excluded.intentos_answering_machine,
+      intentos_no_answer = ani_history_summary.intentos_no_answer + excluded.intentos_no_answer,
+      intentos_busy = ani_history_summary.intentos_busy + excluded.intentos_busy,
+      intentos_unallocated = ani_history_summary.intentos_unallocated + excluded.intentos_unallocated,
+      intentos_rejected = ani_history_summary.intentos_rejected + excluded.intentos_rejected,
+      ultimo_registro = CASE
+        WHEN excluded.ultimo_registro > ani_history_summary.ultimo_registro
+        THEN excluded.ultimo_registro
+        ELSE ani_history_summary.ultimo_registro
+      END
+  `);
+  const insertAniBase = db.prepare(`
+    INSERT OR IGNORE INTO ani_history_bases (ani, base)
+    VALUES (?, ?)
+  `);
+  const insertAniPrefijo = db.prepare(`
+    INSERT OR IGNORE INTO ani_history_prefijos (ani, prefijo)
+    VALUES (?, ?)
+  `);
+
   const transaction = db.transaction(() => {
     let insertedRecords = 0;
     let duplicatedRecords = 0;
     let insertedFiles = 0;
     let duplicatedFiles = 0;
+    let maxInsertedRecordId = 0;
+    const summaryUpdates = new Map<string, {
+      intentosTotales: number;
+      intentosAnswerAgent: number;
+      intentosAnsweringMachine: number;
+      intentosNoAnswer: number;
+      intentosBusy: number;
+      intentosUnallocated: number;
+      intentosRejected: number;
+      ultimoRegistro: string;
+      bases: Set<string>;
+      prefijos: Set<string>;
+    }>();
 
     Array.from(recordsByFile.entries()).forEach(
       ([fileName, records]: [string, CallRecord[]]) => {
@@ -635,32 +992,123 @@ export function saveAnalysisToLocalDb(analysis: AnalysisResult) {
             getRecordExtra(record, "fechaArchivo") ||
             getRecordExtra(record, "fecha_archivo") ||
             fechaArchivo;
+          const fechaRecord =
+            getFechaFromRecord(record as Record<string, unknown>) ??
+            normalizeDateForStorage(record.fecha) ??
+            null;
+          const ani = String(record.ani ?? "").replace(/\D/g, "").trim();
+          const base = String(record.base ?? "").trim();
+          const prefijo = getPrefijo(record.ani);
+          const contactoEfectivo = isContactoEfectivo(record);
 
           const recordResult = insertRecord.run(
             recordHash,
             fileId,
-            getFechaFromRecord(record as Record<string, unknown>) ?? normalizeDateForStorage(record.fecha) ?? null,
+            fechaRecord,
             archivoOrigen,
             fechaArchivoRecord,
-            record.ani,
+            ani,
             record.estado,
             record.subestado ?? null,
-            record.base ?? null,
-            getPrefijo(record.ani),
+            base || null,
+            prefijo,
             typeof record.duracion === "number" ? record.duracion : null,
-            isContactoEfectivo(record) ? 1 : 0,
+            contactoEfectivo ? 1 : 0,
             JSON.stringify(record),
             now
           );
 
           if (recordResult.changes > 0) {
             insertedRecords++;
+            maxInsertedRecordId = Math.max(
+              maxInsertedRecordId,
+              Number(recordResult.lastInsertRowid) || 0,
+            );
+            const estado = normalizeEstado(record.estado);
+            const subestado = normalizeSubestado(record.subestado);
+            const current = summaryUpdates.get(ani) ?? {
+              intentosTotales: 0,
+              intentosAnswerAgent: 0,
+              intentosAnsweringMachine: 0,
+              intentosNoAnswer: 0,
+              intentosBusy: 0,
+              intentosUnallocated: 0,
+              intentosRejected: 0,
+              ultimoRegistro: "",
+              bases: new Set<string>(),
+              prefijos: new Set<string>(),
+            };
+
+            current.intentosTotales++;
+            if (contactoEfectivo) {
+              current.intentosAnswerAgent++;
+            } else if (
+              estado === "answer" &&
+              (
+                subestado.includes("machine") ||
+                subestado.includes("answering") ||
+                subestado.includes("buzon") ||
+                subestado.includes("voicemail")
+              )
+            ) {
+              current.intentosAnsweringMachine++;
+            } else if (estado === "noanswer") {
+              current.intentosNoAnswer++;
+            } else if (estado === "busy") {
+              current.intentosBusy++;
+            } else if (estado === "unallocated" || subestado === "unallocated") {
+              current.intentosUnallocated++;
+            } else if (estado === "rejected" || subestado === "rejected") {
+              current.intentosRejected++;
+            }
+
+            if (fechaRecord) {
+              const latest = [
+                fechaRecord,
+                String(recordResult.lastInsertRowid).padStart(20, "0"),
+                record.estado ?? "",
+                record.subestado ?? "",
+              ].join("\u001f");
+              if (latest > current.ultimoRegistro) current.ultimoRegistro = latest;
+            }
+            if (base) current.bases.add(base);
+            if (prefijo) current.prefijos.add(prefijo);
+            summaryUpdates.set(ani, current);
           } else {
             duplicatedRecords++;
           }
         }
       }
     );
+
+    for (const [ani, summary] of Array.from(summaryUpdates.entries())) {
+      upsertAniSummary.run(
+        ani,
+        summary.intentosTotales,
+        summary.intentosAnswerAgent,
+        summary.intentosAnsweringMachine,
+        summary.intentosNoAnswer,
+        summary.intentosBusy,
+        summary.intentosUnallocated,
+        summary.intentosRejected,
+        summary.ultimoRegistro,
+      );
+      for (const base of Array.from(summary.bases)) insertAniBase.run(ani, base);
+      for (const prefijo of Array.from(summary.prefijos)) {
+        insertAniPrefijo.run(ani, prefijo);
+      }
+    }
+
+    if (insertedRecords > 0) {
+      db.prepare(`
+        UPDATE ani_history_cache_state
+        SET
+          last_record_id = MAX(last_record_id, ?),
+          total_records = total_records + ?,
+          updated_at = ?
+        WHERE id = 1
+      `).run(maxInsertedRecordId, insertedRecords, now);
+    }
 
     const analysisSummary = {
       id: analysis.id,
@@ -816,6 +1264,20 @@ export function deleteImportedFile(fileId: number) {
   }
 
   const transaction = db.transaction(() => {
+    db.exec(`
+      DROP TABLE IF EXISTS temp.affected_deleted_anis;
+      CREATE TEMP TABLE affected_deleted_anis (
+        ani TEXT PRIMARY KEY
+      ) WITHOUT ROWID;
+    `);
+    db.prepare(`
+      INSERT OR IGNORE INTO affected_deleted_anis (ani)
+      SELECT DISTINCT ani
+      FROM call_records
+      WHERE file_id = ?
+        AND TRIM(COALESCE(ani, '')) <> ''
+    `).run(fileId);
+
     const deletedRecordsResult = db
       .prepare(`
         DELETE FROM call_records
@@ -827,6 +1289,103 @@ export function deleteImportedFile(fileId: number) {
       DELETE FROM imported_files
       WHERE id = ?
     `).run(fileId);
+
+    db.exec(`
+      DELETE FROM ani_history_summary
+      WHERE ani IN (SELECT ani FROM affected_deleted_anis);
+      DELETE FROM ani_history_bases
+      WHERE ani IN (SELECT ani FROM affected_deleted_anis);
+      DELETE FROM ani_history_prefijos
+      WHERE ani IN (SELECT ani FROM affected_deleted_anis);
+
+      INSERT INTO ani_history_summary (
+        ani,
+        intentos_totales,
+        intentos_answer_agent,
+        intentos_answering_machine,
+        intentos_no_answer,
+        intentos_busy,
+        intentos_unallocated,
+        intentos_rejected,
+        ultimo_registro
+      )
+      SELECT
+        call_records.ani,
+        COUNT(*),
+        SUM(is_contacto_efectivo),
+        SUM(
+          CASE
+            WHEN UPPER(REPLACE(TRIM(COALESCE(estado, '')), ' ', '')) = 'ANSWER'
+              AND (
+                UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) LIKE '%MACHINE%'
+                OR UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) LIKE '%ANSWERING%'
+                OR UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) LIKE '%BUZON%'
+                OR UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) LIKE '%VOICEMAIL%'
+              )
+            THEN 1 ELSE 0
+          END
+        ),
+        SUM(CASE WHEN UPPER(REPLACE(TRIM(COALESCE(estado, '')), ' ', '')) = 'NOANSWER' THEN 1 ELSE 0 END),
+        SUM(CASE WHEN UPPER(REPLACE(TRIM(COALESCE(estado, '')), ' ', '')) = 'BUSY' THEN 1 ELSE 0 END),
+        SUM(
+          CASE
+            WHEN UPPER(REPLACE(TRIM(COALESCE(estado, '')), ' ', '')) = 'UNALLOCATED'
+              OR UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) = 'UNALLOCATED'
+            THEN 1 ELSE 0
+          END
+        ),
+        SUM(
+          CASE
+            WHEN UPPER(REPLACE(TRIM(COALESCE(estado, '')), ' ', '')) = 'REJECTED'
+              OR UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) = 'REJECTED'
+            THEN 1 ELSE 0
+          END
+        ),
+        COALESCE(MAX(
+          CASE
+            WHEN TRIM(COALESCE(fecha, '')) <> ''
+            THEN fecha || CHAR(31) || PRINTF('%020d', id) || CHAR(31)
+              || COALESCE(estado, '') || CHAR(31) || COALESCE(subestado, '')
+            ELSE NULL
+          END
+        ), '')
+      FROM call_records
+      INNER JOIN affected_deleted_anis
+        ON affected_deleted_anis.ani = call_records.ani
+      GROUP BY call_records.ani;
+
+      INSERT OR IGNORE INTO ani_history_bases (ani, base)
+      SELECT DISTINCT call_records.ani, TRIM(call_records.base)
+      FROM call_records
+      INNER JOIN affected_deleted_anis
+        ON affected_deleted_anis.ani = call_records.ani
+      WHERE TRIM(COALESCE(call_records.base, '')) <> '';
+
+      INSERT OR IGNORE INTO ani_history_prefijos (ani, prefijo)
+      SELECT DISTINCT call_records.ani, TRIM(call_records.prefijo)
+      FROM call_records
+      INNER JOIN affected_deleted_anis
+        ON affected_deleted_anis.ani = call_records.ani
+      WHERE TRIM(COALESCE(call_records.prefijo, '')) <> '';
+
+      DROP TABLE affected_deleted_anis;
+    `);
+    const lastRecord = db.prepare(`
+      SELECT COALESCE(MAX(id), 0) AS lastRecordId
+      FROM call_records
+    `).get() as { lastRecordId: number };
+    db.prepare(`
+      UPDATE ani_history_cache_state
+      SET
+        last_record_id = ?,
+        total_records = MAX(0, total_records - ?),
+        updated_at = ?
+      WHERE id = 1
+    `).run(
+      lastRecord.lastRecordId,
+      deletedRecordsResult.changes,
+      new Date().toISOString(),
+    );
 
     return {
       deleted: true,
@@ -1010,7 +1569,8 @@ export function getHistorySummaryForAnis(anis: string[]) {
   const result = new Map<string, LocalAniHistorySummary>();
   if (normalizedAnis.length === 0) return result;
 
-  const chunkSize = 500;
+  const latestSeparator = "\u001f";
+  const chunkSize = 900;
 
   for (let index = 0; index < normalizedAnis.length; index += chunkSize) {
     const chunk = normalizedAnis.slice(index, index + chunkSize);
@@ -1019,85 +1579,73 @@ export function getHistorySummaryForAnis(anis: string[]) {
       .prepare(`
         SELECT
           ani,
-          fecha,
-          estado,
-          subestado,
-          base,
-          prefijo
-        FROM call_records
+          intentos_totales AS intentosTotales,
+          intentos_answer_agent AS intentosAnswerAgent,
+          intentos_answering_machine AS intentosAnsweringMachine,
+          intentos_no_answer AS intentosNoAnswer,
+          intentos_busy AS intentosBusy,
+          intentos_unallocated AS intentosUnallocated,
+          intentos_rejected AS intentosRejected,
+          ultimo_registro AS ultimoRegistro
+        FROM ani_history_summary
         WHERE ani IN (${placeholders})
-        ORDER BY ani ASC, fecha ASC, id ASC
       `)
       .all(...chunk) as Array<{
         ani: string;
-        fecha: string | null;
-        estado: string | null;
-        subestado: string | null;
-        base: string | null;
-        prefijo: string | null;
+        intentosTotales: number;
+        intentosAnswerAgent: number;
+        intentosAnsweringMachine: number;
+        intentosNoAnswer: number;
+        intentosBusy: number;
+        intentosUnallocated: number;
+        intentosRejected: number;
+        ultimoRegistro: string;
       }>;
 
     for (const row of rows) {
       const ani = String(row.ani ?? "").replace(/\D/g, "").trim();
       if (!ani) continue;
 
-      let summary = result.get(ani);
-      if (!summary) {
-        summary = {
-          ani,
-          intentosTotales: 0,
-          intentosAnswerAgent: 0,
-          intentosAnsweringMachine: 0,
-          intentosNoAnswer: 0,
-          intentosBusy: 0,
-          intentosUnallocated: 0,
-          intentosRejected: 0,
-          ultimoLlamado: "",
-          ultimoEstado: "",
-          ultimoSubestado: "",
-          bases: [],
-          prefijos: [],
-        };
-        result.set(ani, summary);
-      }
+      const [ultimoLlamado = "", _ultimoId = "", ultimoEstado = "", ultimoSubestado = ""] =
+        row.ultimoRegistro?.split(latestSeparator) ?? [];
 
-      const estado = normalizeEstado(row.estado ?? undefined);
-      const subestado = normalizeSubestado(row.subestado ?? undefined);
+      result.set(ani, {
+        ani,
+        intentosTotales: Number(row.intentosTotales) || 0,
+        intentosAnswerAgent: Number(row.intentosAnswerAgent) || 0,
+        intentosAnsweringMachine: Number(row.intentosAnsweringMachine) || 0,
+        intentosNoAnswer: Number(row.intentosNoAnswer) || 0,
+        intentosBusy: Number(row.intentosBusy) || 0,
+        intentosUnallocated: Number(row.intentosUnallocated) || 0,
+        intentosRejected: Number(row.intentosRejected) || 0,
+        ultimoLlamado,
+        ultimoEstado,
+        ultimoSubestado,
+        bases: [],
+        prefijos: [],
+      });
+    }
 
-      summary.intentosTotales += 1;
-      if (estado === "answer" && subestado.includes("agent")) {
-        summary.intentosAnswerAgent += 1;
-      } else if (
-        estado === "answer" &&
-        (subestado.includes("machine") ||
-          subestado.includes("answering") ||
-          subestado.includes("buzon") ||
-          subestado.includes("voicemail"))
-      ) {
-        summary.intentosAnsweringMachine += 1;
-      } else if (estado === "noanswer") {
-        summary.intentosNoAnswer += 1;
-      } else if (estado === "busy") {
-        summary.intentosBusy += 1;
-      } else if (estado === "unallocated") {
-        summary.intentosUnallocated += 1;
-      } else if (estado === "rejected") {
-        summary.intentosRejected += 1;
-      }
+    const baseRows = db.prepare(`
+      SELECT ani, base
+      FROM ani_history_bases
+      WHERE ani IN (${placeholders})
+      ORDER BY ani, base
+    `).all(...chunk) as Array<{ ani: string; base: string }>;
+    for (const row of baseRows) {
+      const summary = result.get(row.ani);
+      if (summary) summary.bases.push(row.base);
+    }
 
-      const base = String(row.base ?? "").trim();
-      if (base && !summary.bases.includes(base)) summary.bases.push(base);
-
-      const prefijo = String(row.prefijo ?? "").trim();
-      if (prefijo && !summary.prefijos.includes(prefijo)) {
-        summary.prefijos.push(prefijo);
-      }
-
-      if (row.fecha) {
-        summary.ultimoLlamado = row.fecha;
-        summary.ultimoEstado = row.estado ?? "";
-        summary.ultimoSubestado = row.subestado ?? "";
-      }
+    const prefijoRows = db.prepare(`
+      SELECT ani, prefijo
+      FROM ani_history_prefijos
+      WHERE ani IN (${placeholders})
+      ORDER BY ani, prefijo
+    `).all(...chunk) as Array<{ ani: string; prefijo: string }>;
+    for (const row of prefijoRows) {
+      const summary = result.get(row.ani);
+      if (summary) summary.prefijos.push(row.prefijo);
     }
   }
 
@@ -1108,51 +1656,101 @@ export function getLatestGestionForAnis(anis: string[]) {
   initLocalDb();
   const normalizedAnis = Array.from(new Set(anis.map((ani) => String(ani ?? "").replace(/\D/g, "").trim()).filter(Boolean)));
   const result = new Map<string, LocalGestionSummary>();
+  const latestRows = new Map<string, {
+    id: number;
+    ani: string;
+    resultado: string;
+    subresultado: string;
+    accionComercial: string;
+    motivoAccion: string;
+    ultimaGestion: string;
+  }>();
+  const catalogaciones = new Map<string, Map<string, {
+    id: number;
+    resultado: string;
+    subresultado: string;
+    accionComercial: string;
+    ultimaGestion: string;
+  }>>();
+  const exclusiones = new Map<string, {
+    id: number;
+    ultimaGestion: string;
+    motivo: string;
+  }>();
+  const isNewer = (
+    candidate: { id: number; ultimaGestion: string },
+    current?: { id: number; ultimaGestion: string },
+  ) => !current ||
+    candidate.ultimaGestion > current.ultimaGestion ||
+    (candidate.ultimaGestion === current.ultimaGestion && candidate.id > current.id);
 
   for (let index = 0; index < normalizedAnis.length; index += 500) {
     const chunk = normalizedAnis.slice(index, index + 500);
     const placeholders = chunk.map(() => "?").join(",");
     const rows = db.prepare(`
-      SELECT ani, resultado, subresultado, accion_comercial AS accionComercial,
+      SELECT id, ani, resultado, subresultado, accion_comercial AS accionComercial,
         motivo_accion AS motivoAccion, ts AS ultimaGestion
       FROM gestion_records
       WHERE ani IN (${placeholders})
-      ORDER BY ani ASC, ts ASC, id ASC
-    `).all(...chunk) as Array<Omit<LocalGestionSummary, "catalogaciones" | "exclusionComercial" | "motivoExclusion">>;
+    `).all(...chunk) as Array<{
+      id: number;
+      ani: string;
+      resultado: string;
+      subresultado: string;
+      accionComercial: string;
+      motivoAccion: string;
+      ultimaGestion: string;
+    }>;
+
     for (const row of rows) {
       const ani = String(row.ani);
-      const current = result.get(ani) ?? {
-        ...row,
-        catalogaciones: [],
-        exclusionComercial: false,
-        motivoExclusion: "",
-      };
+      const currentLatest = latestRows.get(ani);
+      if (isNewer(row, currentLatest)) latestRows.set(ani, row);
+
       const key = `${row.resultado} | ${row.subresultado}`;
-      const catalogIndex = current.catalogaciones.findIndex(
-        (item) => `${item.resultado} | ${item.subresultado}` === key,
-      );
-      const catalogacion = {
-        resultado: row.resultado,
-        subresultado: row.subresultado,
-        accionComercial: row.accionComercial,
-        ultimaGestion: row.ultimaGestion,
-      };
-      if (catalogIndex >= 0) current.catalogaciones[catalogIndex] = catalogacion;
-      else current.catalogaciones.push(catalogacion);
+      const aniCatalogaciones = catalogaciones.get(ani) ?? new Map();
+      const currentCatalogacion = aniCatalogaciones.get(key);
+      if (isNewer(row, currentCatalogacion)) aniCatalogaciones.set(key, row);
+      catalogaciones.set(ani, aniCatalogaciones);
 
       const exclusionReason = getCommercialExclusionReason(row.resultado, row.subresultado);
-      if (exclusionReason) {
-        current.exclusionComercial = true;
-        current.motivoExclusion = exclusionReason;
+      const currentExclusion = exclusiones.get(ani);
+      if (exclusionReason && isNewer(row, currentExclusion)) {
+        exclusiones.set(ani, {
+          id: row.id,
+          ultimaGestion: row.ultimaGestion,
+          motivo: exclusionReason,
+        });
       }
-      current.resultado = row.resultado;
-      current.subresultado = row.subresultado;
-      current.accionComercial = row.accionComercial;
-      current.motivoAccion = row.motivoAccion;
-      current.ultimaGestion = row.ultimaGestion;
-      result.set(ani, current);
     }
   }
+
+  for (const [ani, latest] of Array.from(latestRows.entries())) {
+    const exclusion = exclusiones.get(ani);
+    const items = Array.from(catalogaciones.get(ani)?.values() ?? [])
+      .sort((a, b) =>
+        b.ultimaGestion.localeCompare(a.ultimaGestion) || b.id - a.id
+      )
+      .map((item) => ({
+        resultado: item.resultado,
+        subresultado: item.subresultado,
+        accionComercial: item.accionComercial,
+        ultimaGestion: item.ultimaGestion,
+      }));
+
+    result.set(ani, {
+      ani,
+      resultado: latest.resultado,
+      subresultado: latest.subresultado,
+      accionComercial: latest.accionComercial,
+      motivoAccion: latest.motivoAccion,
+      ultimaGestion: latest.ultimaGestion,
+      catalogaciones: items,
+      exclusionComercial: Boolean(exclusion),
+      motivoExclusion: exclusion?.motivo ?? "",
+    });
+  }
+
   return result;
 }
 export function saveNeotelReport(
@@ -1302,7 +1900,11 @@ export function getNeotelReportStats() {
     SELECT
       COUNT(*) AS totalGestiones,
       COUNT(DISTINCT ani) AS totalAnis,
-      COUNT(DISTINCT CASE WHEN accion_comercial = 'EXCLUIR' THEN ani END) AS excludedAnis,
+      COUNT(DISTINCT CASE
+        WHEN accion_comercial = 'EXCLUIR'
+          OR UPPER(COALESCE(resultado, '') || ' ' || COALESCE(subresultado, '')) LIKE '%DEUDA%'
+        THEN ani
+      END) AS excludedAnis,
       COUNT(DISTINCT CASE WHEN accion_comercial = 'BUZON' THEN ani END) AS mailboxAnis
     FROM gestion_records
   `).get() as Record<string, number>;
@@ -1338,7 +1940,11 @@ export function getNeotelReportDates() {
         report_date,
         COUNT(*) AS totalGestiones,
         COUNT(DISTINCT ani) AS totalAnis,
-        COUNT(DISTINCT CASE WHEN accion_comercial = 'EXCLUIR' THEN ani END) AS excludedAnis,
+        COUNT(DISTINCT CASE
+          WHEN accion_comercial = 'EXCLUIR'
+            OR UPPER(COALESCE(resultado, '') || ' ' || COALESCE(subresultado, '')) LIKE '%DEUDA%'
+          THEN ani
+        END) AS excludedAnis,
         COUNT(DISTINCT CASE WHEN accion_comercial = 'BUZON' THEN ani END) AS mailboxAnis
       FROM gestion_records
       WHERE report_date <> ''
@@ -1468,6 +2074,14 @@ export function deleteTicketHistory() {
 
   const transaction = db.transaction(() => {
     const deletedRecords = db.prepare(`DELETE FROM call_records`).run();
+    db.prepare(`DELETE FROM ani_history_summary`).run();
+    db.prepare(`DELETE FROM ani_history_bases`).run();
+    db.prepare(`DELETE FROM ani_history_prefijos`).run();
+    db.prepare(`
+      UPDATE ani_history_cache_state
+      SET last_record_id = 0, total_records = 0, updated_at = ?
+      WHERE id = 1
+    `).run(new Date().toISOString());
     const deletedFiles = db.prepare(`DELETE FROM imported_files`).run();
     const deletedAnalyses = db.prepare(`DELETE FROM analysis_runs`).run();
 
@@ -1491,6 +2105,14 @@ export function deleteAllLocalHistory() {
 
   const transaction = db.transaction(() => {
     const deletedRecords = db.prepare(`DELETE FROM call_records`).run();
+    db.prepare(`DELETE FROM ani_history_summary`).run();
+    db.prepare(`DELETE FROM ani_history_bases`).run();
+    db.prepare(`DELETE FROM ani_history_prefijos`).run();
+    db.prepare(`
+      UPDATE ani_history_cache_state
+      SET last_record_id = 0, total_records = 0, updated_at = ?
+      WHERE id = 1
+    `).run(new Date().toISOString());
     const deletedFiles = db.prepare(`DELETE FROM imported_files`).run();
     const deletedAnalyses = db.prepare(`DELETE FROM analysis_runs`).run();
     const deletedGestiones = db.prepare(`DELETE FROM gestion_records`).run();
