@@ -32,6 +32,12 @@ export type LocalAniHistorySummary = {
   ultimoLlamado: string;
   ultimoEstado: string;
   ultimoSubestado: string;
+  intentos24h: number;
+  intentos7d: number;
+  intentos14d: number;
+  intentos30d: number;
+  noAnswer7d: number;
+  buzones14d: number;
   bases: string[];
   prefijos: string[];
 };
@@ -409,6 +415,16 @@ export function initLocalDb() {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS ani_history_hourly (
+      ani TEXT NOT NULL,
+      bucket_hour TEXT NOT NULL,
+      intentos_totales INTEGER NOT NULL DEFAULT 0,
+      intentos_answer_agent INTEGER NOT NULL DEFAULT 0,
+      intentos_answering_machine INTEGER NOT NULL DEFAULT 0,
+      intentos_no_answer INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (ani, bucket_hour)
+    ) WITHOUT ROWID;
+
     CREATE TABLE IF NOT EXISTS analysis_runs (
       id TEXT PRIMARY KEY,
       created_at TEXT NOT NULL,
@@ -494,6 +510,7 @@ export function initLocalDb() {
     CREATE INDEX IF NOT EXISTS idx_call_records_prefijo ON call_records(prefijo);
     CREATE INDEX IF NOT EXISTS idx_ani_history_bases_ani ON ani_history_bases(ani);
     CREATE INDEX IF NOT EXISTS idx_ani_history_prefijos_ani ON ani_history_prefijos(ani);
+    CREATE INDEX IF NOT EXISTS idx_ani_history_hourly_bucket ON ani_history_hourly(bucket_hour);
     CREATE INDEX IF NOT EXISTS idx_imported_files_fecha_archivo ON imported_files(fecha_archivo);
     CREATE INDEX IF NOT EXISTS idx_neotel_report_imports_type_date ON neotel_report_imports(report_type, report_date);
     CREATE INDEX IF NOT EXISTS idx_gestion_records_ani ON gestion_records(ani);
@@ -642,6 +659,62 @@ export function initLocalDb() {
 
   applyAniSummaryMigration();
 
+  const aniHourlyMigrationId = "ani_history_hourly_v1";
+  const applyAniHourlyMigration = db.transaction(() => {
+    const alreadyApplied = db
+      .prepare(`SELECT 1 FROM local_db_migrations WHERE id = ?`)
+      .get(aniHourlyMigrationId);
+    if (alreadyApplied) return;
+
+    db.prepare(`
+      INSERT OR REPLACE INTO ani_history_hourly (
+        ani,
+        bucket_hour,
+        intentos_totales,
+        intentos_answer_agent,
+        intentos_answering_machine,
+        intentos_no_answer
+      )
+      SELECT
+        ani,
+        SUBSTR(fecha, 1, 13) || ':00:00.000Z',
+        COUNT(*),
+        SUM(is_contacto_efectivo),
+        SUM(
+          CASE
+            WHEN UPPER(REPLACE(TRIM(COALESCE(estado, '')), ' ', '')) = 'ANSWER'
+              AND (
+                UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) LIKE '%MACHINE%'
+                OR UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) LIKE '%ANSWERING%'
+                OR UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) LIKE '%BUZON%'
+                OR UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) LIKE '%VOICEMAIL%'
+              )
+            THEN 1 ELSE 0
+          END
+        ),
+        SUM(
+          CASE WHEN UPPER(REPLACE(TRIM(COALESCE(estado, '')), ' ', '')) = 'NOANSWER'
+            THEN 1 ELSE 0 END
+        )
+      FROM call_records NOT INDEXED
+      WHERE TRIM(COALESCE(ani, '')) <> ''
+        AND LENGTH(fecha) >= 13
+        AND fecha >= STRFTIME('%Y-%m-%dT%H:00:00.000Z', 'now', '-35 days')
+      GROUP BY ani, SUBSTR(fecha, 1, 13)
+    `).run();
+
+    db.prepare(`
+      INSERT INTO local_db_migrations (id, applied_at)
+      VALUES (?, ?)
+    `).run(aniHourlyMigrationId, new Date().toISOString());
+  });
+
+  applyAniHourlyMigration();
+  db.prepare(`
+    DELETE FROM ani_history_hourly
+    WHERE bucket_hour < STRFTIME('%Y-%m-%dT%H:00:00.000Z', 'now', '-35 days')
+  `).run();
+
   const applySummaryIncrement = (afterRecordId: number) => {
     db.prepare(`
       INSERT INTO ani_history_summary (
@@ -730,6 +803,49 @@ export function initLocalDb() {
       WHERE id > ?
         AND TRIM(COALESCE(ani, '')) <> ''
         AND TRIM(COALESCE(prefijo, '')) <> ''
+    `).run(afterRecordId);
+
+    db.prepare(`
+      INSERT INTO ani_history_hourly (
+        ani,
+        bucket_hour,
+        intentos_totales,
+        intentos_answer_agent,
+        intentos_answering_machine,
+        intentos_no_answer
+      )
+      SELECT
+        ani,
+        SUBSTR(fecha, 1, 13) || ':00:00.000Z',
+        COUNT(*),
+        SUM(is_contacto_efectivo),
+        SUM(
+          CASE
+            WHEN UPPER(REPLACE(TRIM(COALESCE(estado, '')), ' ', '')) = 'ANSWER'
+              AND (
+                UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) LIKE '%MACHINE%'
+                OR UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) LIKE '%ANSWERING%'
+                OR UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) LIKE '%BUZON%'
+                OR UPPER(REPLACE(TRIM(COALESCE(subestado, '')), ' ', '')) LIKE '%VOICEMAIL%'
+              )
+            THEN 1 ELSE 0
+          END
+        ),
+        SUM(
+          CASE WHEN UPPER(REPLACE(TRIM(COALESCE(estado, '')), ' ', '')) = 'NOANSWER'
+            THEN 1 ELSE 0 END
+        )
+      FROM call_records
+      WHERE id > ?
+        AND TRIM(COALESCE(ani, '')) <> ''
+        AND LENGTH(fecha) >= 13
+        AND fecha >= STRFTIME('%Y-%m-%dT%H:00:00.000Z', 'now', '-35 days')
+      GROUP BY ani, SUBSTR(fecha, 1, 13)
+      ON CONFLICT(ani, bucket_hour) DO UPDATE SET
+        intentos_totales = ani_history_hourly.intentos_totales + excluded.intentos_totales,
+        intentos_answer_agent = ani_history_hourly.intentos_answer_agent + excluded.intentos_answer_agent,
+        intentos_answering_machine = ani_history_hourly.intentos_answering_machine + excluded.intentos_answering_machine,
+        intentos_no_answer = ani_history_hourly.intentos_no_answer + excluded.intentos_no_answer
     `).run(afterRecordId);
   };
 
@@ -933,6 +1049,22 @@ export function saveAnalysisToLocalDb(analysis: AnalysisResult) {
     INSERT OR IGNORE INTO ani_history_prefijos (ani, prefijo)
     VALUES (?, ?)
   `);
+  const upsertAniHourly = db.prepare(`
+    INSERT INTO ani_history_hourly (
+      ani,
+      bucket_hour,
+      intentos_totales,
+      intentos_answer_agent,
+      intentos_answering_machine,
+      intentos_no_answer
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(ani, bucket_hour) DO UPDATE SET
+      intentos_totales = ani_history_hourly.intentos_totales + excluded.intentos_totales,
+      intentos_answer_agent = ani_history_hourly.intentos_answer_agent + excluded.intentos_answer_agent,
+      intentos_answering_machine = ani_history_hourly.intentos_answering_machine + excluded.intentos_answering_machine,
+      intentos_no_answer = ani_history_hourly.intentos_no_answer + excluded.intentos_no_answer
+  `);
 
   const transaction = db.transaction(() => {
     let insertedRecords = 0;
@@ -951,6 +1083,14 @@ export function saveAnalysisToLocalDb(analysis: AnalysisResult) {
       ultimoRegistro: string;
       bases: Set<string>;
       prefijos: Set<string>;
+    }>();
+    const hourlyUpdates = new Map<string, {
+      ani: string;
+      bucketHour: string;
+      intentosTotales: number;
+      intentosAnswerAgent: number;
+      intentosAnsweringMachine: number;
+      intentosNoAnswer: number;
     }>();
 
     Array.from(recordsByFile.entries()).forEach(
@@ -1070,6 +1210,36 @@ export function saveAnalysisToLocalDb(analysis: AnalysisResult) {
                 record.subestado ?? "",
               ].join("\u001f");
               if (latest > current.ultimoRegistro) current.ultimoRegistro = latest;
+
+              if (new Date(fechaRecord).getTime() >= Date.now() - 35 * 86400000) {
+                const bucketHour = `${fechaRecord.slice(0, 13)}:00:00.000Z`;
+                const hourlyKey = `${ani}\u001f${bucketHour}`;
+                const hourly = hourlyUpdates.get(hourlyKey) ?? {
+                  ani,
+                  bucketHour,
+                  intentosTotales: 0,
+                  intentosAnswerAgent: 0,
+                  intentosAnsweringMachine: 0,
+                  intentosNoAnswer: 0,
+                };
+                hourly.intentosTotales++;
+                if (contactoEfectivo) {
+                  hourly.intentosAnswerAgent++;
+                } else if (
+                  estado === "answer" &&
+                  (
+                    subestado.includes("machine") ||
+                    subestado.includes("answering") ||
+                    subestado.includes("buzon") ||
+                    subestado.includes("voicemail")
+                  )
+                ) {
+                  hourly.intentosAnsweringMachine++;
+                } else if (estado === "noanswer") {
+                  hourly.intentosNoAnswer++;
+                }
+                hourlyUpdates.set(hourlyKey, hourly);
+              }
             }
             if (base) current.bases.add(base);
             if (prefijo) current.prefijos.add(prefijo);
@@ -1097,6 +1267,16 @@ export function saveAnalysisToLocalDb(analysis: AnalysisResult) {
       for (const prefijo of Array.from(summary.prefijos)) {
         insertAniPrefijo.run(ani, prefijo);
       }
+    }
+    for (const hourly of Array.from(hourlyUpdates.values())) {
+      upsertAniHourly.run(
+        hourly.ani,
+        hourly.bucketHour,
+        hourly.intentosTotales,
+        hourly.intentosAnswerAgent,
+        hourly.intentosAnsweringMachine,
+        hourly.intentosNoAnswer,
+      );
     }
 
     if (insertedRecords > 0) {
@@ -1297,6 +1477,8 @@ export function deleteImportedFile(fileId: number) {
       WHERE ani IN (SELECT ani FROM affected_deleted_anis);
       DELETE FROM ani_history_prefijos
       WHERE ani IN (SELECT ani FROM affected_deleted_anis);
+      DELETE FROM ani_history_hourly
+      WHERE ani IN (SELECT ani FROM affected_deleted_anis);
 
       INSERT INTO ani_history_summary (
         ani,
@@ -1367,6 +1549,44 @@ export function deleteImportedFile(fileId: number) {
       INNER JOIN affected_deleted_anis
         ON affected_deleted_anis.ani = call_records.ani
       WHERE TRIM(COALESCE(call_records.prefijo, '')) <> '';
+
+      INSERT INTO ani_history_hourly (
+        ani,
+        bucket_hour,
+        intentos_totales,
+        intentos_answer_agent,
+        intentos_answering_machine,
+        intentos_no_answer
+      )
+      SELECT
+        call_records.ani,
+        SUBSTR(call_records.fecha, 1, 13) || ':00:00.000Z',
+        COUNT(*),
+        SUM(call_records.is_contacto_efectivo),
+        SUM(
+          CASE
+            WHEN UPPER(REPLACE(TRIM(COALESCE(call_records.estado, '')), ' ', '')) = 'ANSWER'
+              AND (
+                UPPER(REPLACE(TRIM(COALESCE(call_records.subestado, '')), ' ', '')) LIKE '%MACHINE%'
+                OR UPPER(REPLACE(TRIM(COALESCE(call_records.subestado, '')), ' ', '')) LIKE '%ANSWERING%'
+                OR UPPER(REPLACE(TRIM(COALESCE(call_records.subestado, '')), ' ', '')) LIKE '%BUZON%'
+                OR UPPER(REPLACE(TRIM(COALESCE(call_records.subestado, '')), ' ', '')) LIKE '%VOICEMAIL%'
+              )
+            THEN 1 ELSE 0
+          END
+        ),
+        SUM(
+          CASE
+            WHEN UPPER(REPLACE(TRIM(COALESCE(call_records.estado, '')), ' ', '')) = 'NOANSWER'
+            THEN 1 ELSE 0
+          END
+        )
+      FROM call_records
+      INNER JOIN affected_deleted_anis
+        ON affected_deleted_anis.ani = call_records.ani
+      WHERE LENGTH(call_records.fecha) >= 13
+        AND call_records.fecha >= STRFTIME('%Y-%m-%dT%H:00:00.000Z', 'now', '-35 days')
+      GROUP BY call_records.ani, SUBSTR(call_records.fecha, 1, 13);
 
       DROP TABLE affected_deleted_anis;
     `);
@@ -1571,6 +1791,13 @@ export function getHistorySummaryForAnis(anis: string[]) {
 
   const latestSeparator = "\u001f";
   const chunkSize = 900;
+  const now = Date.now();
+  const hourBucket = (timestamp: number) =>
+    `${new Date(timestamp).toISOString().slice(0, 13)}:00:00.000Z`;
+  const cutoff24h = hourBucket(now - 24 * 60 * 60 * 1000);
+  const cutoff7d = hourBucket(now - 7 * 24 * 60 * 60 * 1000);
+  const cutoff14d = hourBucket(now - 14 * 24 * 60 * 60 * 1000);
+  const cutoff30d = hourBucket(now - 30 * 24 * 60 * 60 * 1000);
 
   for (let index = 0; index < normalizedAnis.length; index += chunkSize) {
     const chunk = normalizedAnis.slice(index, index + chunkSize);
@@ -1621,9 +1848,56 @@ export function getHistorySummaryForAnis(anis: string[]) {
         ultimoLlamado,
         ultimoEstado,
         ultimoSubestado,
+        intentos24h: 0,
+        intentos7d: 0,
+        intentos14d: 0,
+        intentos30d: 0,
+        noAnswer7d: 0,
+        buzones14d: 0,
         bases: [],
         prefijos: [],
       });
+    }
+
+    const recentRows = db.prepare(`
+      SELECT
+        ani,
+        SUM(CASE WHEN bucket_hour >= ? THEN intentos_totales ELSE 0 END) AS intentos24h,
+        SUM(CASE WHEN bucket_hour >= ? THEN intentos_totales ELSE 0 END) AS intentos7d,
+        SUM(CASE WHEN bucket_hour >= ? THEN intentos_totales ELSE 0 END) AS intentos14d,
+        SUM(intentos_totales) AS intentos30d,
+        SUM(CASE WHEN bucket_hour >= ? THEN intentos_no_answer ELSE 0 END) AS noAnswer7d,
+        SUM(CASE WHEN bucket_hour >= ? THEN intentos_answering_machine ELSE 0 END) AS buzones14d
+      FROM ani_history_hourly
+      WHERE ani IN (${placeholders})
+        AND bucket_hour >= ?
+      GROUP BY ani
+    `).all(
+      cutoff24h,
+      cutoff7d,
+      cutoff14d,
+      cutoff7d,
+      cutoff14d,
+      ...chunk,
+      cutoff30d,
+    ) as Array<{
+      ani: string;
+      intentos24h: number;
+      intentos7d: number;
+      intentos14d: number;
+      intentos30d: number;
+      noAnswer7d: number;
+      buzones14d: number;
+    }>;
+    for (const row of recentRows) {
+      const summary = result.get(row.ani);
+      if (!summary) continue;
+      summary.intentos24h = Number(row.intentos24h) || 0;
+      summary.intentos7d = Number(row.intentos7d) || 0;
+      summary.intentos14d = Number(row.intentos14d) || 0;
+      summary.intentos30d = Number(row.intentos30d) || 0;
+      summary.noAnswer7d = Number(row.noAnswer7d) || 0;
+      summary.buzones14d = Number(row.buzones14d) || 0;
     }
 
     const baseRows = db.prepare(`
@@ -2077,6 +2351,7 @@ export function deleteTicketHistory() {
     db.prepare(`DELETE FROM ani_history_summary`).run();
     db.prepare(`DELETE FROM ani_history_bases`).run();
     db.prepare(`DELETE FROM ani_history_prefijos`).run();
+    db.prepare(`DELETE FROM ani_history_hourly`).run();
     db.prepare(`
       UPDATE ani_history_cache_state
       SET last_record_id = 0, total_records = 0, updated_at = ?
@@ -2108,6 +2383,7 @@ export function deleteAllLocalHistory() {
     db.prepare(`DELETE FROM ani_history_summary`).run();
     db.prepare(`DELETE FROM ani_history_bases`).run();
     db.prepare(`DELETE FROM ani_history_prefijos`).run();
+    db.prepare(`DELETE FROM ani_history_hourly`).run();
     db.prepare(`
       UPDATE ani_history_cache_state
       SET last_record_id = 0, total_records = 0, updated_at = ?

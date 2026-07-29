@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
+  Clock3,
   SlidersHorizontal,
   Download,
   FileSpreadsheet,
@@ -20,6 +22,11 @@ import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -35,6 +42,7 @@ type FuzzionCategory =
   | "NUNCA_TRABAJADO"
   | "CONTACTADO"
   | "BUZON_SIN_CONTACTO"
+  | "PAUSADO_TEMPORAL"
   | "NO_SATURADO"
   | "REINTENTAR_MEJOR_FRANJA"
   | "DESCARTAR";
@@ -46,6 +54,7 @@ type FuzzionStats = {
   nuncaTrabajados: number;
   contactados: number;
   buzonesSinContacto: number;
+  pausadosTemporales: number;
   noSaturados: number;
   reintentarMejorFranja: number;
   descartar: number;
@@ -54,10 +63,16 @@ type FuzzionStats = {
 type FuzzionRules = {
   unallocatedDescartar: number;
   rejectedDescartar: number;
-  intentosDescartar: number;
-  totalSaturado: number;
-  noAnswerSaturado: number;
-  buzonSaturado: number;
+  intentos24hPausa: number;
+  pausa24hHoras: number;
+  intentos7dPausa: number;
+  pausa7dDias: number;
+  noAnswer7dPausa: number;
+  pausaNoAnswerDias: number;
+  buzon14dPausa: number;
+  pausaBuzonDias: number;
+  intentos30dPausa: number;
+  pausa30dDias: number;
 };
 
 type FuzzionLeadPreview = {
@@ -75,6 +90,12 @@ type FuzzionLeadPreview = {
   noAnswer: number;
   invalidos: number;
   rechazados: number;
+  intentos24h: number;
+  intentos7d: number;
+  intentos14d: number;
+  intentos30d: number;
+  noAnswer7d: number;
+  buzones14d: number;
   ultimoLlamado: string;
   ultimoEstado: string;
   ultimoSubestado: string;
@@ -104,6 +125,14 @@ type FuzzionComposition = {
   descarteTecnicoYComercial: number;
   con20IntentosOMas: number;
   maxIntentos: number;
+  proximaReactivacion?: string;
+  pausasPorMotivo?: Array<{ label: string; count: number }>;
+  ventanas?: {
+    conActividad24h: number;
+    conActividad7d: number;
+    conActividad14d: number;
+    conActividad30d: number;
+  };
   descartesPorMotivo: Array<{ label: string; count: number }>;
   descartesPorEstado: Array<{ label: string; count: number }>;
   intentosAltos: Array<{
@@ -160,7 +189,8 @@ const categoryOptions: Array<{
   {
     value: "NUNCA_TRABAJADO",
     label: "Sin historial en tickets SQLite",
-    description: "No aparecen en los tickets guardados en SQLite.",
+    description:
+      "El ANI no tiene llamadas registradas en el historial SQLite y puede ingresar como linea nueva.",
     stat: "nuncaTrabajados",
   },
   {
@@ -175,6 +205,13 @@ const categoryOptions: Array<{
     description:
       "Tuvieron al menos un contestador y ningún ANSWER + AGENT.",
     stat: "buzonesSinContacto",
+  },
+  {
+    value: "PAUSADO_TEMPORAL",
+    label: "En pausa temporal",
+    description:
+      "Supero una regla reciente de 24 h, 7, 14 o 30 dias. No se exporta hoy y vuelve a habilitarse al vencer.",
+    stat: "pausadosTemporales",
   },
   {
     value: "NO_SATURADO",
@@ -217,26 +254,59 @@ function isExcludedCommercialCatalog(value: string) {
     normalized.includes("ES PERSONAL");
 }
 
-type MultiOption = { value: string; label: string };
+type MultiOption = {
+  value: string;
+  label: string;
+  description?: string;
+};
 
 const DEFAULT_FUZZION_RULES: FuzzionRules = {
   unallocatedDescartar: 3,
   rejectedDescartar: 3,
-  intentosDescartar: 20,
-  totalSaturado: 9,
-  noAnswerSaturado: 6,
-  buzonSaturado: 5,
+  intentos24hPausa: 3,
+  pausa24hHoras: 24,
+  intentos7dPausa: 9,
+  pausa7dDias: 7,
+  noAnswer7dPausa: 6,
+  pausaNoAnswerDias: 5,
+  buzon14dPausa: 5,
+  pausaBuzonDias: 3,
+  intentos30dPausa: 20,
+  pausa30dDias: 21,
 };
 
 const MAX_LEGACY_EXCEL_DATA_ROWS = 65_535;
-const FUZZION_RULES_STORAGE_KEY = "depurador:fuzzion-rules:v1";
+const FUZZION_RULES_STORAGE_KEY = "depurador:fuzzion-rules:v2";
 const FUZZION_RULE_KEYS: Array<keyof FuzzionRules> = [
   "unallocatedDescartar",
   "rejectedDescartar",
-  "intentosDescartar",
-  "totalSaturado",
-  "noAnswerSaturado",
-  "buzonSaturado",
+  "intentos24hPausa",
+  "pausa24hHoras",
+  "intentos7dPausa",
+  "pausa7dDias",
+  "noAnswer7dPausa",
+  "pausaNoAnswerDias",
+  "buzon14dPausa",
+  "pausaBuzonDias",
+  "intentos30dPausa",
+  "pausa30dDias",
+];
+const FUZZION_RULE_FIELDS: Array<{
+  key: keyof FuzzionRules;
+  label: string;
+}> = [
+  { key: "unallocatedDescartar", label: "Descartar UNALLOCATED desde" },
+  { key: "rejectedDescartar", label: "Descartar REJECTED desde" },
+  { key: "intentos24hPausa", label: "Intentos en 24 h para pausar" },
+  { key: "pausa24hHoras", label: "Duracion pausa 24 h (horas)" },
+  { key: "intentos7dPausa", label: "Intentos en 7 dias para pausar" },
+  { key: "pausa7dDias", label: "Duracion pausa 7 dias" },
+  { key: "noAnswer7dPausa", label: "NOANSWER en 7 dias para pausar" },
+  { key: "pausaNoAnswerDias", label: "Duracion pausa NOANSWER (dias)" },
+  { key: "buzon14dPausa", label: "Buzones en 14 dias para pausar" },
+  { key: "pausaBuzonDias", label: "Duracion pausa buzon (dias)" },
+  { key: "intentos30dPausa", label: "Intentos en 30 dias para pausar" },
+  { key: "pausa30dDias", label: "Duracion pausa 30 dias" },
 ];
 
 function loadStoredFuzzionRules() {
@@ -257,6 +327,86 @@ function loadStoredFuzzionRules() {
   }
 }
 
+type FuzzionPauseReason = {
+  key: "INTENTOS_24H" | "INTENTOS_7D" | "NOANSWER_7D" | "BUZON_14D" | "INTENTOS_30D";
+  label: string;
+  hasta: string;
+};
+
+function getLeadPause(
+  lead: FuzzionLeadPreview,
+  rules: FuzzionRules,
+  now = Date.now(),
+) {
+  if (lead.contactosEfectivos > 0) {
+    return { pausado: false, pausadoHasta: "", motivos: [] as FuzzionPauseReason[] };
+  }
+  const lastCall = new Date(lead.ultimoLlamado).getTime();
+  if (!Number.isFinite(lastCall)) {
+    return { pausado: false, pausadoHasta: "", motivos: [] as FuzzionPauseReason[] };
+  }
+
+  const motivos: FuzzionPauseReason[] = [];
+  const addReason = (
+    active: boolean,
+    key: FuzzionPauseReason["key"],
+    label: string,
+    durationMs: number,
+  ) => {
+    if (!active) return;
+    const until = lastCall + durationMs;
+    if (until <= now) return;
+    motivos.push({ key, label, hasta: new Date(until).toISOString() });
+  };
+
+  addReason(
+    lead.intentos24h >= rules.intentos24hPausa,
+    "INTENTOS_24H",
+    `${rules.intentos24hPausa}+ intentos en 24 h`,
+    rules.pausa24hHoras * 60 * 60 * 1000,
+  );
+  addReason(
+    lead.intentos7d >= rules.intentos7dPausa,
+    "INTENTOS_7D",
+    `${rules.intentos7dPausa}+ intentos en 7 dias`,
+    rules.pausa7dDias * 24 * 60 * 60 * 1000,
+  );
+  addReason(
+    lead.noAnswer7d >= rules.noAnswer7dPausa,
+    "NOANSWER_7D",
+    `${rules.noAnswer7dPausa}+ NOANSWER en 7 dias`,
+    rules.pausaNoAnswerDias * 24 * 60 * 60 * 1000,
+  );
+  addReason(
+    lead.buzones14d >= rules.buzon14dPausa,
+    "BUZON_14D",
+    `${rules.buzon14dPausa}+ buzones en 14 dias`,
+    rules.pausaBuzonDias * 24 * 60 * 60 * 1000,
+  );
+  addReason(
+    lead.intentos30d >= rules.intentos30dPausa,
+    "INTENTOS_30D",
+    `${rules.intentos30dPausa}+ intentos en 30 dias`,
+    rules.pausa30dDias * 24 * 60 * 60 * 1000,
+  );
+
+  return {
+    pausado: motivos.length > 0,
+    pausadoHasta: motivos.map((reason) => reason.hasta).sort().at(-1) ?? "",
+    motivos,
+  };
+}
+
+function formatPauseUntil(value: string) {
+  if (!value) return "";
+  return new Intl.DateTimeFormat("es-AR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
 function getLeadCategories(lead: FuzzionLeadPreview, rules: FuzzionRules) {
   const categories: FuzzionCategory[] = [];
   if (lead.intentosTotales === 0) {
@@ -267,19 +417,16 @@ function getLeadCategories(lead: FuzzionLeadPreview, rules: FuzzionRules) {
 
   const contactado = lead.contactosEfectivos > 0;
   const descartar =
-    lead.intentosTotales >= rules.intentosDescartar ||
     lead.invalidos >= rules.unallocatedDescartar ||
     (lead.rechazados >= rules.rejectedDescartar && !contactado) ||
     lead.exclusionComercial;
-  const saturado =
-    lead.intentosTotales >= rules.totalSaturado ||
-    lead.noAnswer >= rules.noAnswerSaturado ||
-    lead.buzones >= rules.buzonSaturado;
+  const pause = getLeadPause(lead, rules);
 
   if (contactado) categories.push("CONTACTADO");
   if (lead.buzones > 0 && !contactado) categories.push("BUZON_SIN_CONTACTO");
-  if (!saturado) categories.push("NO_SATURADO");
-  if (!contactado && !descartar && !saturado) {
+  if (pause.pausado) categories.push("PAUSADO_TEMPORAL");
+  if (!pause.pausado) categories.push("NO_SATURADO");
+  if (!contactado && !descartar && !pause.pausado) {
     categories.push("REINTENTAR_MEJOR_FRANJA");
   }
   if (descartar) categories.push("DESCARTAR");
@@ -287,9 +434,7 @@ function getLeadCategories(lead: FuzzionLeadPreview, rules: FuzzionRules) {
 }
 
 function isLeadSaturated(lead: FuzzionLeadPreview, rules: FuzzionRules) {
-  return lead.intentosTotales >= rules.totalSaturado ||
-    lead.noAnswer >= rules.noAnswerSaturado ||
-    lead.buzones >= rules.buzonSaturado;
+  return getLeadPause(lead, rules).pausado;
 }
 
 function isLeadCallable(lead: FuzzionLeadPreview, rules: FuzzionRules) {
@@ -313,14 +458,6 @@ function getLeadReading(
     if (lead.exclusionComercial) {
       return {
         label: lead.motivoExclusion || "No llamar: exclusion comercial",
-        variant: "destructive" as const,
-        className: "",
-        icon: XCircle,
-      };
-    }
-    if (lead.intentosTotales >= rules.intentosDescartar) {
-      return {
-        label: `No llamar: ${rules.intentosDescartar}+ intentos`,
         variant: "destructive" as const,
         className: "",
         icon: XCircle,
@@ -387,11 +524,12 @@ function getLeadReading(
   }
 
   if (buzonSinContacto && !noSaturado) {
+    const pause = getLeadPause(lead, rules);
     return {
       label: "Pausar: buzón saturado",
       variant: "outline" as const,
       className: "text-warning",
-      icon: PhoneOff,
+      icon: pause.pausadoHasta ? Clock3 : PhoneOff,
     };
   }
 
@@ -405,11 +543,14 @@ function getLeadReading(
   }
 
   if (!noSaturado) {
+    const pause = getLeadPause(lead, rules);
     return {
-      label: "Pausar: saturada",
+      label: pause.pausadoHasta
+        ? `Pausa hasta ${formatPauseUntil(pause.pausadoHasta)}`
+        : "Pausa temporal",
       variant: "outline" as const,
       className: "text-warning",
-      icon: PhoneOff,
+      icon: Clock3,
     };
   }
 
@@ -464,13 +605,28 @@ function MultiCheckSelect({
         </label>
         <div className="max-h-64 overflow-y-auto">
           {options.map((option) => (
-            <label key={option.value} className="flex cursor-pointer items-start gap-2 px-2 py-2 text-sm hover:bg-muted/50">
-              <Checkbox
-                checked={values.includes(option.value)}
-                onCheckedChange={() => toggle(option.value)}
-              />
-              <span className="leading-4">{option.label}</span>
-            </label>
+            <Tooltip key={option.value} delayDuration={250}>
+              <TooltipTrigger asChild>
+                <label className="flex cursor-pointer items-start gap-2 px-2 py-2 text-sm hover:bg-muted/50">
+                  <Checkbox
+                    checked={values.includes(option.value)}
+                    onCheckedChange={() => toggle(option.value)}
+                  />
+                  <span className="leading-4">{option.label}</span>
+                </label>
+              </TooltipTrigger>
+              {option.description ? (
+                <TooltipContent
+                  side="right"
+                  align="start"
+                  sideOffset={8}
+                  className="z-[90] max-w-72 border-primary/30 bg-popover px-3 py-2 text-xs leading-relaxed shadow-xl"
+                >
+                  <p className="font-semibold text-foreground">{option.label}</p>
+                  <p className="mt-1 text-muted-foreground">{option.description}</p>
+                </TooltipContent>
+              ) : null}
+            </Tooltip>
           ))}
         </div>
       </PopoverContent>
@@ -569,6 +725,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
     nuncaTrabajados: 0,
     contactados: 0,
     buzonesSinContacto: 0,
+    pausadosTemporales: 0,
     noSaturados: 0,
     reintentarMejorFranja: 0,
     descartar: 0,
@@ -747,7 +904,11 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
     if (filterMode === "RECOMENDACION") {
       return categoryOptions
         .filter((option) => option.value !== "TODOS")
-        .map((option) => ({ value: option.value, label: option.label }));
+        .map((option) => ({
+          value: option.value,
+          label: option.label,
+          description: option.description,
+        }));
     }
     return filterChoices.map((value) => ({ value, label: value }));
   }, [filterChoices, filterMode]);
@@ -807,7 +968,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
       contactosSegmentables: 0,
       contactosNoLlamar: 0,
       descartes: 0,
-      descarteIntentos: 0,
+      pausasTemporales: 0,
       descarteComercial: 0,
       descarteUnallocatedRejected: 0,
     };
@@ -818,7 +979,6 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
       const contactado = leadCategories.includes("CONTACTADO");
       const descartar = leadCategories.includes("DESCARTAR");
       const callable = isLeadCallable(lead, fuzzionRules);
-      const descartePorIntentos = lead.intentosTotales >= fuzzionRules.intentosDescartar;
       const descartePorUnallocatedRejected =
         lead.invalidos >= fuzzionRules.unallocatedDescartar ||
         (lead.rechazados >= fuzzionRules.rejectedDescartar && lead.contactosEfectivos === 0);
@@ -827,7 +987,9 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
       if (contactado && callable) summary.contactosSegmentables += 1;
       if (contactado && !callable) summary.contactosNoLlamar += 1;
       if (descartar) summary.descartes += 1;
-      if (descartePorIntentos) summary.descarteIntentos += 1;
+      if (!descartar && getLeadPause(lead, fuzzionRules).pausado) {
+        summary.pausasTemporales += 1;
+      }
       if (lead.exclusionComercial) summary.descarteComercial += 1;
       if (descartePorUnallocatedRejected) summary.descarteUnallocatedRejected += 1;
 
@@ -895,7 +1057,6 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
     ? data.fileName.replace(/\.[^.]+$/, "")
     : "Sin base cargada";
   const flatTotalRows = data?.uniqueAnis ?? 0;
-  const flatUniqueRows = data?.uniqueAnis ?? 0;
   const flatRemainingRows = selectedExportCount ?? displayedComposition?.loteDepurado ?? 0;
   const flatEliminatedRows = data ? Math.max(0, flatTotalRows - flatRemainingRows) : 0;
   const flatRangeLabel = rangeDays > 0 ? `Últimos ${rangeDays} días` : "Todo el historial";
@@ -951,35 +1112,38 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
     }))
   ), [matrixRows]);
 
-  const segmentChips = useMemo(() => {
-    const counts = {
-      buzones: 0,
-      contacto: 0,
-      noContesta: 0,
-      answerGw: 0,
-      cancelled: 0,
-      unallocated: 0,
-    };
+  const eliminatedBreakdown = useMemo(() => {
+    if (!data || !displayedComposition || flatEliminatedRows === 0) return [];
 
-    for (const lead of visiblePreview) {
-      const stateText = `${lead.ultimoEstado} ${lead.ultimoSubestado}`.toUpperCase();
-      if (lead.buzones > 0 && lead.contactosEfectivos === 0) counts.buzones += 1;
-      if (lead.contactosEfectivos > 0) counts.contacto += 1;
-      if (lead.noAnswer > 0) counts.noContesta += 1;
-      if (lead.ultimoEstado === "ANSWER") counts.answerGw += 1;
-      if (stateText.includes("CANCEL")) counts.cancelled += 1;
-      if (stateText.includes("UNALLOCATED") || lead.invalidos > 0) counts.unallocated += 1;
+    if (exportMode === "DEPURADO") {
+      const discarded = displayedComposition.descartadas;
+      const paused = displayedComposition.pausadasSaturacion ?? 0;
+      const other = Math.max(0, flatEliminatedRows - discarded - paused);
+      return [
+        { label: "Descarte definitivo", count: discarded },
+        { label: "Pausa con vencimiento", count: paused },
+        { label: "Otros filtros aplicados", count: other },
+      ].filter((item) => item.count > 0);
     }
 
+    const scopedTotal = displayedComposition.totalLineas;
+    const outsideSelection = Math.max(0, flatTotalRows - scopedTotal);
+    const notExportedInsideSelection = Math.max(
+      0,
+      scopedTotal - (selectedExportCount ?? 0),
+    );
     return [
-      { label: "Buzones", count: counts.buzones },
-      { label: "Contacto hist.", count: counts.contacto },
-      { label: "No contesta", count: counts.noContesta },
-      { label: "Answer GW", count: counts.answerGw },
-      { label: "Cancelled", count: counts.cancelled },
-      { label: "UNALLOCATED", count: counts.unallocated },
-    ];
-  }, [visiblePreview]);
+      { label: "Fuera del segmento elegido", count: outsideSelection },
+      { label: "Excluidas dentro del segmento", count: notExportedInsideSelection },
+    ].filter((item) => item.count > 0);
+  }, [
+    data,
+    displayedComposition,
+    exportMode,
+    flatEliminatedRows,
+    flatTotalRows,
+    selectedExportCount,
+  ]);
 
   async function handleFile(file?: File) {
     if (!file) return;
@@ -1236,15 +1400,6 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                   <Upload className="mr-2 h-4 w-4" />
                   {uploading ? "Cruzando..." : "Cargar base"}
                 </Button>
-                <Button
-                  type="button"
-                  className="h-9 rounded-none px-5 text-[11px] font-bold uppercase tracking-[0.14em] hover:shadow-[0_0_22px_hsl(var(--primary)/0.22)]"
-                  disabled={!data || flatRemainingRows === 0}
-                  onClick={handleExport}
-                >
-                  <Download className="mr-2 h-4 w-4" />
-                  Descargar resultado
-                </Button>
               </div>
             </div>
 
@@ -1267,9 +1422,10 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                       <PopoverTrigger asChild>
                         <button
                           type="button"
-                          className="absolute right-4 top-4 text-[10px] font-black uppercase tracking-[0.12em] text-primary hover:text-primary/80"
+                          className="absolute right-4 top-4 inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-primary hover:text-primary/80"
                         >
-                          Ver desglose →
+                          Ver desglose
+                          <ChevronRight className="h-3 w-3" />
                         </button>
                       </PopoverTrigger>
                       <PopoverContent align="end" className="w-80 rounded-none border-primary/25 bg-popover p-4">
@@ -1287,16 +1443,108 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                       </PopoverContent>
                     </Popover>
                   ) : null}
+                  {item.label === "Eliminados" && eliminatedBreakdown.length > 0 ? (
+                    <Popover>
+                      <PopoverTrigger asChild>
+                        <button
+                          type="button"
+                          className="absolute right-4 top-4 inline-flex items-center gap-1 text-[10px] font-black uppercase tracking-[0.12em] text-destructive transition-colors hover:text-destructive/75"
+                        >
+                          Ver desglose
+                          <ChevronRight className="h-3 w-3" />
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent align="end" className="w-96 rounded-none border-destructive/30 bg-popover p-4">
+                        <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                          Detalle de lo que no se descarga
+                        </p>
+                        <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                          Las pausas no borran el ANI: vuelven a habilitarse cuando vence el descanso.
+                        </p>
+
+                        <div className="mt-3 space-y-2">
+                          {eliminatedBreakdown.map((row) => (
+                            <div key={row.label} className="flex items-center justify-between gap-3 border-b border-border/60 pb-2 text-xs last:border-b-0 last:pb-0">
+                              <span className="text-muted-foreground">{row.label}</span>
+                              <strong className={row.label === "Pausa con vencimiento" ? "text-warning" : "text-destructive"}>
+                                {row.count.toLocaleString("es-AR")}
+                              </strong>
+                            </div>
+                          ))}
+                        </div>
+
+                        {(displayedComposition?.descartesPorMotivo.length ?? 0) > 0 ? (
+                          <div className="mt-4 border-t border-border/70 pt-3">
+                            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
+                              Motivos de descarte definitivo
+                            </p>
+                            <div className="mt-2 space-y-1.5">
+                              {displayedComposition!.descartesPorMotivo.slice(0, 6).map((reason) => (
+                                <div key={reason.label} className="flex items-center justify-between gap-3 text-xs">
+                                  <span className="truncate text-muted-foreground">{reason.label}</span>
+                                  <strong className="text-foreground">{reason.count.toLocaleString("es-AR")}</strong>
+                                </div>
+                              ))}
+                            </div>
+                            <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
+                              Los motivos pueden superponerse si una misma linea tiene mas de una señal.
+                            </p>
+                          </div>
+                        ) : null}
+
+                        {(displayedComposition?.pausasPorMotivo?.length ?? 0) > 0 ? (
+                          <div className="mt-4 border-t border-border/70 pt-3">
+                            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
+                              Motivos de pausa activa
+                            </p>
+                            <div className="mt-2 space-y-1.5">
+                              {displayedComposition!.pausasPorMotivo!.slice(0, 6).map((reason) => (
+                                <div key={reason.label} className="flex items-center justify-between gap-3 text-xs">
+                                  <span className="truncate text-muted-foreground">{reason.label}</span>
+                                  <strong className="text-warning">{reason.count.toLocaleString("es-AR")}</strong>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null}
+                      </PopoverContent>
+                    </Popover>
+                  ) : null}
                 </div>
               ))}
             </div>
 
-            <div className="grid gap-3 px-5 py-5 lg:grid-cols-3">
+            <div className="grid gap-3 px-5 py-5 lg:grid-cols-4">
+              <label className="space-y-2">
+                <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                  Quiero descargar
+                </span>
+                <FlatSelect
+                  value={exportMode}
+                  onChange={(value) => {
+                    const mode = value as FuzzionExportMode;
+                    setExportMode(mode);
+                    if (mode === "DEPURADO") {
+                      setFilterMode("RECOMENDACION");
+                      setSelectedCategories([]);
+                      setFilterValues([]);
+                      setRangeDays(0);
+                      setSearch("");
+                    }
+                  }}
+                  options={[
+                    { value: "DEPURADO", label: "Lote depurado para llamar" },
+                    { value: "SEGMENTO", label: "Un grupo puntual" },
+                  ]}
+                />
+              </label>
+
               <label className="space-y-2">
                 <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
                   Rango histórico
                 </span>
                 <FlatSelect
+                  disabled={exportMode === "DEPURADO"}
                   value={String(rangeDays)}
                   onChange={(value) => setRangeDays(Number(value))}
                   options={[
@@ -1313,7 +1561,20 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                 <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
                   Mirada del filtro
                 </span>
-                <FlatSelect value={filterMode} onChange={(value) => { setFilterMode(value as FuzzionFilterMode); setFilterValues([]); setSelectedCategories([]); }} options={[{ value: "RECOMENDACION", label: "Recomendacion operativa" }, { value: "CATALOGACION", label: "Catalogacion comercial" }, { value: "ESTADO", label: "Estado gateway" }]} />
+                <FlatSelect
+                  disabled={exportMode === "DEPURADO"}
+                  value={filterMode}
+                  onChange={(value) => {
+                    setFilterMode(value as FuzzionFilterMode);
+                    setFilterValues([]);
+                    setSelectedCategories([]);
+                  }}
+                  options={[
+                    { value: "RECOMENDACION", label: "Recomendacion operativa" },
+                    { value: "CATALOGACION", label: "Catalogacion comercial" },
+                    { value: "ESTADO", label: "Estado gateway" },
+                  ]}
+                />
               </label>
 
               <div className="space-y-2">
@@ -1323,7 +1584,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                 <MultiCheckSelect
                   options={multiOptions}
                   values={filterMode === "RECOMENDACION" ? selectedCategories : filterValues}
-                  disabled={!data}
+                  disabled={!data || exportMode === "DEPURADO"}
                   onChange={(values) => {
                     if (filterMode === "RECOMENDACION") {
                       setSelectedCategories(values as FuzzionCategory[]);
@@ -1331,6 +1592,23 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                       setFilterValues(values);
                     }
                   }}
+                />
+              </div>
+            </div>
+
+            <div className="px-5 pb-5">
+              <div className="soft-cyan-hover flex h-11 items-center gap-2 border border-primary/25 bg-background px-3">
+                <Search className="h-4 w-4 text-muted-foreground" />
+                <Input
+                  disabled={exportMode === "DEPURADO"}
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                  placeholder={
+                    exportMode === "DEPURADO"
+                      ? "El lote depurado completo no necesita busqueda"
+                      : "Linea, nombre, DNI, estado o catalogacion..."
+                  }
+                  className="h-9 border-0 bg-transparent px-0 focus-visible:ring-0"
                 />
               </div>
             </div>
@@ -1352,13 +1630,10 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
               </div>
 
               <div className="soft-cyan-hover border border-primary/25">
-                <div className="flex items-center justify-between border-b border-primary/20 px-3 py-3">
+                <div className="border-b border-primary/20 px-3 py-3">
                   <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
                     Matriz de resultado · catalogaciones x gateways
                   </p>
-                  <span className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
-                    {matrixColumns.length} col x {matrixRows.length} filas
-                  </span>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[720px] text-left text-xs">
@@ -1402,147 +1677,6 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
             <button
               type="button"
               className="soft-cyan-hover flex w-full items-center justify-between gap-3 border-b border-primary/20 px-5 py-3 text-left"
-              onClick={() => setConfigOpen((current) => !current)}
-              aria-expanded={configOpen}
-            >
-              <span className="flex min-w-0 flex-wrap items-center gap-2">
-                <span className="flex items-center gap-2 font-display text-sm font-bold text-foreground">
-                  <SlidersHorizontal className="h-4 w-4 text-primary" />
-                  Configurar lote
-                </span>
-                <Badge variant="outline" className="rounded px-2 text-[11px]">
-                  {exportMode === "DEPURADO"
-                    ? "Lote depurado"
-                    : rangeDays > 0
-                      ? `Ultimos ${rangeDays} dias`
-                      : "Grupo puntual"}
-                </Badge>
-                <Badge variant="outline" className="rounded border-primary/30 px-2 text-[11px] text-primary">
-                  {countingSelection
-                    ? "Contando..."
-                    : selectedExportCount === null
-                      ? "Conteo pendiente"
-                      : `${selectedExportCount.toLocaleString("es-AR")} lineas quedan`}
-                </Badge>
-              </span>
-              <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${configOpen ? "rotate-180" : ""}`} />
-            </button>
-
-            {configOpen ? (
-              <div className="space-y-3 px-5 py-4">
-                <div className="grid gap-3 lg:grid-cols-4">
-                  <label className="space-y-2">
-                    <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
-                      Quiero descargar
-                    </span>
-                    <FlatSelect
-                      value={exportMode}
-                      onChange={(value) => {
-                        const mode = value as FuzzionExportMode;
-                        setExportMode(mode);
-                        if (mode === "DEPURADO") {
-                          setFilterMode("RECOMENDACION");
-                          setSelectedCategories([]);
-                          setFilterValues([]);
-                          setRangeDays(0);
-                        }
-                      }}
-                      options={[
-                        { value: "DEPURADO", label: "Lote depurado para llamar" },
-                        { value: "SEGMENTO", label: "Un grupo puntual" },
-                      ]}
-                    />
-                  </label>
-
-                  <label className="space-y-2">
-                    <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
-                      Filtrar segun
-                    </span>
-                    <FlatSelect
-                      disabled={exportMode === "DEPURADO"}
-                      value={filterMode}
-                      onChange={(value) => {
-                        setFilterMode(value as FuzzionFilterMode);
-                        setSelectedCategories([]);
-                        setFilterValues([]);
-                      }}
-                      options={[
-                        { value: "RECOMENDACION", label: "Recomendacion operativa" },
-                        { value: "CATALOGACION", label: "Catalogacion comercial" },
-                        { value: "ESTADO", label: "Estado gateway" },
-                      ]}
-                    />
-                  </label>
-
-                  <div className="space-y-2">
-                    <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
-                      Valores
-                    </span>
-                    <MultiCheckSelect
-                      disabled={exportMode === "DEPURADO"}
-                      options={multiOptions}
-                      values={filterMode === "RECOMENDACION" ? selectedCategories : filterValues}
-                      onChange={(values) => {
-                        if (filterMode === "RECOMENDACION") {
-                          setSelectedCategories(values as FuzzionCategory[]);
-                        } else {
-                          setFilterValues(values);
-                        }
-                      }}
-                    />
-                  </div>
-
-                  <label className="space-y-2">
-                    <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
-                      Rango historico
-                    </span>
-                    <FlatSelect
-                      disabled={exportMode === "DEPURADO"}
-                      value={String(rangeDays)}
-                      onChange={(value) => setRangeDays(Number(value))}
-                      options={[
-                        { value: "0", label: "Todo el historial" },
-                        { value: "7", label: "Ultimos 7 dias" },
-                        { value: "30", label: "Ultimos 30 dias" },
-                        { value: "60", label: "Ultimos 60 dias" },
-                        { value: "90", label: "Ultimos 90 dias" },
-                      ]}
-                    />
-                  </label>
-                </div>
-
-                <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
-                  <div className="soft-cyan-hover flex h-11 items-center gap-2 border border-primary/25 bg-background px-3">
-                    <Search className="h-4 w-4 text-muted-foreground" />
-                    <Input
-                      value={search}
-                      onChange={(event) => setSearch(event.target.value)}
-                      placeholder="Linea, nombre, DNI, estado o catalogacion..."
-                      className="h-9 border-0 bg-transparent px-0 focus-visible:ring-0"
-                    />
-                  </div>
-                  <Button
-                    type="button"
-                    className="h-11 rounded-none px-5 text-sm font-bold"
-                    onClick={handleExport}
-                    disabled={exporting || !data || selectedExportCount === 0}
-                  >
-                    <Download className="mr-2 h-4 w-4" />
-                    {exporting
-                      ? "Generando..."
-                      : selectedExportCount === null
-                        ? "Descargar seleccion"
-                        : `Descargar (${selectedExportCount.toLocaleString("es-AR")})`}
-                  </Button>
-                </div>
-              </div>
-            ) : null}
-          </section>
-
-          <section className="overflow-hidden rounded-md border border-primary/25 bg-card/80 dark:bg-[#05090b]">
-            <button
-              type="button"
-              className="soft-cyan-hover flex w-full items-center justify-between gap-3 border-b border-primary/20 px-5 py-3 text-left"
               onClick={() => setRulesOpen((current) => !current)}
               aria-expanded={rulesOpen}
             >
@@ -1552,7 +1686,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                   Reglas de depuracion
                 </span>
                 <Badge variant="outline" className="rounded px-2 text-[11px]">
-                  UNALLOCATED {fuzzionRules.unallocatedDescartar}+ · REJECTED {fuzzionRules.rejectedDescartar}+ · Saturacion {fuzzionRules.totalSaturado} intentos
+                  Ventanas 24 h · 7 d · 14 d · 30 d
                 </Badge>
               </span>
               <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${rulesOpen ? "rotate-180" : ""}`} />
@@ -1561,20 +1695,14 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
             {rulesOpen ? (
               <div className="space-y-4 px-5 py-4">
                 <p className="text-xs text-muted-foreground">
-                  Descarte quita una línea por señal técnica o comercial. Saturación pausa
-                  líneas sin contacto efectivo para el lote diario, sin borrarlas del
-                  historial. La configuración queda guardada en este navegador.
+                  El descarte definitivo queda reservado para señales técnicas o
+                  comerciales. Las ventanas recientes sólo pausan líneas sin contacto
+                  efectivo y las reactivan automáticamente al vencer. La configuración
+                  queda guardada en este navegador.
                 </p>
 
-                <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
-                  {([
-                    ["unallocatedDescartar", "Descartar UNALLOCATED desde"],
-                    ["rejectedDescartar", "Descartar REJECTED desde"],
-                    ["intentosDescartar", "Descartar intentos desde"],
-                    ["totalSaturado", "Pausar por intentos desde"],
-                    ["noAnswerSaturado", "Pausar NOANSWER desde"],
-                    ["buzonSaturado", "Pausar buzón desde"],
-                  ] as Array<[keyof FuzzionRules, string]>).map(([key, label]) => (
+                <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-4">
+                  {FUZZION_RULE_FIELDS.map(({ key, label }) => (
                     <label key={key} className="space-y-2 text-xs text-muted-foreground">
                       <span className="block min-h-[28px] text-[10px] font-bold uppercase tracking-[0.12em]">
                         {label}
@@ -1623,109 +1751,141 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
             ) : null}
           </section>
 
-          <section className="soft-cyan-hover overflow-hidden rounded-md border border-primary/25 bg-card/80 dark:bg-[#05090b]">
-            <div className="flex flex-col gap-3 border-b border-primary/20 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+          <section className="overflow-hidden rounded-md border border-primary/25 bg-card/80 dark:bg-[#05090b]">
+            <div className="flex flex-col gap-2 border-b border-primary/20 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="flex items-center gap-2 font-display text-sm font-bold uppercase tracking-[0.14em] text-foreground">
-                  <FileSpreadsheet className="h-4 w-4 text-primary" />
-                  Descarga · Lote segmentado
+                  <Clock3 className="h-4 w-4 text-primary" />
+                  Simulacion previa del lote
                 </h2>
                 <p className="mt-1 text-[11px] text-muted-foreground">
-                  Armá un lote puntual con nombre controlado y revisá el total antes de exportar.
+                  El conteo usa las mismas reglas que la descarga final.
                 </p>
               </div>
-              <Button
-                type="button"
-                className="h-9 rounded-none px-5 text-[11px] font-bold uppercase tracking-[0.14em] hover:shadow-[0_0_22px_hsl(var(--primary)/0.22)]"
-                disabled={!data || flatRemainingRows === 0}
-                onClick={handleExport}
-              >
-                <Download className="mr-2 h-4 w-4" />
-                Descargar segmento
-              </Button>
+              {displayedComposition?.proximaReactivacion ? (
+                <Badge variant="outline" className="w-fit rounded border-warning/40 text-warning">
+                  Proxima reactivacion {formatPauseUntil(displayedComposition.proximaReactivacion)}
+                </Badge>
+              ) : null}
             </div>
 
-            <div className="grid border-b border-primary/20 md:grid-cols-2">
-              <div className="soft-cyan-hover relative min-h-[82px] border-b border-primary/10 px-5 py-4 hover:bg-primary/[0.045] md:border-b-0 md:border-r md:border-primary/20">
-                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
-                  Total líneas
-                </p>
-                <p className="mt-2 font-display text-2xl font-black tracking-tight text-primary">{flatTotalRows.toLocaleString("es-AR")}</p>
-                {segmentChips.some((chip) => chip.count > 0) ? (
-                  <Popover>
-                    <PopoverTrigger asChild>
-                      <button
-                        type="button"
-                        className="absolute right-4 top-4 text-[10px] font-black uppercase tracking-[0.12em] text-primary hover:text-primary/80"
-                      >
-                        Ver desglose →
-                      </button>
-                    </PopoverTrigger>
-                    <PopoverContent align="start" className="w-80 rounded-none border-primary/25 bg-popover p-4">
-                      <p className="mb-3 text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
-                        Desglose por tipo
+            {displayedComposition ? (
+              <div className="space-y-4 px-5 py-4">
+                <div className="grid gap-2 md:grid-cols-4">
+                  {[
+                    ["Entrada unica", displayedComposition.totalLineas, "text-foreground"],
+                    ["Descarte definitivo", displayedComposition.descartadas, "text-destructive"],
+                    ["Pausa con vencimiento", displayedComposition.pausadasSaturacion ?? 0, "text-warning"],
+                    ["Listas para Neotel", displayedComposition.loteDepurado, "text-primary"],
+                  ].map(([label, value, tone]) => (
+                    <div key={String(label)} className="soft-cyan-hover border border-primary/20 px-3 py-3">
+                      <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-muted-foreground">
+                        {label}
                       </p>
-                      <div className="space-y-2">
-                        {segmentChips.map((chip) => (
-                          <div key={chip.label} className="flex items-center justify-between gap-3 border-b border-border/60 pb-2 text-xs last:border-b-0 last:pb-0">
-                            <span className="truncate text-muted-foreground">{chip.label}</span>
-                            <strong className="text-foreground">{chip.count.toLocaleString("es-AR")}</strong>
+                      <p className={`mt-1 font-display text-2xl font-black ${tone}`}>
+                        {Number(value).toLocaleString("es-AR")}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="grid gap-3 lg:grid-cols-[1fr_1.35fr]">
+                  <div className="border border-primary/20 p-3">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
+                      Actividad detectada por ventana
+                    </p>
+                    <div className="mt-3 grid grid-cols-2 gap-2">
+                      {[
+                        ["24 horas", displayedComposition.ventanas?.conActividad24h ?? 0],
+                        ["7 dias", displayedComposition.ventanas?.conActividad7d ?? 0],
+                        ["14 dias", displayedComposition.ventanas?.conActividad14d ?? 0],
+                        ["30 dias", displayedComposition.ventanas?.conActividad30d ?? 0],
+                      ].map(([label, value]) => (
+                        <div key={String(label)} className="bg-primary/5 px-3 py-2 text-xs">
+                          <span className="text-muted-foreground">{label}</span>
+                          <strong className="mt-1 block text-base text-foreground">
+                            {Number(value).toLocaleString("es-AR")}
+                          </strong>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="border border-primary/20 p-3">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
+                      Motivos de pausa activos
+                    </p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      Una linea puede activar mas de una ventana; el total del lote no la duplica.
+                    </p>
+                    <div className="mt-3 space-y-2">
+                      {(displayedComposition.pausasPorMotivo ?? []).length > 0 ? (
+                        displayedComposition.pausasPorMotivo!.map((item) => (
+                          <div key={item.label} className="flex items-center justify-between gap-3 border-b border-primary/10 pb-2 text-xs last:border-b-0 last:pb-0">
+                            <span className="truncate text-muted-foreground">{item.label}</span>
+                            <strong className="text-warning">{item.count.toLocaleString("es-AR")}</strong>
                           </div>
-                        ))}
-                      </div>
-                    </PopoverContent>
-                  </Popover>
-                ) : null}
+                        ))
+                      ) : (
+                        <p className="text-xs text-muted-foreground">
+                          No hay pausas activas con esta configuracion.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
               </div>
-              <div className="soft-cyan-hover min-h-[82px] px-5 py-4 hover:bg-primary/[0.045]">
-                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
-                  Líneas únicas
+            ) : (
+              <p className="px-5 py-6 text-sm text-muted-foreground">
+                Carga una base para simular descartes, pausas y lineas exportables.
+              </p>
+            )}
+          </section>
+
+          <section className="soft-cyan-hover overflow-hidden rounded-md border border-primary/35 bg-card/80 dark:bg-[#05090b]">
+            <div className="grid gap-0 lg:grid-cols-[1fr_260px_auto]">
+              <div className="border-b border-primary/20 px-5 py-4 lg:border-b-0 lg:border-r">
+                <h2 className="flex items-center gap-2 font-display text-sm font-bold uppercase tracking-[0.14em] text-foreground">
+                  <FileSpreadsheet className="h-4 w-4 text-primary" />
+                  Resumen final de descarga
+                </h2>
+                <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+                  Usa exactamente la configuración definida arriba. Para cambiar el
+                  resultado, modificá los filtros principales o Reglas de depuración.
                 </p>
-                <p className="mt-2 font-display text-2xl font-black tracking-tight text-foreground">{flatUniqueRows.toLocaleString("es-AR")}</p>
+                <p className="mt-2 truncate text-xs font-semibold text-foreground">
+                  {exportMode === "DEPURADO"
+                    ? "Lote depurado para llamar"
+                    : `Grupo puntual: ${exportReviewLabel}`}
+                </p>
               </div>
-            </div>
 
-            <div className="grid gap-3 px-5 py-5 lg:grid-cols-3">
-              <label className="space-y-2">
-                <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
-                  Tipo de descarga
-                </span>
-                <FlatSelect value={exportMode} onChange={(value) => setExportMode(value as FuzzionExportMode)} options={[{ value: "DEPURADO", label: "Lote depurado para llamar" }, { value: "SEGMENTO", label: "Un grupo puntual" }]} />
-              </label>
-              <label className="space-y-2">
-                <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
-                  Buscar en lote
-                </span>
-                <div className="soft-cyan-hover flex h-11 items-center gap-2 border border-primary/25 bg-background px-3">
-                  <Search className="h-4 w-4 text-muted-foreground" />
-                  <Input
-                    value={search}
-                    onChange={(event) => setSearch(event.target.value)}
-                    placeholder="Linea, nombre, DNI, estado..."
-                    className="h-9 border-0 bg-transparent px-0 focus-visible:ring-0"
-                  />
-                </div>
-              </label>
-              <div className="space-y-2">
-                <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
-                  Total a descargar
-                </span>
-                <div className="soft-cyan-hover flex h-11 items-center border border-primary/25 bg-primary/5 px-3 text-lg font-black text-primary">
-                  {countingSelection ? "Calculando..." : flatRemainingRows.toLocaleString("es-AR")}
-                </div>
+              <div className="border-b border-primary/20 px-5 py-4 lg:border-b-0 lg:border-r">
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                  ANI únicos a descargar
+                </p>
+                <p className="mt-2 font-display text-3xl font-black tracking-tight text-primary">
+                  {countingSelection
+                    ? "Calculando..."
+                    : flatRemainingRows.toLocaleString("es-AR")}
+                </p>
               </div>
-            </div>
 
-            <div className="flex flex-wrap gap-2 px-5 pb-5">
-              {segmentChips.map((chip) => (
-                <button
-                  key={chip.label}
+              <div className="flex items-center px-5 py-4">
+                <Button
                   type="button"
-                  className="soft-cyan-hover rounded-none border border-primary/25 px-3 py-2 text-[11px] text-muted-foreground transition-colors hover:border-primary hover:bg-primary/[0.045] hover:text-primary"
+                  className="h-11 w-full rounded-none px-6 text-[11px] font-bold uppercase tracking-[0.14em] hover:shadow-[0_0_22px_hsl(var(--primary)/0.22)] lg:w-auto"
+                  disabled={exporting || !data || flatRemainingRows === 0}
+                  onClick={handleExport}
                 >
-                  {chip.label} <strong className="ml-1 text-foreground">{chip.count.toLocaleString("es-AR")}</strong>
-                </button>
-              ))}
+                  <Download className="mr-2 h-4 w-4" />
+                  {exporting
+                    ? "Generando..."
+                    : exportMode === "DEPURADO"
+                      ? `Descargar lote (${flatRemainingRows.toLocaleString("es-AR")})`
+                      : `Descargar grupo (${flatRemainingRows.toLocaleString("es-AR")})`}
+                </Button>
+              </div>
             </div>
           </section>
         </div>
@@ -1744,6 +1904,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
               NUNCA_TRABAJADO: dynamicStats.nuncaTrabajados,
               CONTACTADO: dynamicStats.contactados,
               BUZON_SIN_CONTACTO: dynamicStats.buzonesSinContacto,
+              PAUSADO_TEMPORAL: dynamicStats.pausadosTemporales,
               NO_SATURADO: dynamicStats.noSaturados,
               REINTENTAR_MEJOR_FRANJA: dynamicStats.reintentarMejorFranja,
               DESCARTAR: dynamicStats.descartar,
@@ -1819,8 +1980,8 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                 </p>
                 <div className="mt-3 space-y-2 text-xs">
                   <div className="flex items-center justify-between gap-3">
-                    <span className="text-muted-foreground">{fuzzionRules.intentosDescartar}+ intentos</span>
-                    <strong className="text-foreground">{cardDetailSummary.descarteIntentos.toLocaleString("es-AR")}</strong>
+                    <span className="text-muted-foreground">Pausas temporales (no son descarte)</span>
+                    <strong className="text-foreground">{cardDetailSummary.pausasTemporales.toLocaleString("es-AR")}</strong>
                   </div>
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-muted-foreground">Compra / deuda / fraude / cliente molesto / Personal / prepago</span>
@@ -2205,7 +2366,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                   <SlidersHorizontal className="h-4 w-4 text-primary" />
                   Reglas de depuración
                   <Badge variant="outline">
-                    UNALLOCATED {fuzzionRules.unallocatedDescartar}+ · REJECTED {fuzzionRules.rejectedDescartar}+ · Descarte {fuzzionRules.intentosDescartar}+ intentos
+                    Ventanas 24 h · 7 d · 14 d · 30 d
                   </Badge>
                 </span>
                 <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${rulesOpen ? "rotate-180" : ""}`} />
@@ -2218,15 +2379,8 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                     líneas sin contacto efectivo para el lote diario, sin borrarlas del
                     historial. La configuración queda guardada en este navegador.
                   </p>
-                  <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">
-                    {([
-                      ["unallocatedDescartar", "Descartar UNALLOCATED desde"],
-                      ["rejectedDescartar", "Descartar REJECTED desde"],
-                      ["intentosDescartar", "Descartar intentos desde"],
-                      ["totalSaturado", "Pausar por intentos desde"],
-                      ["noAnswerSaturado", "Pausar NOANSWER desde"],
-                      ["buzonSaturado", "Pausar buzón desde"],
-                    ] as Array<[keyof FuzzionRules, string]>).map(([key, label]) => (
+                  <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-4">
+                    {FUZZION_RULE_FIELDS.map(({ key, label }) => (
                       <label key={key} className="space-y-1 text-xs text-muted-foreground">
                         <span>{label}</span>
                         <div className="grid h-10 grid-cols-[2.25rem_1fr_2.25rem] overflow-hidden rounded-lg border border-border bg-card/60 transition-colors focus-within:border-primary/70 focus-within:ring-1 focus-within:ring-primary/50">
@@ -2353,11 +2507,9 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
             mismo tiempo.
           </p>
           <p>
-            Contacto efectivo = al menos 1 ANSWER + AGENT. Saturación ={" "}
-            {fuzzionRules.totalSaturado} intentos totales,{" "}
-            {fuzzionRules.noAnswerSaturado} NOANSWER o{" "}
-            {fuzzionRules.buzonSaturado} buzones. Descarte ={" "}
-            {fuzzionRules.intentosDescartar}+ intentos totales,{" "}
+            Contacto efectivo = al menos 1 ANSWER + AGENT. Las pausas usan
+            ventanas móviles de 24 horas, 7, 14 y 30 días y se levantan
+            automáticamente al vencer. Descarte definitivo ={" "}
             {fuzzionRules.unallocatedDescartar} UNALLOCATED o{" "}
             {fuzzionRules.rejectedDescartar} REJECTED sin contacto efectivo.
           </p>

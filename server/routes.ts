@@ -382,6 +382,7 @@ type FuzzionCategory =
   | "NUNCA_TRABAJADO"
   | "CONTACTADO"
   | "BUZON_SIN_CONTACTO"
+  | "PAUSADO_TEMPORAL"
   | "NO_SATURADO"
   | "REINTENTAR_MEJOR_FRANJA"
   | "DESCARTAR";
@@ -389,10 +390,16 @@ type FuzzionCategory =
 type FuzzionRules = {
   unallocatedDescartar: number;
   rejectedDescartar: number;
-  intentosDescartar: number;
-  totalSaturado: number;
-  noAnswerSaturado: number;
-  buzonSaturado: number;
+  intentos24hPausa: number;
+  pausa24hHoras: number;
+  intentos7dPausa: number;
+  pausa7dDias: number;
+  noAnswer7dPausa: number;
+  pausaNoAnswerDias: number;
+  buzon14dPausa: number;
+  pausaBuzonDias: number;
+  intentos30dPausa: number;
+  pausa30dDias: number;
 };
 
 type FuzzionLead = {
@@ -415,6 +422,12 @@ type FuzzionLead = {
   noAnswer: number;
   invalidos: number;
   rechazados: number;
+  intentos24h: number;
+  intentos7d: number;
+  intentos14d: number;
+  intentos30d: number;
+  noAnswer7d: number;
+  buzones14d: number;
   ultimoLlamado: string;
   ultimoEstado: string;
   ultimoSubestado: string;
@@ -446,10 +459,16 @@ const fuzzionSessions = new Map<string, FuzzionSession>();
 const DEFAULT_FUZZION_RULES: FuzzionRules = {
   unallocatedDescartar: 3,
   rejectedDescartar: 3,
-  intentosDescartar: 20,
-  totalSaturado: 9,
-  noAnswerSaturado: 6,
-  buzonSaturado: 5,
+  intentos24hPausa: 3,
+  pausa24hHoras: 24,
+  intentos7dPausa: 9,
+  pausa7dDias: 7,
+  noAnswer7dPausa: 6,
+  pausaNoAnswerDias: 5,
+  buzon14dPausa: 5,
+  pausaBuzonDias: 3,
+  intentos30dPausa: 20,
+  pausa30dDias: 21,
 };
 
 function parseFuzzionRules(input: unknown): FuzzionRules {
@@ -464,10 +483,16 @@ function parseFuzzionRules(input: unknown): FuzzionRules {
   return {
     unallocatedDescartar: read("unallocatedDescartar"),
     rejectedDescartar: read("rejectedDescartar"),
-    intentosDescartar: read("intentosDescartar"),
-    totalSaturado: read("totalSaturado"),
-    noAnswerSaturado: read("noAnswerSaturado"),
-    buzonSaturado: read("buzonSaturado"),
+    intentos24hPausa: read("intentos24hPausa"),
+    pausa24hHoras: read("pausa24hHoras"),
+    intentos7dPausa: read("intentos7dPausa"),
+    pausa7dDias: read("pausa7dDias"),
+    noAnswer7dPausa: read("noAnswer7dPausa"),
+    pausaNoAnswerDias: read("pausaNoAnswerDias"),
+    buzon14dPausa: read("buzon14dPausa"),
+    pausaBuzonDias: read("pausaBuzonDias"),
+    intentos30dPausa: read("intentos30dPausa"),
+    pausa30dDias: read("pausa30dDias"),
   };
 }
 
@@ -516,43 +541,85 @@ function getFuzzionColumnText(row: Record<string, unknown>, column: string) {
   return column ? String(row[column] ?? "").trim() : "";
 }
 
-function classifyFuzzionLead(
-  summary?: LocalAniHistorySummary,
+type FuzzionPauseSource = {
+  contactosEfectivos: number;
+  intentos24h: number;
+  intentos7d: number;
+  intentos30d: number;
+  noAnswer7d: number;
+  buzones14d: number;
+  ultimoLlamado: string;
+};
+
+type FuzzionPauseReason = {
+  key: "INTENTOS_24H" | "INTENTOS_7D" | "NOANSWER_7D" | "BUZON_14D" | "INTENTOS_30D";
+  label: string;
+  hasta: string;
+};
+
+function getFuzzionPauseEvaluation(
+  source: FuzzionPauseSource,
   rules: FuzzionRules = DEFAULT_FUZZION_RULES,
+  now = Date.now(),
 ) {
-  const categories: FuzzionCategory[] = [];
-
-  if (!summary || summary.intentosTotales === 0) {
-    categories.push("NUNCA_TRABAJADO", "NO_SATURADO");
-    return categories;
+  if (source.contactosEfectivos > 0) {
+    return { pausado: false, pausadoHasta: "", motivos: [] as FuzzionPauseReason[] };
   }
 
-  const contactado = summary.intentosAnswerAgent > 0;
-  const descartar =
-    summary.intentosTotales >= rules.intentosDescartar ||
-    summary.intentosUnallocated >= rules.unallocatedDescartar ||
-    (summary.intentosRejected >= rules.rejectedDescartar && !contactado);
-  const saturado =
-    summary.intentosTotales >= rules.totalSaturado ||
-    summary.intentosNoAnswer >= rules.noAnswerSaturado ||
-    summary.intentosAnsweringMachine >= rules.buzonSaturado;
-
-  if (contactado) categories.push("CONTACTADO");
-  if (summary.intentosAnsweringMachine > 0 && !contactado) {
-    categories.push("BUZON_SIN_CONTACTO");
+  const lastCall = new Date(source.ultimoLlamado).getTime();
+  if (!Number.isFinite(lastCall)) {
+    return { pausado: false, pausadoHasta: "", motivos: [] as FuzzionPauseReason[] };
   }
-  if (!saturado) categories.push("NO_SATURADO");
-  if (
-    !contactado &&
-    !descartar &&
-    !saturado &&
-    summary.intentosTotales > 0
-  ) {
-    categories.push("REINTENTAR_MEJOR_FRANJA");
-  }
-  if (descartar) categories.push("DESCARTAR");
 
-  return categories;
+  const reasons: FuzzionPauseReason[] = [];
+  const addReason = (
+    active: boolean,
+    key: FuzzionPauseReason["key"],
+    label: string,
+    durationMs: number,
+  ) => {
+    if (!active) return;
+    const until = lastCall + durationMs;
+    if (until <= now) return;
+    reasons.push({ key, label, hasta: new Date(until).toISOString() });
+  };
+
+  addReason(
+    source.intentos24h >= rules.intentos24hPausa,
+    "INTENTOS_24H",
+    `${rules.intentos24hPausa}+ intentos en 24 h`,
+    rules.pausa24hHoras * 60 * 60 * 1000,
+  );
+  addReason(
+    source.intentos7d >= rules.intentos7dPausa,
+    "INTENTOS_7D",
+    `${rules.intentos7dPausa}+ intentos en 7 dias`,
+    rules.pausa7dDias * 24 * 60 * 60 * 1000,
+  );
+  addReason(
+    source.noAnswer7d >= rules.noAnswer7dPausa,
+    "NOANSWER_7D",
+    `${rules.noAnswer7dPausa}+ NOANSWER en 7 dias`,
+    rules.pausaNoAnswerDias * 24 * 60 * 60 * 1000,
+  );
+  addReason(
+    source.buzones14d >= rules.buzon14dPausa,
+    "BUZON_14D",
+    `${rules.buzon14dPausa}+ buzones en 14 dias`,
+    rules.pausaBuzonDias * 24 * 60 * 60 * 1000,
+  );
+  addReason(
+    source.intentos30d >= rules.intentos30dPausa,
+    "INTENTOS_30D",
+    `${rules.intentos30dPausa}+ intentos en 30 dias`,
+    rules.pausa30dDias * 24 * 60 * 60 * 1000,
+  );
+
+  const pausadoHasta = reasons
+    .map((reason) => reason.hasta)
+    .sort()
+    .at(-1) ?? "";
+  return { pausado: reasons.length > 0, pausadoHasta, motivos: reasons };
 }
 
 function getFuzzionLeadCategories(
@@ -569,19 +636,16 @@ function getFuzzionLeadCategories(
 
   const contactado = lead.contactosEfectivos > 0;
   const descartar =
-    lead.intentosTotales >= rules.intentosDescartar ||
     lead.invalidos >= rules.unallocatedDescartar ||
     (lead.rechazados >= rules.rejectedDescartar && !contactado) ||
     lead.exclusionComercial;
-  const saturado =
-    lead.intentosTotales >= rules.totalSaturado ||
-    lead.noAnswer >= rules.noAnswerSaturado ||
-    lead.buzones >= rules.buzonSaturado;
+  const pause = getFuzzionPauseEvaluation(lead, rules);
 
   if (contactado) categories.push("CONTACTADO");
   if (lead.buzones > 0 && !contactado) categories.push("BUZON_SIN_CONTACTO");
-  if (!saturado) categories.push("NO_SATURADO");
-  if (!contactado && !descartar && !saturado) {
+  if (pause.pausado) categories.push("PAUSADO_TEMPORAL");
+  if (!pause.pausado) categories.push("NO_SATURADO");
+  if (!contactado && !descartar && !pause.pausado) {
     categories.push("REINTENTAR_MEJOR_FRANJA");
   }
   if (descartar) categories.push("DESCARTAR");
@@ -593,9 +657,7 @@ function isFuzzionLeadSaturated(
   lead: FuzzionLead,
   rules: FuzzionRules = DEFAULT_FUZZION_RULES,
 ) {
-  return lead.intentosTotales >= rules.totalSaturado ||
-    lead.noAnswer >= rules.noAnswerSaturado ||
-    lead.buzones >= rules.buzonSaturado;
+  return getFuzzionPauseEvaluation(lead, rules).pausado;
 }
 
 function isFuzzionLeadCallable(
@@ -698,9 +760,6 @@ function getFuzzionDiscardReason(
   rules: FuzzionRules = DEFAULT_FUZZION_RULES,
 ) {
   const technicalReasons: string[] = [];
-  if (lead.intentosTotales >= rules.intentosDescartar) {
-    technicalReasons.push(`Intentos ${rules.intentosDescartar}+`);
-  }
   if (lead.invalidos >= rules.unallocatedDescartar) {
     technicalReasons.push(`UNALLOCATED ${rules.unallocatedDescartar}+`);
   }
@@ -717,7 +776,6 @@ function buildFuzzionComposition(
   const discarded = leads.filter((lead) => getFuzzionLeadCategories(lead, rules).includes("DESCARTAR"));
   const paused = leads.filter((lead) =>
     !getFuzzionLeadCategories(lead, rules).includes("DESCARTAR") &&
-    lead.contactosEfectivos === 0 &&
     isFuzzionLeadSaturated(lead, rules)
   );
   const technicalDiscarded = discarded.filter(
@@ -746,6 +804,14 @@ function buildFuzzionComposition(
     (max, lead) => Math.max(max, lead.intentosTotales),
     0,
   );
+  const pauseEvaluations = paused.map((lead) => ({
+    lead,
+    pause: getFuzzionPauseEvaluation(lead, rules),
+  }));
+  const nextReactivation = pauseEvaluations
+    .map(({ pause }) => pause.pausadoHasta)
+    .filter(Boolean)
+    .sort()[0] ?? "";
 
   return {
     totalLineas: leads.length,
@@ -757,6 +823,18 @@ function buildFuzzionComposition(
     descarteTecnicoYComercial: bothDiscarded.length,
     con20IntentosOMas: highAttempts.length,
     maxIntentos,
+    proximaReactivacion: nextReactivation,
+    pausasPorMotivo: countBy(
+      pauseEvaluations.flatMap(({ pause }) =>
+        pause.motivos.map((reason) => reason.label),
+      ),
+    ),
+    ventanas: {
+      conActividad24h: leads.filter((lead) => lead.intentos24h > 0).length,
+      conActividad7d: leads.filter((lead) => lead.intentos7d > 0).length,
+      conActividad14d: leads.filter((lead) => lead.intentos14d > 0).length,
+      conActividad30d: leads.filter((lead) => lead.intentos30d > 0).length,
+    },
     descartesPorMotivo: countBy([
       ...technicalDiscarded.flatMap((lead) => getFuzzionDiscardReason(lead, rules)),
       ...commercialDiscarded.map((lead) => lead.motivoExclusion || "Exclusion comercial"),
@@ -774,6 +852,8 @@ function buildFuzzionComposition(
         ? lead.motivoExclusion
         : getFuzzionLeadCategories(lead, rules).includes("DESCARTAR")
           ? "Descarte tecnico"
+        : isFuzzionLeadSaturated(lead, rules)
+          ? `Pausa hasta ${getFuzzionPauseEvaluation(lead, rules).pausadoHasta}`
         : getFuzzionLeadCategories(lead, rules).includes("CONTACTADO")
           ? "Contacto efectivo"
           : getFuzzionLeadCategories(lead, rules).includes("BUZON_SIN_CONTACTO")
@@ -795,6 +875,7 @@ function buildFuzzionStats(
     nuncaTrabajados: 0,
     contactados: 0,
     buzonesSinContacto: 0,
+    pausadosTemporales: 0,
     noSaturados: 0,
     reintentarMejorFranja: 0,
     descartar: 0,
@@ -805,6 +886,7 @@ function buildFuzzionStats(
     if (categories.includes("NUNCA_TRABAJADO")) stats.nuncaTrabajados++;
     if (categories.includes("CONTACTADO")) stats.contactados++;
     if (categories.includes("BUZON_SIN_CONTACTO")) stats.buzonesSinContacto++;
+    if (categories.includes("PAUSADO_TEMPORAL")) stats.pausadosTemporales++;
     if (categories.includes("NO_SATURADO")) stats.noSaturados++;
     if (categories.includes("REINTENTAR_MEJOR_FRANJA")) stats.reintentarMejorFranja++;
     if (categories.includes("DESCARTAR")) stats.descartar++;
@@ -1398,12 +1480,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const leads: FuzzionLead[] = uniqueParsedRows.map(({ row, rowNumber, linea }) => {
         const summary = history.get(linea);
         const gestion = gestiones.get(linea);
-        const categorias = classifyFuzzionLead(summary);
-        if (gestion?.exclusionComercial && !categorias.includes("DESCARTAR")) {
-          categorias.push("DESCARTAR");
-        }
 
-        return {
+        const lead: FuzzionLead = {
           rowNumber,
           linea,
           razonSocial: getFuzzionColumnText(row, columns.razonSocial),
@@ -1423,11 +1501,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           noAnswer: summary?.intentosNoAnswer ?? 0,
           invalidos: summary?.intentosUnallocated ?? 0,
           rechazados: summary?.intentosRejected ?? 0,
+          intentos24h: summary?.intentos24h ?? 0,
+          intentos7d: summary?.intentos7d ?? 0,
+          intentos14d: summary?.intentos14d ?? 0,
+          intentos30d: summary?.intentos30d ?? 0,
+          noAnswer7d: summary?.noAnswer7d ?? 0,
+          buzones14d: summary?.buzones14d ?? 0,
           ultimoLlamado: summary?.ultimoLlamado ?? "",
           ultimoEstado: summary?.ultimoEstado ?? "",
           ultimoSubestado: summary?.ultimoSubestado ?? "",
           bases: summary?.bases ?? [],
-          categorias,
+          categorias: [],
           resultadoGestion: gestion?.resultado ?? "",
           subresultadoGestion: gestion?.subresultado ?? "",
           accionComercial: gestion?.accionComercial ?? "",
@@ -1436,6 +1520,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           exclusionComercial: gestion?.exclusionComercial ?? false,
           motivoExclusion: gestion?.motivoExclusion ?? "",
         };
+        lead.categorias = getFuzzionLeadCategories(lead);
+        return lead;
       });
 
       const session: FuzzionSession = {
@@ -1598,6 +1684,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       "NUNCA_TRABAJADO",
       "CONTACTADO",
       "BUZON_SIN_CONTACTO",
+      "PAUSADO_TEMPORAL",
       "NO_SATURADO",
       "REINTENTAR_MEJOR_FRANJA",
       "DESCARTAR",

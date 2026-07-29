@@ -1338,7 +1338,7 @@ export default function Home() {
         historyCount={quickHistoryFiles.length}
       />
 
-      <main className="operational-workspace w-full" data-export-root>
+      <main className="operational-workspace w-full pt-[64px]" data-export-root>
         <button
           type="button"
           aria-label="Cerrar fuentes de datos"
@@ -2021,7 +2021,7 @@ export default function Home() {
             id="analysis-dashboard"
             value={activeDashboardTab}
             onValueChange={setActiveDashboardTab}
-            className="space-y-6"
+            className="scroll-mt-[72px] space-y-6"
           >
             <section className="mb-2 grid grid-cols-2 overflow-hidden rounded-md border border-border bg-card/40">
               <button

@@ -9,7 +9,7 @@ type HeaderProps = {
 
 export function Header({ onMenuClick, onHistoryClick, historyCount = 0 }: HeaderProps) {
   return (
-    <header className="sticky top-0 z-50 h-[64px] border-b border-primary/20 bg-background/95 backdrop-blur-xl dark:bg-[#05090b]/95">
+    <header className="fixed inset-x-0 top-0 z-50 h-[64px] border-b border-primary/20 bg-background/95 shadow-[0_8px_24px_rgba(0,0,0,0.08)] backdrop-blur-xl dark:bg-[#05090b]/95">
       <div className="flex h-full w-full items-center justify-between px-4">
         <div className="flex min-w-0 items-center gap-3.5">
           <button
