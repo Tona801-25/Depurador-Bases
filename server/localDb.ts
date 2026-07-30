@@ -59,6 +59,27 @@ export type LocalGestionSummary = {
   motivoExclusion: string;
 };
 
+export type LocalOperationLogEntry = {
+  id: string;
+  timestamp: number;
+  kind: "analysis" | "export" | "filter" | "error";
+  title: string;
+  detail: string;
+  count?: number;
+};
+
+export function getLocalDbHealth() {
+  try {
+    db.prepare(`SELECT 1 AS ok`).get();
+    return { ok: true, detail: "SQLite disponible" };
+  } catch (error) {
+    return {
+      ok: false,
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 function getCommercialExclusionReason(resultado: string, subresultado: string) {
   const value = `${resultado} ${subresultado}`
     .normalize("NFKD")
@@ -365,6 +386,18 @@ export function initLocalDb() {
       total_records INTEGER NOT NULL DEFAULT 0
     );
 
+    CREATE TABLE IF NOT EXISTS operation_log (
+      id TEXT PRIMARY KEY,
+      occurred_at_ms INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      title TEXT NOT NULL,
+      detail TEXT NOT NULL,
+      record_count INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_operation_log_occurred_at
+      ON operation_log (occurred_at_ms DESC);
+
     CREATE TABLE IF NOT EXISTS call_records (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       record_hash TEXT NOT NULL UNIQUE,
@@ -521,6 +554,91 @@ export function initLocalDb() {
     CREATE INDEX IF NOT EXISTS idx_gestion_records_date_catalog ON gestion_records(report_date, resultado, subresultado);
     CREATE INDEX IF NOT EXISTS idx_productivity_report_user ON agent_productivity_records(report_date, usuario_id);
   `);
+
+  const operationLogBackfillId = "operation_log_backfill_analysis_runs_v1";
+  const operationLogBackfillApplied = db
+    .prepare(`SELECT 1 FROM local_db_migrations WHERE id = ?`)
+    .get(operationLogBackfillId);
+
+  if (!operationLogBackfillApplied) {
+    const cutoff = Date.now() - 48 * 60 * 60 * 1000;
+    const previousRuns = db.prepare(`
+      SELECT id, created_at, scope, total_records, total_anis
+      FROM analysis_runs
+      ORDER BY created_at DESC
+      LIMIT 10
+    `).all() as Array<{
+      id: string;
+      created_at: string;
+      scope: string;
+      total_records: number;
+      total_anis: number;
+    }>;
+
+    const insertRecoveredLog = db.prepare(`
+      INSERT OR IGNORE INTO operation_log (
+        id, occurred_at_ms, kind, title, detail, record_count
+      )
+      VALUES (?, ?, 'analysis', ?, ?, ?)
+    `);
+
+    const applyOperationLogBackfill = db.transaction(() => {
+      for (const run of previousRuns) {
+        const timestamp = new Date(run.created_at).getTime();
+        if (!Number.isFinite(timestamp) || timestamp < cutoff) continue;
+
+        const scopeLabel =
+          run.scope === "history"
+            ? "Historial completo"
+            : run.scope === "file"
+              ? "Ticket guardado"
+              : "Carga de archivos";
+
+        insertRecoveredLog.run(
+          `analysis-run:${run.id}`,
+          timestamp,
+          "Análisis previo recuperado",
+          `${scopeLabel} · ${run.total_anis.toLocaleString("es-AR")} ANIs`,
+          run.total_records,
+        );
+      }
+
+      db.prepare(`
+        INSERT INTO local_db_migrations (id, applied_at)
+        VALUES (?, ?)
+      `).run(operationLogBackfillId, new Date().toISOString());
+    });
+
+    applyOperationLogBackfill();
+  }
+
+  const operationLogTrimBackfillId = "operation_log_trim_recovered_v1";
+  const operationLogTrimBackfillApplied = db
+    .prepare(`SELECT 1 FROM local_db_migrations WHERE id = ?`)
+    .get(operationLogTrimBackfillId);
+
+  if (!operationLogTrimBackfillApplied) {
+    const trimRecoveredLogs = db.transaction(() => {
+      db.prepare(`
+        DELETE FROM operation_log
+        WHERE id LIKE 'analysis-run:%'
+          AND id NOT IN (
+            SELECT id
+            FROM operation_log
+            WHERE id LIKE 'analysis-run:%'
+            ORDER BY occurred_at_ms DESC
+            LIMIT 10
+          )
+      `).run();
+
+      db.prepare(`
+        INSERT INTO local_db_migrations (id, applied_at)
+        VALUES (?, ?)
+      `).run(operationLogTrimBackfillId, new Date().toISOString());
+    });
+
+    trimRecoveredLogs();
+  }
 
   const migrationId = "backfill_imported_file_dates_v1";
   const migrationApplied = db
@@ -2341,6 +2459,67 @@ export function getExcludedGestionAniSet() {
       `).all() as Array<{ ani: string }>
     ).map((row) => row.ani),
   );
+}
+
+export function saveOperationLogEntry(entry: LocalOperationLogEntry) {
+  initLocalDb();
+
+  db.prepare(`
+    INSERT INTO operation_log (
+      id, occurred_at_ms, kind, title, detail, record_count
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO NOTHING
+  `).run(
+    entry.id,
+    entry.timestamp,
+    entry.kind,
+    entry.title,
+    entry.detail,
+    entry.count ?? null,
+  );
+
+  // La vista usa 48 horas, pero conservamos 30 días como respaldo operativo.
+  db.prepare(`
+    DELETE FROM operation_log
+    WHERE occurred_at_ms < ?
+  `).run(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+  return entry;
+}
+
+export function getOperationLogEntries(hours = 48, limit = 500) {
+  initLocalDb();
+
+  const safeHours = Math.min(Math.max(Math.trunc(hours), 1), 24 * 30);
+  const safeLimit = Math.min(Math.max(Math.trunc(limit), 10), 1000);
+  const cutoff = Date.now() - safeHours * 60 * 60 * 1000;
+
+  const rows = db.prepare(`
+    SELECT
+      id,
+      occurred_at_ms AS timestamp,
+      kind,
+      title,
+      detail,
+      record_count AS count
+    FROM operation_log
+    WHERE occurred_at_ms >= ?
+    ORDER BY occurred_at_ms DESC
+    LIMIT ?
+  `).all(cutoff, safeLimit) as Array<{
+    id: string;
+    timestamp: number;
+    kind: LocalOperationLogEntry["kind"];
+    title: string;
+    detail: string;
+    count: number | null;
+  }>;
+
+  return rows.map((row) => ({
+    ...row,
+    count: row.count ?? undefined,
+  }));
 }
 
 export function deleteTicketHistory() {

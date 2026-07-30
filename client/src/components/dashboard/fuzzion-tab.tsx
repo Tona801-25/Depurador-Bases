@@ -567,11 +567,13 @@ function MultiCheckSelect({
   values,
   onChange,
   disabled = false,
+  triggerClassName,
 }: {
   options: MultiOption[];
   values: string[];
   onChange: (values: string[]) => void;
   disabled?: boolean;
+  triggerClassName?: string;
 }) {
   const summary = values.length === 0
     ? "Todos"
@@ -592,7 +594,10 @@ function MultiCheckSelect({
           type="button"
           variant="outline"
           disabled={disabled}
-          className="soft-cyan-hover h-10 w-full justify-between rounded-none px-3 font-normal"
+          className={cn(
+            "soft-cyan-hover h-10 w-full justify-between rounded-none px-3 font-normal",
+            triggerClassName,
+          )}
         >
           <span className="truncate">{summary}</span>
           <ChevronDown className="ml-2 h-4 w-4 shrink-0 text-muted-foreground" />
@@ -693,10 +698,12 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
   const [filterValues, setFilterValues] = useState<string[]>([]);
   const [rangeDays, setRangeDays] = useState(0);
   const [compositionOpen, setCompositionOpen] = useState(true);
+  const [matrixOpen, setMatrixOpen] = useState(true);
   const [cardDetailOpen, setCardDetailOpen] = useState(false);
   const [highAttemptsOpen, setHighAttemptsOpen] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
+  const [simulationOpen, setSimulationOpen] = useState(true);
   const [fuzzionRules, setFuzzionRules] = useState<FuzzionRules>(loadStoredFuzzionRules);
   const [uploading, setUploading] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -1059,17 +1066,6 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
   const flatTotalRows = data?.uniqueAnis ?? 0;
   const flatRemainingRows = selectedExportCount ?? displayedComposition?.loteDepurado ?? 0;
   const flatEliminatedRows = data ? Math.max(0, flatTotalRows - flatRemainingRows) : 0;
-  const flatRangeLabel = rangeDays > 0 ? `Últimos ${rangeDays} días` : "Todo el historial";
-  const flatCatalogLabel = filterMode === "CATALOGACION"
-    ? filterValues.length === 0
-      ? "Todas"
-      : `${filterValues.length} seleccionadas`
-    : "Todas";
-  const flatGatewayLabel = filterMode === "ESTADO"
-    ? filterValues.length === 0
-      ? "Todos"
-      : `${filterValues.length} seleccionados`
-    : "Todos";
 
   const matrixColumns = useMemo(() => {
     const counts = new Map<string, number>();
@@ -1585,6 +1581,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                   options={multiOptions}
                   values={filterMode === "RECOMENDACION" ? selectedCategories : filterValues}
                   disabled={!data || exportMode === "DEPURADO"}
+                  triggerClassName="h-11 border-primary/25 bg-background text-sm font-semibold"
                   onChange={(values) => {
                     if (filterMode === "RECOMENDACION") {
                       setSelectedCategories(values as FuzzionCategory[]);
@@ -1614,61 +1611,62 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
             </div>
 
             <div className="px-5 pb-5">
-              <div className="mb-3 grid gap-2 text-[11px] text-muted-foreground sm:grid-cols-3">
-                <div className="soft-cyan-hover border border-primary/20 px-3 py-2 hover:bg-primary/[0.045]">
-                  <span className="block uppercase tracking-[0.16em]">Desde · hasta</span>
-                  <strong className="mt-1 block text-foreground">{flatRangeLabel}</strong>
-                </div>
-                <div className="soft-cyan-hover border border-primary/20 px-3 py-2 hover:bg-primary/[0.045]">
-                  <span className="block uppercase tracking-[0.16em]">Catalogaciones</span>
-                  <strong className="mt-1 block text-foreground">{flatCatalogLabel}</strong>
-                </div>
-                <div className="soft-cyan-hover border border-primary/20 px-3 py-2 hover:bg-primary/[0.045]">
-                  <span className="block uppercase tracking-[0.16em]">Estado gateways</span>
-                  <strong className="mt-1 block text-foreground">{flatGatewayLabel}</strong>
-                </div>
-              </div>
-
               <div className="soft-cyan-hover border border-primary/25">
-                <div className="border-b border-primary/20 px-3 py-3">
-                  <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
+                <button
+                  type="button"
+                  className={`flex w-full items-center justify-between gap-3 px-3 py-3 text-left transition-colors hover:bg-primary/[0.045] ${
+                    matrixOpen ? "border-b border-primary/20" : ""
+                  }`}
+                  onClick={() => setMatrixOpen((current) => !current)}
+                  aria-expanded={matrixOpen}
+                  aria-controls="fuzzion-result-matrix"
+                >
+                  <span className="text-[10px] font-bold uppercase tracking-[0.18em] text-muted-foreground">
                     Matriz de resultado · catalogaciones x gateways
-                  </p>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[720px] text-left text-xs">
-                    <thead className="bg-primary/5 text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-                      <tr>
-                        <th className="px-3 py-3">Catalogación</th>
-                        {matrixColumns.map((column) => (
-                          <th key={column} className="px-3 py-3 text-right">{column}</th>
-                        ))}
-                        <th className="px-3 py-3 text-right text-primary">Total</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {matrixRows.length > 0 ? (
-                        matrixRows.map((row) => (
-                          <tr key={row.label} className="border-t border-primary/10 transition-colors hover:bg-primary/[0.045]">
-                            <td className="max-w-[360px] truncate px-3 py-3 font-semibold text-foreground">{row.label}</td>
-                            {matrixColumns.map((column) => (
-                              <td key={column} className="px-3 py-3 text-right text-muted-foreground">
-                                {(row.byGateway.get(column) ?? 0).toLocaleString("es-AR")}
-                              </td>
-                            ))}
-                            <td className="px-3 py-3 text-right font-bold text-primary">{row.total.toLocaleString("es-AR")}</td>
-                          </tr>
-                        ))
-                      ) : (
+                  </span>
+                  <ChevronDown
+                    className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${
+                      matrixOpen ? "rotate-180" : ""
+                    }`}
+                  />
+                </button>
+
+                {matrixOpen ? (
+                  <div id="fuzzion-result-matrix" className="overflow-x-auto">
+                    <table className="w-full min-w-[720px] text-left text-xs">
+                      <thead className="bg-primary/5 text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
                         <tr>
-                          <td className="px-3 py-8 text-center text-muted-foreground" colSpan={matrixColumns.length + 2}>
-                            Cargá una base Fuzzión para ver la matriz de depuración.
-                          </td>
+                          <th className="px-3 py-3">Catalogación</th>
+                          {matrixColumns.map((column) => (
+                            <th key={column} className="px-3 py-3 text-right">{column}</th>
+                          ))}
+                          <th className="px-3 py-3 text-right text-primary">Total</th>
                         </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody>
+                        {matrixRows.length > 0 ? (
+                          matrixRows.map((row) => (
+                            <tr key={row.label} className="border-t border-primary/10 transition-colors hover:bg-primary/[0.045]">
+                              <td className="max-w-[360px] truncate px-3 py-3 font-semibold text-foreground">{row.label}</td>
+                              {matrixColumns.map((column) => (
+                                <td key={column} className="px-3 py-3 text-right text-muted-foreground">
+                                  {(row.byGateway.get(column) ?? 0).toLocaleString("es-AR")}
+                                </td>
+                              ))}
+                              <td className="px-3 py-3 text-right font-bold text-primary">{row.total.toLocaleString("es-AR")}</td>
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td className="px-3 py-8 text-center text-muted-foreground" colSpan={matrixColumns.length + 2}>
+                              Cargá una base Fuzzión para ver la matriz de depuración.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : null}
               </div>
             </div>
           </section>
@@ -1752,25 +1750,43 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
           </section>
 
           <section className="overflow-hidden rounded-md border border-primary/25 bg-card/80 dark:bg-[#05090b]">
-            <div className="flex flex-col gap-2 border-b border-primary/20 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <button
+              type="button"
+              className={cn(
+                "soft-cyan-hover flex w-full flex-col gap-2 px-5 py-4 text-left sm:flex-row sm:items-center sm:justify-between",
+                simulationOpen && "border-b border-primary/20",
+              )}
+              onClick={() => setSimulationOpen((current) => !current)}
+              aria-expanded={simulationOpen}
+              aria-controls="fuzzion-simulation-detail"
+            >
               <div>
                 <h2 className="flex items-center gap-2 font-display text-sm font-bold uppercase tracking-[0.14em] text-foreground">
                   <Clock3 className="h-4 w-4 text-primary" />
-                  Simulacion previa del lote
+                  Simulación previa del lote
                 </h2>
                 <p className="mt-1 text-[11px] text-muted-foreground">
                   El conteo usa las mismas reglas que la descarga final.
                 </p>
               </div>
-              {displayedComposition?.proximaReactivacion ? (
-                <Badge variant="outline" className="w-fit rounded border-warning/40 text-warning">
-                  Proxima reactivacion {formatPauseUntil(displayedComposition.proximaReactivacion)}
-                </Badge>
-              ) : null}
-            </div>
+              <span className="flex items-center gap-3">
+                {displayedComposition?.proximaReactivacion ? (
+                  <Badge variant="outline" className="w-fit rounded border-warning/40 text-warning">
+                    Próxima reactivación {formatPauseUntil(displayedComposition.proximaReactivacion)}
+                  </Badge>
+                ) : null}
+                <ChevronDown
+                  className={cn(
+                    "h-4 w-4 shrink-0 text-muted-foreground transition-transform",
+                    simulationOpen && "rotate-180",
+                  )}
+                />
+              </span>
+            </button>
 
-            {displayedComposition ? (
-              <div className="space-y-4 px-5 py-4">
+            {simulationOpen ? (
+              displayedComposition ? (
+              <div id="fuzzion-simulation-detail" className="space-y-4 px-5 py-4">
                 <div className="grid gap-2 md:grid-cols-4">
                   {[
                     ["Entrada unica", displayedComposition.totalLineas, "text-foreground"],
@@ -1835,11 +1851,12 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                   </div>
                 </div>
               </div>
-            ) : (
-              <p className="px-5 py-6 text-sm text-muted-foreground">
-                Carga una base para simular descartes, pausas y lineas exportables.
-              </p>
-            )}
+              ) : (
+                <p id="fuzzion-simulation-detail" className="px-5 py-6 text-sm text-muted-foreground">
+                  Carga una base para simular descartes, pausas y lineas exportables.
+                </p>
+              )
+            ) : null}
           </section>
 
           <section className="soft-cyan-hover overflow-hidden rounded-md border border-primary/35 bg-card/80 dark:bg-[#05090b]">

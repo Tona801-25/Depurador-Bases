@@ -16,6 +16,8 @@ import {
   getAllHistoryRecords,
   getHistorySummaryForAnis,
   getLatestGestionForAnis,
+  getLocalDbHealth,
+  getOperationLogEntries,
   getImportedFiles,
   getGestionAnisForCatalog,
   getGestionCatalog,
@@ -25,6 +27,7 @@ import {
   getRecordsForImportedFile,
   getRecordsForImportedFiles,
   saveNeotelReport,
+  saveOperationLogEntry,
 } from "./localDb";
 import type { AnalysisResult, RecordsFilter } from "@shared/schema";
 import type { LocalAniHistorySummary } from "./localDb";
@@ -1162,6 +1165,76 @@ async function importLocalCompatibleFile(relativePath: string) {
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   app.get("/api/health", (_req, res) => res.json({ ok: true }));
   app.get("/health", (_req, res) => res.json({ ok: true }));
+
+  app.get("/api/system/status", (_req, res) => {
+    const sqlite = getLocalDbHealth();
+    const ftp = getNeotelFtpPublicStatus();
+
+    res.json({
+      ok: true,
+      backend: { ok: true },
+      sqlite,
+      neotel: {
+        ok: ftp.configured && !ftp.autoSync.lastError,
+        configured: ftp.configured,
+        running: ftp.autoSync.running,
+        lastError: ftp.autoSync.lastError,
+        lastSuccessAt: ftp.autoSync.lastSuccessAt,
+      },
+    });
+  });
+
+  app.get("/api/operation-log", (req, res) => {
+    const hours = Number(req.query.hours ?? 48);
+    const limit = Number(req.query.limit ?? 500);
+
+    res.json(
+      getOperationLogEntries(
+        Number.isFinite(hours) ? hours : 48,
+        Number.isFinite(limit) ? limit : 500,
+      ),
+    );
+  });
+
+  app.post("/api/operation-log", (req, res) => {
+    const body = req.body as Record<string, unknown>;
+    const kinds = new Set(["analysis", "export", "filter", "error"]);
+    const id = String(body.id ?? "").trim();
+    const timestamp = Number(body.timestamp);
+    const kind = String(body.kind ?? "");
+    const title = String(body.title ?? "").trim();
+    const detail = String(body.detail ?? "").trim();
+    const count =
+      body.count === undefined || body.count === null
+        ? undefined
+        : Number(body.count);
+
+    if (
+      !id ||
+      id.length > 120 ||
+      !Number.isFinite(timestamp) ||
+      timestamp < Date.now() - 30 * 24 * 60 * 60 * 1000 ||
+      timestamp > Date.now() + 5 * 60 * 1000 ||
+      !kinds.has(kind) ||
+      !title ||
+      title.length > 240 ||
+      detail.length > 2000 ||
+      (count !== undefined && !Number.isFinite(count))
+    ) {
+      return res.status(400).json({ error: "Movimiento operativo inválido." });
+    }
+
+    const saved = saveOperationLogEntry({
+      id,
+      timestamp,
+      kind: kind as "analysis" | "export" | "filter" | "error",
+      title,
+      detail,
+      count,
+    });
+
+    return res.status(201).json(saved);
+  });
 
   app.get("/api/neotel-sync/status", (_req, res) => {
     try {

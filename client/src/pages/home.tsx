@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useRef } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { Header } from "@/components/header";
 import { FileUpload } from "@/components/file-upload";
 import { KPICard } from "@/components/kpi-card";
@@ -61,7 +61,6 @@ import {
   Database,
   Eye,
   EyeOff,
-  ClipboardList,
   MoreVertical,
   ChevronDown,
   X,
@@ -96,11 +95,58 @@ type LocalHistoryFile = {
 type OperationLogEntry = {
   id: string;
   time: string;
+  timestamp: number;
   kind: "analysis" | "export" | "filter" | "error";
   title: string;
   detail: string;
   count?: number;
 };
+
+const OPERATION_LOG_STORAGE_KEY = "depurador:operation-log:v1";
+const OPERATION_LOG_HOURS = 48;
+const OPERATION_LOG_LIMIT = 100;
+const OPERATION_LOG_WINDOW_MS = OPERATION_LOG_HOURS * 60 * 60 * 1000;
+
+function formatOperationTime(timestamp: number) {
+  return new Date(timestamp).toLocaleString("es-AR", {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function normalizeOperationLog(
+  entries: Array<Omit<OperationLogEntry, "time"> | OperationLogEntry>,
+) {
+  const cutoff = Date.now() - OPERATION_LOG_WINDOW_MS;
+  const uniqueEntries = new Map<string, OperationLogEntry>();
+
+  for (const entry of entries) {
+    if (!Number.isFinite(entry.timestamp) || entry.timestamp < cutoff) continue;
+    uniqueEntries.set(entry.id, {
+      ...entry,
+      time: formatOperationTime(entry.timestamp),
+    });
+  }
+
+  return Array.from(uniqueEntries.values())
+    .sort((a, b) => b.timestamp - a.timestamp)
+    .slice(0, OPERATION_LOG_LIMIT);
+}
+
+function loadRecentOperationLog() {
+  if (typeof window === "undefined") return [];
+  try {
+    const stored = JSON.parse(
+      window.localStorage.getItem(OPERATION_LOG_STORAGE_KEY) || "[]",
+    ) as OperationLogEntry[];
+    return normalizeOperationLog(stored);
+  } catch {
+    return [];
+  }
+}
 
 type FilterExportMeta = {
   visibleRows: number;
@@ -243,31 +289,84 @@ export default function Home() {
   const [quickHistoryOpen, setQuickHistoryOpen] = useState(false);
   const [neotelModalOpen, setNeotelModalOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [operationLog, setOperationLog] = useState<OperationLogEntry[]>([]);
-  const [logPanelOpen, setLogPanelOpen] = useState(false);
+  const [operationLog, setOperationLog] =
+    useState<OperationLogEntry[]>(loadRecentOperationLog);
 
     const { toast } = useToast();
     const queryClient = useQueryClient();
 
-  const pushOperationLog = useCallback(
-    (entry: Omit<OperationLogEntry, "id" | "time">) => {
-      const time = new Date().toLocaleTimeString("es-AR", {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      });
+  const refreshOperationLog = useCallback(async () => {
+    try {
+      const response = await fetch(
+        `/api/operation-log?hours=${OPERATION_LOG_HOURS}&limit=${OPERATION_LOG_LIMIT}`,
+      );
+      if (!response.ok) return;
 
-      setOperationLog((current) => [
-        {
-          ...entry,
-          id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-          time,
-        },
-        ...current,
-      ].slice(0, 12));
+      const storedEntries = (await response.json()) as Array<
+        Omit<OperationLogEntry, "time">
+      >;
+      setOperationLog((current) =>
+        normalizeOperationLog([...storedEntries, ...current]),
+      );
+    } catch {
+      // Conservamos la copia local si SQLite no está disponible temporalmente.
+    }
+  }, []);
+
+  const pushOperationLog = useCallback(
+    (entry: Omit<OperationLogEntry, "id" | "time" | "timestamp">) => {
+      const timestamp = Date.now();
+      const newEntry: OperationLogEntry = {
+        ...entry,
+        id: `${timestamp}-${Math.random().toString(16).slice(2)}`,
+        time: formatOperationTime(timestamp),
+        timestamp,
+      };
+
+      setOperationLog((current) =>
+        normalizeOperationLog([newEntry, ...current]),
+      );
+
+      void fetch("/api/operation-log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newEntry),
+      }).catch(() => {
+        // La copia del navegador queda como respaldo para sincronizar luego.
+      });
     },
     []
   );
+
+  useEffect(() => {
+    const localEntries = loadRecentOperationLog();
+
+    const synchronizeOperationLog = async () => {
+      await Promise.allSettled(
+        localEntries.map((entry) =>
+          fetch("/api/operation-log", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(entry),
+          }),
+        ),
+      );
+      await refreshOperationLog();
+    };
+
+    void synchronizeOperationLog();
+  }, [refreshOperationLog]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        OPERATION_LOG_STORAGE_KEY,
+        JSON.stringify(operationLog.slice(0, OPERATION_LOG_LIMIT)),
+      );
+    } catch {
+      // La bitacora sigue disponible durante la sesion si el navegador bloquea storage.
+    }
+  }, [operationLog]);
 
   const describeFilterMeta = useCallback((meta?: FilterExportMeta) => {
     if (!meta) return "Sin detalle de filtros";
@@ -995,10 +1094,13 @@ export default function Home() {
       if (!analysisResult) return;
 
       try {
+        const lotLabel = activeAnalysis?.label || "Lote actual";
+        const operationDetail = `${lotLabel} · ${describeFilterMeta(meta)}`;
+
         pushOperationLog({
           kind: "filter",
           title: `Filtro listo para ${format.toUpperCase()}`,
-          detail: describeFilterMeta(meta),
+          detail: operationDetail,
           count: meta?.visibleRows,
         });
 
@@ -1043,7 +1145,7 @@ export default function Home() {
         pushOperationLog({
           kind: "export",
           title: `Descarga ${format.toUpperCase()} generada`,
-          detail: describeFilterMeta(meta),
+          detail: operationDetail,
           count: meta?.visibleRows,
         });
       } catch (error) {
@@ -1067,7 +1169,7 @@ export default function Home() {
         });
       }
     },
-    [analysisResult, describeFilterMeta, pushOperationLog, toast]
+    [activeAnalysis, analysisResult, describeFilterMeta, pushOperationLog, toast]
   );
 
   const handleRegisterFilterLog = useCallback(
@@ -1075,11 +1177,11 @@ export default function Home() {
       pushOperationLog({
         kind: "filter",
         title: "Filtro registrado",
-        detail: describeFilterMeta(meta),
+        detail: `${activeAnalysis?.label || "Lote actual"} · ${describeFilterMeta(meta)}`,
         count: meta.visibleRows,
       });
     },
-    [describeFilterMeta, pushOperationLog]
+    [activeAnalysis, describeFilterMeta, pushOperationLog]
   );
 
   const allRankedBases = useMemo(() => {
@@ -1187,7 +1289,6 @@ export default function Home() {
     () => [...localHistoryFiles].sort(compareHistoryFiles),
     [localHistoryFiles],
   );
-  const quickHistoryFiles = sortedLocalHistoryFiles.slice(0, 5);
 
   const historyPeriodOptions = useMemo<HistoryPeriodOption[]>(() => {
     const groups = new Map<string, HistoryPeriodOption>();
@@ -1220,10 +1321,6 @@ export default function Home() {
   const selectedHistoryPeriod =
     historyPeriodOptions.find((option) => option.key === selectedHistoryPeriodKey) ??
     historyPeriodOptions[0];
-  const latestOperationLog = operationLog[0];
-
-
-
   const renderBadge = (recomendacion: string) => {
     if (recomendacion === "UTILIZAR") {
       return (
@@ -1334,8 +1431,11 @@ export default function Home() {
     <div className="min-h-screen overflow-x-hidden bg-background text-foreground">
       <Header
         onMenuClick={() => setSidebarOpen((current) => !current)}
-        onHistoryClick={() => setQuickHistoryOpen(true)}
-        historyCount={quickHistoryFiles.length}
+        onHistoryClick={() => {
+          setQuickHistoryOpen(true);
+          void refreshOperationLog();
+        }}
+        historyCount={operationLog.length}
       />
 
       <main className="operational-workspace w-full pt-[64px]" data-export-root>
@@ -1467,10 +1567,10 @@ export default function Home() {
             <div className="flex h-14 items-center justify-between border-b border-primary/20 px-5">
               <div className="min-w-0">
                 <h2 className="font-display text-base font-bold text-foreground">
-                  Historial de tickets
+                  Historial operativo · últimas 48 h
                 </h2>
                 <p className="text-xs text-muted-foreground">
-                  {quickHistoryFiles.length.toLocaleString("es-AR")} guardados para carga rapida
+                  {operationLog.length.toLocaleString("es-AR")} movimientos guardados
                 </p>
               </div>
               <button
@@ -1484,79 +1584,88 @@ export default function Home() {
               </button>
             </div>
 
-            <div className="h-[calc(100vh-56px)] overflow-auto">
-              <div className="grid grid-cols-[1.3fr_0.8fr_0.8fr_0.7fr] gap-4 border-b border-primary/20 px-5 py-3 text-[11px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
-                <div>Fecha</div>
-                <div className="text-right">Registros</div>
-                <div className="text-center">Estado</div>
-                <div className="text-right">Accion</div>
+            <div className="flex h-[calc(100vh-56px)] flex-col">
+              <div className="grid grid-cols-[112px_1fr_auto] gap-3 border-b border-primary/20 px-5 py-3 text-[11px] font-bold uppercase tracking-[0.16em] text-muted-foreground">
+                <div>Fecha y hora</div>
+                <div>Movimiento</div>
+                <div className="text-right">Tipo</div>
               </div>
 
-              {quickHistoryFiles.length === 0 ? (
-                <div className="px-5 py-8 text-sm text-muted-foreground">
-                  Todavia no hay tickets recientes para mostrar.
-                </div>
-              ) : (
-                <div className="divide-y divide-border/60">
-                  {quickHistoryFiles.map((file) => {
-                    const uploadedDate = new Date(file.uploadedAt);
-                    const dateLabel = file.fechaArchivo || uploadedDate.toLocaleDateString("es-AR");
-                    const timeLabel = uploadedDate.toLocaleTimeString("es-AR", {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    });
-
-                    return (
+              <div className="min-h-0 flex-1 overflow-auto">
+                {operationLog.length === 0 ? (
+                  <div className="px-5 py-8 text-sm text-muted-foreground">
+                    Todavía no hubo movimientos operativos en las últimas 48 horas.
+                    Las cargas, análisis, filtros, descargas y errores aparecerán acá.
+                  </div>
+                ) : (
+                  <div className="divide-y divide-border/60">
+                    {operationLog.map((entry) => (
                       <div
-                        key={file.id}
-                        className="grid grid-cols-[1.3fr_0.8fr_0.8fr_0.7fr] items-center gap-4 px-5 py-4 text-sm transition-colors hover:bg-primary/[0.045]"
+                        key={entry.id}
+                        className="grid grid-cols-[112px_1fr_auto] items-start gap-3 px-5 py-4 text-sm transition-colors hover:bg-primary/[0.045]"
                       >
+                        <span className="font-mono text-xs text-muted-foreground">
+                          {entry.time}
+                        </span>
+
                         <div className="min-w-0">
-                          <p className="font-display text-[15px] font-bold text-foreground">
-                            {dateLabel} <span className="text-muted-foreground">{timeLabel}</span>
+                          <p className="font-semibold text-foreground">{entry.title}</p>
+                          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                            {entry.detail}
                           </p>
-                          <p className="mt-1 truncate font-mono text-[11px] text-muted-foreground">
-                            {file.fileHash.slice(0, 4)}...{file.fileHash.slice(-4)}
-                          </p>
+                          {typeof entry.count === "number" ? (
+                            <p className="mt-2 text-xs font-bold text-primary">
+                              {entry.count.toLocaleString("es-AR")} registros
+                            </p>
+                          ) : null}
                         </div>
 
-                        <div className="text-right font-display text-sm font-bold text-foreground">
-                          {file.totalRecords.toLocaleString("es-AR")}
-                        </div>
-
-                        <div className="flex justify-center">
-                          <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary">
-                            <span className="h-1.5 w-1.5 rounded-full bg-primary" />
-                            Guardado
-                          </span>
-                        </div>
-
-                        <div className="text-right">
-                          <button
-                            type="button"
-                            className="text-xs font-bold uppercase tracking-[0.08em] text-primary transition-colors hover:text-primary/75 disabled:opacity-50"
-                            disabled={
-                              analyzeHistoryFileMutation.isPending ||
-                              analyzeAllHistoryMutation.isPending ||
-                              uploadMutation.isPending
-                            }
-                            onClick={() => {
-                              setQuickHistoryOpen(false);
-                              analyzeHistoryFileMutation.mutate(file);
-                            }}
-                          >
-                            Cargar
-                          </button>
-                        </div>
+                        <Badge
+                          variant={
+                            entry.kind === "error"
+                              ? "destructive"
+                              : entry.kind === "export"
+                                ? "default"
+                                : "outline"
+                          }
+                          className="rounded"
+                        >
+                          {entry.kind === "analysis"
+                            ? "análisis"
+                            : entry.kind === "export"
+                              ? "descarga"
+                              : entry.kind === "filter"
+                                ? "filtro"
+                                : "error"}
+                        </Badge>
                       </div>
-                    );
-                  })}
-                </div>
-              )}
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="border-t border-primary/20 p-4">
+                <button
+                  type="button"
+                  className="flex w-full items-center justify-between rounded-md border border-primary/25 bg-primary/5 px-3 py-3 text-left text-sm font-bold text-foreground transition-colors hover:border-primary/50 hover:bg-primary/10"
+                  onClick={() => {
+                    setQuickHistoryOpen(false);
+                    window.setTimeout(() => setHistoryModalOpen(true), 180);
+                  }}
+                >
+                  <span className="flex items-center gap-2">
+                    <Database className="h-4 w-4 text-primary" />
+                    Abrir historial de tickets guardados
+                  </span>
+                  <Badge variant="outline" className="rounded">
+                    {localHistoryFiles.length.toLocaleString("es-AR")}
+                  </Badge>
+                </button>
+              </div>
             </div>
           </aside>
 
-          <div className="min-w-0 px-4 pb-32 pt-4 lg:pr-16 xl:pl-5">
+          <div className="min-w-0 px-4 pb-8 pt-4 lg:pr-16 xl:pl-5">
             <section className="mb-4">
               <FuzzionTab onLog={pushOperationLog} />
             </section>
@@ -1904,89 +2013,6 @@ export default function Home() {
                 </span>
               </div>
             </div>
-          </section>
-        )}
-
-        {false && (analysisResult || operationLog.length > 0) && (
-          <section className="mb-6">
-            <Card className="glass-card border-glass-border">
-              <CardHeader className="pb-3">
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <CardTitle className="text-sm font-display font-bold flex items-center gap-2">
-                    <ClipboardList className="h-4 w-4 text-primary" />
-                    Log operativo
-                  </CardTitle>
-
-                  {analysisResult ? (
-                    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                      <Badge variant="outline">
-                        {activeAnalysis?.label || "Analisis activo"}
-                      </Badge>
-                      <span>
-                        {analysisResult?.totalRecords.toLocaleString("es-AR")} registros ·{" "}
-                        {analysisResult?.totalAnis.toLocaleString("es-AR")} ANIs
-                      </span>
-                    </div>
-                  ) : null}
-                </div>
-              </CardHeader>
-
-              <CardContent>
-                {operationLog.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    Todavia no hay eventos registrados. Analiza un ticket o registra un filtro para verlo aca.
-                  </p>
-                ) : (
-                  <div className="max-h-56 space-y-2 overflow-auto pr-1">
-                    {operationLog.map((entry) => (
-                      <div
-                        key={entry.id}
-                        className="grid gap-2 rounded-lg border border-border/60 bg-secondary/20 px-3 py-2 text-xs sm:grid-cols-[82px_1fr_auto]"
-                      >
-                        <span className="font-mono text-muted-foreground">
-                          {entry.time}
-                        </span>
-
-                        <div className="min-w-0">
-                          <p className="truncate font-semibold text-foreground">
-                            {entry.title}
-                          </p>
-                          <p className="truncate text-muted-foreground">
-                            {entry.detail}
-                          </p>
-                        </div>
-
-                        <div className="flex items-center justify-between gap-2 sm:justify-end">
-                          <Badge
-                            variant={
-                              entry.kind === "error"
-                                ? "destructive"
-                                : entry.kind === "export"
-                                  ? "default"
-                                  : "outline"
-                            }
-                          >
-                            {entry.kind === "analysis"
-                              ? "analisis"
-                              : entry.kind === "export"
-                                ? "descarga"
-                                : entry.kind === "filter"
-                                  ? "filtro"
-                                  : "error"}
-                          </Badge>
-
-                          {typeof entry.count === "number" ? (
-                            <span className="whitespace-nowrap font-semibold text-foreground">
-                              {entry.count.toLocaleString("es-AR")}
-                            </span>
-                          ) : null}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
           </section>
         )}
 
@@ -2629,104 +2655,6 @@ export default function Home() {
         </div>
       </main>
 
-      {(analysisResult || operationLog.length > 0) && (
-        <section className="fixed inset-x-3 bottom-3 z-50 mx-auto max-w-6xl">
-          <Card className="border-primary/30 bg-background/95 shadow-2xl shadow-primary/10 backdrop-blur">
-            <button
-              type="button"
-              className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
-              onClick={() => setLogPanelOpen((current) => !current)}
-              aria-expanded={logPanelOpen}
-            >
-              <span className="flex min-w-0 items-center gap-3">
-                <span className="rounded-lg border border-primary/20 bg-primary/10 p-2 text-primary">
-                  <ClipboardList className="h-4 w-4" />
-                </span>
-                <span className="min-w-0">
-                  <span className="block text-sm font-display font-bold text-foreground">
-                    Log operativo
-                  </span>
-                  <span className="block truncate text-xs text-muted-foreground">
-                    {latestOperationLog
-                      ? `${latestOperationLog.time} · ${latestOperationLog.title} · ${latestOperationLog.detail}`
-                      : "Todavía no hay eventos registrados."}
-                  </span>
-                </span>
-              </span>
-
-              <span className="flex shrink-0 items-center gap-2">
-                {latestOperationLog?.count !== undefined ? (
-                  <Badge variant="outline">
-                    {latestOperationLog.count.toLocaleString("es-AR")}
-                  </Badge>
-                ) : null}
-                <Badge variant="outline">
-                  {operationLog.length.toLocaleString("es-AR")}
-                </Badge>
-                <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", logPanelOpen && "rotate-180")} />
-              </span>
-            </button>
-
-            {logPanelOpen ? (
-              <CardContent className="border-t border-border px-4 pb-4 pt-0">
-                {operationLog.length === 0 ? (
-                  <p className="pt-4 text-xs text-muted-foreground">
-                    Todavía no hay eventos registrados. Analizá un ticket o registrá un filtro para verlo acá.
-                  </p>
-                ) : (
-                  <div className="max-h-64 space-y-2 overflow-auto pt-4">
-                    {operationLog.map((entry) => (
-                      <div
-                        key={entry.id}
-                        className="grid gap-2 rounded-lg border border-border/60 bg-secondary/20 px-3 py-2 text-xs sm:grid-cols-[82px_1fr_auto]"
-                      >
-                        <span className="font-mono text-muted-foreground">
-                          {entry.time}
-                        </span>
-
-                        <div className="min-w-0">
-                          <p className="truncate font-semibold text-foreground">
-                            {entry.title}
-                          </p>
-                          <p className="truncate text-muted-foreground">
-                            {entry.detail}
-                          </p>
-                        </div>
-
-                        <div className="flex items-center justify-between gap-2 sm:justify-end">
-                          <Badge
-                            variant={
-                              entry.kind === "error"
-                                ? "destructive"
-                                : entry.kind === "export"
-                                  ? "default"
-                                  : "outline"
-                            }
-                          >
-                            {entry.kind === "analysis"
-                              ? "analisis"
-                              : entry.kind === "export"
-                                ? "descarga"
-                                : entry.kind === "filter"
-                                  ? "filtro"
-                                  : "error"}
-                          </Badge>
-
-                          {typeof entry.count === "number" ? (
-                            <span className="whitespace-nowrap font-semibold text-foreground">
-                              {entry.count.toLocaleString("es-AR")}
-                            </span>
-                          ) : null}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            ) : null}
-          </Card>
-        </section>
-      )}
     </div>
   );
 }
