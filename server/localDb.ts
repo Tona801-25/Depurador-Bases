@@ -4,8 +4,23 @@ import fs from "fs";
 import path from "path";
 
 import type { AnalysisResult, CallRecord } from "../shared/schema.ts";
+import type {
+  FuzzionFilterConfig,
+  FuzzionFilterCondition,
+  FuzzionFilterCriteria,
+  FuzzionHistoryEvidenceRows,
+  FuzzionHistoryRangeDays,
+  FuzzionHistorySnapshot,
+} from "../shared/fuzzionFilters.ts";
 import { extractPrefijoArgentina } from "../shared/prefijos.ts";
 import type { ParsedNeotelReport } from "./neotelReports.ts";
+import {
+  classifyGatewayCondition,
+  normalizeCatalogCondition,
+  normalizeCatalogConditionKey,
+  normalizeGatewayConditionKey,
+  parseFuzzionFilterCriteria,
+} from "./fuzzionFilterEngine.ts";
 
 const DATA_DIR = path.resolve(process.cwd(), "data");
 const DB_PATH = path.join(DATA_DIR, "depurador-bases.sqlite");
@@ -19,6 +34,47 @@ let localDbInitialized = false;
 
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
+db.function(
+  "fuzzion_gateway_condition_key",
+  { deterministic: true },
+  (estado: unknown, subestado: unknown) =>
+    classifyGatewayCondition(estado, subestado)?.key ?? "",
+);
+
+export class FuzzionFilterConfigStoreError extends Error {
+  constructor(
+    message: string,
+    public readonly code: "NOT_FOUND" | "DUPLICATE_NAME" | "VALIDATION" | "STORE_ERROR",
+  ) {
+    super(message);
+    this.name = "FuzzionFilterConfigStoreError";
+  }
+}
+
+type FuzzionFilterConfigRow = {
+  id: string;
+  name: string;
+  download_type: "DEPURADO" | "SEGMENTO";
+  range_days: FuzzionHistoryRangeDays;
+  protect_effective_contact: number;
+  is_default: number;
+  created_at: string;
+  updated_at: string;
+};
+
+type FuzzionFilterConfigConditionRow = {
+  config_id: string;
+  condition_type: "CATALOG" | "GATEWAY";
+  condition_key: string;
+  display_label: string;
+  minimum_count: number;
+};
+db.function(
+  "fuzzion_catalog_condition_key",
+  { deterministic: true },
+  (resultado: unknown, subresultado: unknown) =>
+    normalizeCatalogCondition(resultado, subresultado)?.key ?? "",
+);
 
 export type LocalAniHistorySummary = {
   ani: string;
@@ -373,6 +429,48 @@ function buildFileHash(_fileName: string, records: CallRecord[]): string {
   );
 }
 
+export function ensureFuzzionFilterConfigSchema() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS fuzzion_filter_configs (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL COLLATE NOCASE UNIQUE
+        CHECK (LENGTH(TRIM(name)) > 0),
+      download_type TEXT NOT NULL
+        CHECK (download_type IN ('DEPURADO', 'SEGMENTO')),
+      range_days INTEGER NOT NULL
+        CHECK (range_days IN (0, 7, 30, 60, 90)),
+      protect_effective_contact INTEGER NOT NULL DEFAULT 0
+        CHECK (protect_effective_contact IN (0, 1)),
+      is_default INTEGER NOT NULL DEFAULT 0
+        CHECK (is_default IN (0, 1)),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS fuzzion_filter_config_conditions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      config_id TEXT NOT NULL,
+      condition_type TEXT NOT NULL
+        CHECK (condition_type IN ('CATALOG', 'GATEWAY')),
+      condition_key TEXT NOT NULL,
+      display_label TEXT NOT NULL,
+      minimum_count INTEGER NOT NULL
+        CHECK (minimum_count >= 1),
+      FOREIGN KEY (config_id)
+        REFERENCES fuzzion_filter_configs(id)
+        ON DELETE CASCADE,
+      UNIQUE (config_id, condition_type, condition_key)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_fuzzion_filter_config_conditions_config
+      ON fuzzion_filter_config_conditions(config_id);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_fuzzion_filter_configs_single_default
+      ON fuzzion_filter_configs(is_default)
+      WHERE is_default = 1;
+  `);
+}
+
 export function initLocalDb() {
   if (localDbInitialized) return;
 
@@ -554,6 +652,8 @@ export function initLocalDb() {
     CREATE INDEX IF NOT EXISTS idx_gestion_records_date_catalog ON gestion_records(report_date, resultado, subresultado);
     CREATE INDEX IF NOT EXISTS idx_productivity_report_user ON agent_productivity_records(report_date, usuario_id);
   `);
+
+  ensureFuzzionFilterConfigSchema();
 
   const operationLogBackfillId = "operation_log_backfill_analysis_runs_v1";
   const operationLogBackfillApplied = db
@@ -1052,6 +1152,290 @@ export function initLocalDb() {
 
   synchronizeAniCache();
   localDbInitialized = true;
+}
+
+function parseFuzzionFilterConfigInput(input: unknown) {
+  const raw = input && typeof input === "object"
+    ? input as Record<string, unknown>
+    : {};
+  const name = String(raw.name ?? "").trim().replace(/\s+/g, " ");
+  if (!name) {
+    throw new FuzzionFilterConfigStoreError(
+      "El nombre de la configuracion es obligatorio.",
+      "VALIDATION",
+    );
+  }
+  if (name.length > 120) {
+    throw new FuzzionFilterConfigStoreError(
+      "El nombre de la configuracion no puede superar 120 caracteres.",
+      "VALIDATION",
+    );
+  }
+  const criteria = parseFuzzionFilterCriteria(raw.criteria);
+  return { name, criteria };
+}
+
+function buildFuzzionFilterConfigs(
+  configRows: FuzzionFilterConfigRow[],
+  conditionRows: FuzzionFilterConfigConditionRow[],
+) {
+  const conditionsByConfig = new Map<string, FuzzionFilterConfigConditionRow[]>();
+  for (const condition of conditionRows) {
+    const current = conditionsByConfig.get(condition.config_id) ?? [];
+    current.push(condition);
+    conditionsByConfig.set(condition.config_id, current);
+  }
+
+  return configRows.map((row): FuzzionFilterConfig => {
+    const conditions = conditionsByConfig.get(row.id) ?? [];
+    const toCondition = (
+      condition: FuzzionFilterConfigConditionRow,
+    ): FuzzionFilterCondition => ({
+      key: condition.condition_key,
+      label: condition.display_label,
+      minimumCount: Number(condition.minimum_count),
+    });
+    return {
+      id: row.id,
+      name: row.name,
+      criteria: {
+        downloadType: row.download_type,
+        rangeDays: Number(row.range_days) as FuzzionHistoryRangeDays,
+        catalogConditions: conditions
+          .filter((condition) => condition.condition_type === "CATALOG")
+          .map(toCondition),
+        gatewayConditions: conditions
+          .filter((condition) => condition.condition_type === "GATEWAY")
+          .map(toCondition),
+        protectEffectiveContact:
+          row.download_type === "DEPURADO" &&
+          Boolean(row.protect_effective_contact),
+      },
+      isDefault: Boolean(row.is_default),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  });
+}
+
+function readFuzzionFilterConfigs(id?: string) {
+  initLocalDb();
+  const configRows = db.prepare(`
+    SELECT
+      id,
+      name,
+      download_type,
+      range_days,
+      protect_effective_contact,
+      is_default,
+      created_at,
+      updated_at
+    FROM fuzzion_filter_configs
+    ${id ? "WHERE id = ?" : ""}
+    ORDER BY is_default DESC, name COLLATE NOCASE ASC, created_at ASC
+  `).all(...(id ? [id] : [])) as FuzzionFilterConfigRow[];
+  if (configRows.length === 0) return [];
+  const ids = configRows.map((row) => row.id);
+  const placeholders = ids.map(() => "?").join(",");
+  const conditionRows = db.prepare(`
+    SELECT
+      config_id,
+      condition_type,
+      condition_key,
+      display_label,
+      minimum_count
+    FROM fuzzion_filter_config_conditions
+    WHERE config_id IN (${placeholders})
+    ORDER BY id ASC
+  `).all(...ids) as FuzzionFilterConfigConditionRow[];
+  return buildFuzzionFilterConfigs(configRows, conditionRows);
+}
+
+export function listFuzzionFilterConfigs() {
+  return readFuzzionFilterConfigs();
+}
+
+export function getFuzzionFilterConfig(id: string) {
+  return readFuzzionFilterConfigs(id)[0] ?? null;
+}
+
+function throwFuzzionConfigWriteError(error: unknown): never {
+  if (error instanceof FuzzionFilterConfigStoreError) throw error;
+  const message = error instanceof Error ? error.message : String(error);
+  if (
+    message.includes("fuzzion_filter_configs.name") ||
+    message.includes("UNIQUE constraint failed: fuzzion_filter_configs.name")
+  ) {
+    throw new FuzzionFilterConfigStoreError(
+      "Ya existe una configuracion con ese nombre.",
+      "DUPLICATE_NAME",
+    );
+  }
+  throw new FuzzionFilterConfigStoreError(
+    `No se pudo guardar la configuracion: ${message}`,
+    "STORE_ERROR",
+  );
+}
+
+function insertFuzzionConditions(
+  configId: string,
+  criteria: FuzzionFilterCriteria,
+) {
+  const insert = db.prepare(`
+    INSERT INTO fuzzion_filter_config_conditions (
+      config_id,
+      condition_type,
+      condition_key,
+      display_label,
+      minimum_count
+    ) VALUES (?, ?, ?, ?, ?)
+  `);
+  for (const condition of criteria.catalogConditions) {
+    insert.run(
+      configId,
+      "CATALOG",
+      condition.key,
+      condition.label,
+      condition.minimumCount,
+    );
+  }
+  for (const condition of criteria.gatewayConditions) {
+    insert.run(
+      configId,
+      "GATEWAY",
+      condition.key,
+      condition.label,
+      condition.minimumCount,
+    );
+  }
+}
+
+export function createFuzzionFilterConfig(input: unknown) {
+  initLocalDb();
+  const { name, criteria } = parseFuzzionFilterConfigInput(input);
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  try {
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO fuzzion_filter_configs (
+          id,
+          name,
+          download_type,
+          range_days,
+          protect_effective_contact,
+          is_default,
+          created_at,
+          updated_at
+        ) VALUES (?, ?, ?, ?, ?, 0, ?, ?)
+      `).run(
+        id,
+        name,
+        criteria.downloadType,
+        criteria.rangeDays,
+        criteria.protectEffectiveContact ? 1 : 0,
+        now,
+        now,
+      );
+      insertFuzzionConditions(id, criteria);
+    })();
+  } catch (error) {
+    throwFuzzionConfigWriteError(error);
+  }
+  return getFuzzionFilterConfig(id)!;
+}
+
+export function updateFuzzionFilterConfig(id: string, input: unknown) {
+  initLocalDb();
+  const { name, criteria } = parseFuzzionFilterConfigInput(input);
+  const now = new Date().toISOString();
+  try {
+    db.transaction(() => {
+      const exists = db.prepare(`
+        SELECT 1 FROM fuzzion_filter_configs WHERE id = ?
+      `).get(id);
+      if (!exists) {
+        throw new FuzzionFilterConfigStoreError(
+          "La configuracion no existe.",
+          "NOT_FOUND",
+        );
+      }
+      db.prepare(`
+        UPDATE fuzzion_filter_configs
+        SET
+          name = ?,
+          download_type = ?,
+          range_days = ?,
+          protect_effective_contact = ?,
+          updated_at = ?
+        WHERE id = ?
+      `).run(
+        name,
+        criteria.downloadType,
+        criteria.rangeDays,
+        criteria.protectEffectiveContact ? 1 : 0,
+        now,
+        id,
+      );
+      db.prepare(`
+        DELETE FROM fuzzion_filter_config_conditions WHERE config_id = ?
+      `).run(id);
+      insertFuzzionConditions(id, criteria);
+    })();
+  } catch (error) {
+    throwFuzzionConfigWriteError(error);
+  }
+  return getFuzzionFilterConfig(id)!;
+}
+
+export function deleteFuzzionFilterConfig(id: string) {
+  initLocalDb();
+  try {
+    db.transaction(() => {
+      const result = db.prepare(`
+        DELETE FROM fuzzion_filter_configs WHERE id = ?
+      `).run(id);
+      if (result.changes === 0) {
+        throw new FuzzionFilterConfigStoreError(
+          "La configuracion no existe.",
+          "NOT_FOUND",
+        );
+      }
+    })();
+  } catch (error) {
+    throwFuzzionConfigWriteError(error);
+  }
+}
+
+export function setDefaultFuzzionFilterConfig(id: string) {
+  initLocalDb();
+  const now = new Date().toISOString();
+  try {
+    db.transaction(() => {
+      const exists = db.prepare(`
+        SELECT 1 FROM fuzzion_filter_configs WHERE id = ?
+      `).get(id);
+      if (!exists) {
+        throw new FuzzionFilterConfigStoreError(
+          "La configuracion no existe.",
+          "NOT_FOUND",
+        );
+      }
+      db.prepare(`
+        UPDATE fuzzion_filter_configs
+        SET is_default = 0
+        WHERE is_default = 1 AND id <> ?
+      `).run(id);
+      db.prepare(`
+        UPDATE fuzzion_filter_configs
+        SET is_default = 1, updated_at = ?
+        WHERE id = ?
+      `).run(now, id);
+    })();
+  } catch (error) {
+    throwFuzzionConfigWriteError(error);
+  }
+  return getFuzzionFilterConfig(id)!;
 }
 
 export function saveAnalysisToLocalDb(analysis: AnalysisResult) {
@@ -1891,6 +2275,269 @@ export function getAllHistoryRecords(): CallRecord[] {
     .all() as StoredCallRecordRow[];
 
   return rows.map(rowToCallRecord);
+}
+
+export function getFuzzionHistorySnapshot(): FuzzionHistorySnapshot {
+  initLocalDb();
+
+  try {
+    return db.transaction(() => {
+      const maxCallRecordId = Number(
+        (db.prepare(`
+          SELECT COALESCE(MAX(id), 0) AS value
+          FROM call_records
+        `).get() as { value: number }).value,
+      );
+      const maxGestionRecordId = Number(
+        (db.prepare(`
+          SELECT COALESCE(MAX(id), 0) AS value
+          FROM gestion_records
+        `).get() as { value: number }).value,
+      );
+      const historyAsOf = new Date().toISOString();
+
+      if (
+        !Number.isSafeInteger(maxCallRecordId) ||
+        maxCallRecordId < 0 ||
+        !Number.isSafeInteger(maxGestionRecordId) ||
+        maxGestionRecordId < 0 ||
+        !Number.isFinite(new Date(historyAsOf).getTime())
+      ) {
+        throw new Error("SQLite devolvio limites historicos invalidos.");
+      }
+
+      return {
+        maxCallRecordId,
+        maxGestionRecordId,
+        historyAsOf,
+      };
+    })();
+  } catch (error) {
+    throw new Error(
+      `No se pudo crear un snapshot historico completo: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+}
+
+export function getFuzzionHistoryEvidenceRowsForAnis(
+  anis: string[],
+  rangeDays: FuzzionHistoryRangeDays,
+  snapshot: FuzzionHistorySnapshot,
+  selectedConditions?: {
+    gatewayKeys?: string[];
+    catalogKeys?: string[];
+    includeEffectiveContact?: boolean;
+  },
+): FuzzionHistoryEvidenceRows {
+  initLocalDb();
+
+  const normalizedAnis = Array.from(
+    new Set(
+      anis
+        .map((ani) => String(ani ?? "").replace(/\D/g, "").trim())
+        .filter(Boolean),
+    ),
+  );
+  const result: FuzzionHistoryEvidenceRows = {
+    gatewayRows: [],
+    catalogRows: [],
+    effectiveContactAnis: [],
+  };
+  if (normalizedAnis.length === 0) return result;
+  if (![0, 7, 30, 60, 90].includes(rangeDays)) {
+    throw new Error("Rango historico Fuzzion no valido.");
+  }
+
+  const asOfTimestamp = new Date(snapshot.historyAsOf).getTime();
+  if (!Number.isFinite(asOfTimestamp)) {
+    throw new Error("El snapshot historico Fuzzion no es valido.");
+  }
+  const rangeCutoff = rangeDays > 0
+    ? new Date(asOfTimestamp - rangeDays * 86400000).toISOString()
+    : "";
+  const selectedGatewayKeys = Array.from(
+    new Set(
+      (selectedConditions?.gatewayKeys ?? [])
+        .map(normalizeGatewayConditionKey)
+        .filter(Boolean),
+    ),
+  );
+  const selectedCatalogKeys = Array.from(
+    new Set(
+      (selectedConditions?.catalogKeys ?? [])
+        .map(normalizeCatalogConditionKey)
+        .filter((key) => key !== "|"),
+    ),
+  );
+  const selectedParameterCount =
+    selectedGatewayKeys.length + selectedCatalogKeys.length;
+  const chunkSize = Math.max(100, 800 - selectedParameterCount);
+  const queryAllGatewayConditions = selectedConditions?.gatewayKeys === undefined;
+  const queryAllCatalogConditions = selectedConditions?.catalogKeys === undefined;
+  const shouldQueryGateways = queryAllGatewayConditions || selectedGatewayKeys.length > 0;
+  const shouldQueryCatalogs = queryAllCatalogConditions || selectedCatalogKeys.length > 0;
+  const shouldQueryEffectiveContact =
+    selectedConditions?.includeEffectiveContact ?? true;
+
+  for (let index = 0; index < normalizedAnis.length; index += chunkSize) {
+    const chunk = normalizedAnis.slice(index, index + chunkSize);
+    const placeholders = chunk.map(() => "?").join(",");
+    const gatewayRangeSql = rangeDays > 0 ? "AND fecha >= ?" : "";
+    const gatewayConditionSql = selectedGatewayKeys.length > 0
+      ? `AND fuzzion_gateway_condition_key(estado, subestado) IN (${
+          selectedGatewayKeys.map(() => "?").join(",")
+        })`
+      : "";
+    const gatewayParams = [
+      ...chunk,
+      snapshot.maxCallRecordId,
+      snapshot.historyAsOf,
+      ...(rangeDays > 0 ? [rangeCutoff] : []),
+      ...selectedGatewayKeys,
+    ];
+    if (shouldQueryGateways) {
+      const gatewayRows = db.prepare(`
+        SELECT
+          ani,
+          estado,
+          COALESCE(subestado, '') AS subestado,
+          COUNT(*) AS count
+        FROM call_records INDEXED BY idx_call_records_ani
+        WHERE ani IN (${placeholders})
+          AND id <= ?
+          AND fecha <= ?
+          ${gatewayRangeSql}
+          ${gatewayConditionSql}
+        GROUP BY ani, estado, COALESCE(subestado, '')
+      `).all(...gatewayParams) as Array<{
+        ani: string;
+        estado: string;
+        subestado: string;
+        count: number;
+      }>;
+      result.gatewayRows.push(
+        ...gatewayRows.map((row) => ({
+          ...row,
+          count: Number(row.count) || 0,
+        })),
+      );
+    }
+
+    if (shouldQueryEffectiveContact) {
+      const contactParams = [
+        ...chunk,
+        snapshot.maxCallRecordId,
+        snapshot.historyAsOf,
+        ...(rangeDays > 0 ? [rangeCutoff] : []),
+      ];
+      const contactRows = db.prepare(`
+        SELECT ani
+        FROM call_records INDEXED BY idx_call_records_ani
+        WHERE ani IN (${placeholders})
+          AND id <= ?
+          AND fecha <= ?
+          ${gatewayRangeSql}
+          AND is_contacto_efectivo = 1
+        GROUP BY ani
+      `).all(...contactParams) as Array<{ ani: string }>;
+      result.effectiveContactAnis.push(...contactRows.map((row) => row.ani));
+    }
+
+    const catalogRangeSql = rangeDays > 0 ? "AND ts >= ?" : "";
+    const catalogConditionSql = selectedCatalogKeys.length > 0
+      ? `AND fuzzion_catalog_condition_key(resultado, subresultado) IN (${
+          selectedCatalogKeys.map(() => "?").join(",")
+        })`
+      : "";
+    const catalogParams = [
+      ...chunk,
+      snapshot.maxGestionRecordId,
+      snapshot.historyAsOf,
+      ...(rangeDays > 0 ? [rangeCutoff] : []),
+      ...selectedCatalogKeys,
+    ];
+    if (shouldQueryCatalogs) {
+      const catalogRows = db.prepare(`
+        SELECT
+          ani,
+          COALESCE(resultado, '') AS resultado,
+          COALESCE(subresultado, '') AS subresultado,
+          COUNT(*) AS count
+        FROM gestion_records INDEXED BY idx_gestion_records_ani
+        WHERE ani IN (${placeholders})
+          AND id <= ?
+          AND ts <= ?
+          ${catalogRangeSql}
+          ${catalogConditionSql}
+        GROUP BY ani, COALESCE(resultado, ''), COALESCE(subresultado, '')
+      `).all(...catalogParams) as Array<{
+        ani: string;
+        resultado: string;
+        subresultado: string;
+        count: number;
+      }>;
+      result.catalogRows.push(
+        ...catalogRows.map((row) => ({
+          ...row,
+          count: Number(row.count) || 0,
+        })),
+      );
+    }
+  }
+
+  return result;
+}
+
+export function getPauseWindowSummaryForAnis(anis: string[], days: number) {
+  initLocalDb();
+
+  const normalizedAnis = Array.from(
+    new Set(
+      anis
+        .map((ani) => String(ani ?? "").replace(/\D/g, "").trim())
+        .filter(Boolean),
+    ),
+  );
+  const result = new Map<
+    string,
+    { noAnswer: number; answeringMachine: number }
+  >();
+  if (normalizedAnis.length === 0) return result;
+
+  const safeDays = Math.min(Math.max(Math.trunc(days), 1), 35);
+  const cutoff =
+    `${new Date(Date.now() - safeDays * 86400000).toISOString().slice(0, 13)}:00:00.000Z`;
+  const chunkSize = 900;
+
+  for (let index = 0; index < normalizedAnis.length; index += chunkSize) {
+    const chunk = normalizedAnis.slice(index, index + chunkSize);
+    const placeholders = chunk.map(() => "?").join(",");
+    const rows = db.prepare(`
+      SELECT
+        ani,
+        SUM(intentos_no_answer) AS noAnswer,
+        SUM(intentos_answering_machine) AS answeringMachine
+      FROM ani_history_hourly
+      WHERE ani IN (${placeholders})
+        AND bucket_hour >= ?
+      GROUP BY ani
+    `).all(...chunk, cutoff) as Array<{
+      ani: string;
+      noAnswer: number;
+      answeringMachine: number;
+    }>;
+
+    for (const row of rows) {
+      result.set(row.ani, {
+        noAnswer: Number(row.noAnswer) || 0,
+        answeringMachine: Number(row.answeringMachine) || 0,
+      });
+    }
+  }
+
+  return result;
 }
 
 export function getHistorySummaryForAnis(anis: string[]) {

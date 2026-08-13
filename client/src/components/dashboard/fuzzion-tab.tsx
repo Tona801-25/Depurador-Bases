@@ -36,6 +36,8 @@ import {
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { resolveFuzzionDevelopmentUi } from "@shared/fuzzionV2Ui";
+import { FuzzionV2Tab } from "./fuzzion-v2-tab";
 
 type FuzzionCategory =
   | "TODOS"
@@ -63,16 +65,10 @@ type FuzzionStats = {
 type FuzzionRules = {
   unallocatedDescartar: number;
   rejectedDescartar: number;
-  intentos24hPausa: number;
-  pausa24hHoras: number;
-  intentos7dPausa: number;
-  pausa7dDias: number;
-  noAnswer7dPausa: number;
-  pausaNoAnswerDias: number;
-  buzon14dPausa: number;
-  pausaBuzonDias: number;
-  intentos30dPausa: number;
-  pausa30dDias: number;
+  busyDescartar: number;
+  pausaVentanaDias: number;
+  noAnswerPausa: number;
+  answeringMachinePausa: number;
 };
 
 type FuzzionLeadPreview = {
@@ -90,12 +86,13 @@ type FuzzionLeadPreview = {
   noAnswer: number;
   invalidos: number;
   rechazados: number;
+  ocupados: number;
   intentos24h: number;
   intentos7d: number;
   intentos14d: number;
   intentos30d: number;
-  noAnswer7d: number;
-  buzones14d: number;
+  noAnswerVentana: number;
+  answeringMachineVentana: number;
   ultimoLlamado: string;
   ultimoEstado: string;
   ultimoSubestado: string;
@@ -150,6 +147,7 @@ type FuzzionSelectionSummary = {
   exportableLines: number;
   composition: FuzzionComposition;
   selections: Array<{ value: string; label: string; count: number }>;
+  preview?: FuzzionLeadPreview[];
 };
 
 type FuzzionPreview = {
@@ -210,14 +208,14 @@ const categoryOptions: Array<{
     value: "PAUSADO_TEMPORAL",
     label: "En pausa temporal",
     description:
-      "Supero una regla reciente de 24 h, 7, 14 o 30 dias. No se exporta hoy y vuelve a habilitarse al vencer.",
+      "Alcanzo el umbral de NOANSWER o ANSWERING MACHINE dentro de la ventana configurada. No se exporta durante el resto del dia.",
     stat: "pausadosTemporales",
   },
   {
     value: "NO_SATURADO",
     label: "Sin saturación",
     description:
-      "No alcanzan los límites de intentos, NOANSWER o buzón configurados.",
+      "No alcanzo los umbrales de pausa de NOANSWER ni ANSWERING MACHINE.",
     stat: "noSaturados",
   },
   {
@@ -263,50 +261,37 @@ type MultiOption = {
 const DEFAULT_FUZZION_RULES: FuzzionRules = {
   unallocatedDescartar: 3,
   rejectedDescartar: 3,
-  intentos24hPausa: 3,
-  pausa24hHoras: 24,
-  intentos7dPausa: 9,
-  pausa7dDias: 7,
-  noAnswer7dPausa: 6,
-  pausaNoAnswerDias: 5,
-  buzon14dPausa: 5,
-  pausaBuzonDias: 3,
-  intentos30dPausa: 20,
-  pausa30dDias: 21,
+  busyDescartar: 3,
+  pausaVentanaDias: 5,
+  noAnswerPausa: 5,
+  answeringMachinePausa: 5,
 };
 
 const MAX_LEGACY_EXCEL_DATA_ROWS = 65_535;
-const FUZZION_RULES_STORAGE_KEY = "depurador:fuzzion-rules:v2";
+const FUZZION_RULES_STORAGE_KEY = "depurador:fuzzion-rules:v3";
 const FUZZION_RULE_KEYS: Array<keyof FuzzionRules> = [
   "unallocatedDescartar",
   "rejectedDescartar",
-  "intentos24hPausa",
-  "pausa24hHoras",
-  "intentos7dPausa",
-  "pausa7dDias",
-  "noAnswer7dPausa",
-  "pausaNoAnswerDias",
-  "buzon14dPausa",
-  "pausaBuzonDias",
-  "intentos30dPausa",
-  "pausa30dDias",
+  "busyDescartar",
+  "pausaVentanaDias",
+  "noAnswerPausa",
+  "answeringMachinePausa",
 ];
-const FUZZION_RULE_FIELDS: Array<{
+const DISCARD_RULE_FIELDS: Array<{
   key: keyof FuzzionRules;
   label: string;
 }> = [
   { key: "unallocatedDescartar", label: "Descartar UNALLOCATED desde" },
   { key: "rejectedDescartar", label: "Descartar REJECTED desde" },
-  { key: "intentos24hPausa", label: "Intentos en 24 h para pausar" },
-  { key: "pausa24hHoras", label: "Duracion pausa 24 h (horas)" },
-  { key: "intentos7dPausa", label: "Intentos en 7 dias para pausar" },
-  { key: "pausa7dDias", label: "Duracion pausa 7 dias" },
-  { key: "noAnswer7dPausa", label: "NOANSWER en 7 dias para pausar" },
-  { key: "pausaNoAnswerDias", label: "Duracion pausa NOANSWER (dias)" },
-  { key: "buzon14dPausa", label: "Buzones en 14 dias para pausar" },
-  { key: "pausaBuzonDias", label: "Duracion pausa buzon (dias)" },
-  { key: "intentos30dPausa", label: "Intentos en 30 dias para pausar" },
-  { key: "pausa30dDias", label: "Duracion pausa 30 dias" },
+  { key: "busyDescartar", label: "Descartar BUSY desde" },
+];
+const PAUSE_RULE_FIELDS: Array<{
+  key: keyof FuzzionRules;
+  label: string;
+}> = [
+  { key: "pausaVentanaDias", label: "Ventana de observacion (dias)" },
+  { key: "noAnswerPausa", label: "NOANSWER para pausar" },
+  { key: "answeringMachinePausa", label: "ANSWERING MACHINE para pausar" },
 ];
 
 function loadStoredFuzzionRules() {
@@ -317,8 +302,9 @@ function loadStoredFuzzionRules() {
     ) as Partial<FuzzionRules>;
     return FUZZION_RULE_KEYS.reduce((rules, key) => {
       const value = Math.floor(Number(stored[key]));
+      const max = key === "pausaVentanaDias" ? 35 : 100;
       rules[key] = Number.isFinite(value) && value > 0
-        ? Math.min(value, 100)
+        ? Math.min(value, max)
         : DEFAULT_FUZZION_RULES[key];
       return rules;
     }, { ...DEFAULT_FUZZION_RULES });
@@ -328,7 +314,7 @@ function loadStoredFuzzionRules() {
 }
 
 type FuzzionPauseReason = {
-  key: "INTENTOS_24H" | "INTENTOS_7D" | "NOANSWER_7D" | "BUZON_14D" | "INTENTOS_30D";
+  key: "NOANSWER_VENTANA" | "ANSWERING_MACHINE_VENTANA";
   label: string;
   hasta: string;
 };
@@ -338,61 +324,33 @@ function getLeadPause(
   rules: FuzzionRules,
   now = Date.now(),
 ) {
-  if (lead.contactosEfectivos > 0) {
-    return { pausado: false, pausadoHasta: "", motivos: [] as FuzzionPauseReason[] };
-  }
-  const lastCall = new Date(lead.ultimoLlamado).getTime();
-  if (!Number.isFinite(lastCall)) {
-    return { pausado: false, pausadoHasta: "", motivos: [] as FuzzionPauseReason[] };
-  }
-
   const motivos: FuzzionPauseReason[] = [];
+  const endOfDay = new Date(now);
+  endOfDay.setHours(23, 59, 59, 999);
+  const hasta = endOfDay.toISOString();
   const addReason = (
     active: boolean,
     key: FuzzionPauseReason["key"],
     label: string,
-    durationMs: number,
   ) => {
     if (!active) return;
-    const until = lastCall + durationMs;
-    if (until <= now) return;
-    motivos.push({ key, label, hasta: new Date(until).toISOString() });
+    motivos.push({ key, label, hasta });
   };
 
   addReason(
-    lead.intentos24h >= rules.intentos24hPausa,
-    "INTENTOS_24H",
-    `${rules.intentos24hPausa}+ intentos en 24 h`,
-    rules.pausa24hHoras * 60 * 60 * 1000,
+    lead.noAnswerVentana >= rules.noAnswerPausa,
+    "NOANSWER_VENTANA",
+    `${rules.noAnswerPausa}+ NOANSWER en ${rules.pausaVentanaDias} dias`,
   );
   addReason(
-    lead.intentos7d >= rules.intentos7dPausa,
-    "INTENTOS_7D",
-    `${rules.intentos7dPausa}+ intentos en 7 dias`,
-    rules.pausa7dDias * 24 * 60 * 60 * 1000,
-  );
-  addReason(
-    lead.noAnswer7d >= rules.noAnswer7dPausa,
-    "NOANSWER_7D",
-    `${rules.noAnswer7dPausa}+ NOANSWER en 7 dias`,
-    rules.pausaNoAnswerDias * 24 * 60 * 60 * 1000,
-  );
-  addReason(
-    lead.buzones14d >= rules.buzon14dPausa,
-    "BUZON_14D",
-    `${rules.buzon14dPausa}+ buzones en 14 dias`,
-    rules.pausaBuzonDias * 24 * 60 * 60 * 1000,
-  );
-  addReason(
-    lead.intentos30d >= rules.intentos30dPausa,
-    "INTENTOS_30D",
-    `${rules.intentos30dPausa}+ intentos en 30 dias`,
-    rules.pausa30dDias * 24 * 60 * 60 * 1000,
+    lead.answeringMachineVentana >= rules.answeringMachinePausa,
+    "ANSWERING_MACHINE_VENTANA",
+    `${rules.answeringMachinePausa}+ ANSWERING MACHINE en ${rules.pausaVentanaDias} dias`,
   );
 
   return {
     pausado: motivos.length > 0,
-    pausadoHasta: motivos.map((reason) => reason.hasta).sort().at(-1) ?? "",
+    pausadoHasta: motivos.length > 0 ? hasta : "",
     motivos,
   };
 }
@@ -418,7 +376,8 @@ function getLeadCategories(lead: FuzzionLeadPreview, rules: FuzzionRules) {
   const contactado = lead.contactosEfectivos > 0;
   const descartar =
     lead.invalidos >= rules.unallocatedDescartar ||
-    (lead.rechazados >= rules.rejectedDescartar && !contactado) ||
+    lead.rechazados >= rules.rejectedDescartar ||
+    lead.ocupados >= rules.busyDescartar ||
     lead.exclusionComercial;
   const pause = getLeadPause(lead, rules);
 
@@ -439,7 +398,7 @@ function isLeadSaturated(lead: FuzzionLeadPreview, rules: FuzzionRules) {
 
 function isLeadCallable(lead: FuzzionLeadPreview, rules: FuzzionRules) {
   return !getLeadCategories(lead, rules).includes("DESCARTAR") &&
-    (lead.contactosEfectivos > 0 || !isLeadSaturated(lead, rules));
+    !isLeadSaturated(lead, rules);
 }
 
 function getLeadReading(
@@ -471,9 +430,17 @@ function getLeadReading(
         icon: XCircle,
       };
     }
-    if (lead.rechazados >= rules.rejectedDescartar && !contactado) {
+    if (lead.rechazados >= rules.rejectedDescartar) {
       return {
         label: "No llamar: REJECTED",
+        variant: "destructive" as const,
+        className: "",
+        icon: XCircle,
+      };
+    }
+    if (lead.ocupados >= rules.busyDescartar) {
+      return {
+        label: "No llamar: BUSY",
         variant: "destructive" as const,
         className: "",
         icon: XCircle,
@@ -685,11 +652,12 @@ function FlatSelect({
   );
 }
 
-export function FuzzionTab({ onLog }: FuzzionTabProps) {
+function LegacyFuzzionTab({ onLog }: FuzzionTabProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const flatInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const [data, setData] = useState<FuzzionPreview | null>(null);
+  const [rulePreview, setRulePreview] = useState<FuzzionLeadPreview[] | null>(null);
   const [composition, setComposition] = useState<FuzzionComposition | null>(null);
   const [selectedCategories, setSelectedCategories] = useState<FuzzionCategory[]>([]);
   const [search, setSearch] = useState("");
@@ -743,8 +711,9 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
     : 0;
 
   const updateFuzzionRule = (key: keyof FuzzionRules, value: number) => {
+    const max = key === "pausaVentanaDias" ? 35 : 100;
     const nextValue = Math.min(
-      100,
+      max,
       Math.max(1, Math.floor(value || DEFAULT_FUZZION_RULES[key])),
     );
     setFuzzionRules((current) => ({ ...current, [key]: nextValue }));
@@ -811,6 +780,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
     if (!data) {
       setSelectedExportCount(null);
       setSelectionSummary(null);
+      setRulePreview(null);
       setCountingSelection(false);
       return;
     }
@@ -822,7 +792,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
       setCountingSelection(false);
       setSelectedExportCount(null);
       setSelectionSummary(null);
-    }, 4_000);
+    }, 12_000);
     const timer = window.setTimeout(() => {
       fetch(`/api/fuzzion/${data.id}/count`, {
         method: "POST",
@@ -845,11 +815,13 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
         .then((payload: FuzzionSelectionSummary) => {
           setSelectedExportCount(payload.exportableLines);
           setSelectionSummary(payload);
+          setRulePreview(payload.preview ?? null);
         })
         .catch((error) => {
           if (error instanceof DOMException && error.name === "AbortError") return;
           setSelectedExportCount(null);
           setSelectionSummary(null);
+          setRulePreview(null);
         })
         .finally(() => {
           window.clearTimeout(timeout);
@@ -936,6 +908,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
     : filterMode === "RECOMENDACION"
       ? selectedCategories.map((value) => categoryOptions.find((item) => item.value === value)?.label || value).join(" + ") || "Todos"
       : filterValues.join(" + ") || "Todos";
+  const activePreview = rulePreview ?? data?.preview ?? [];
   const operationalSummary = useMemo(() => {
     if (!data) {
       return {
@@ -953,7 +926,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
       segmentar: 0,
     };
 
-    for (const lead of data.preview) {
+    for (const lead of activePreview) {
       const leadCategories = getLeadCategories(lead, fuzzionRules);
       const descartar = leadCategories.includes("DESCARTAR");
       const contactado = leadCategories.includes("CONTACTADO");
@@ -968,7 +941,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
     }
 
     return summary;
-  }, [data, fuzzionRules]);
+  }, [activePreview, data, fuzzionRules]);
   const cardDetailSummary = useMemo(() => {
     const empty = {
       contactosEfectivos: 0,
@@ -977,18 +950,19 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
       descartes: 0,
       pausasTemporales: 0,
       descarteComercial: 0,
-      descarteUnallocatedRejected: 0,
+      descarteTecnico: 0,
     };
     if (!data) return empty;
 
-    return data.preview.reduce((summary, lead) => {
+    return activePreview.reduce((summary, lead) => {
       const leadCategories = getLeadCategories(lead, fuzzionRules);
       const contactado = leadCategories.includes("CONTACTADO");
       const descartar = leadCategories.includes("DESCARTAR");
       const callable = isLeadCallable(lead, fuzzionRules);
-      const descartePorUnallocatedRejected =
+      const descarteTecnico =
         lead.invalidos >= fuzzionRules.unallocatedDescartar ||
-        (lead.rechazados >= fuzzionRules.rejectedDescartar && lead.contactosEfectivos === 0);
+        lead.rechazados >= fuzzionRules.rejectedDescartar ||
+        lead.ocupados >= fuzzionRules.busyDescartar;
 
       if (contactado) summary.contactosEfectivos += 1;
       if (contactado && callable) summary.contactosSegmentables += 1;
@@ -998,18 +972,18 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
         summary.pausasTemporales += 1;
       }
       if (lead.exclusionComercial) summary.descarteComercial += 1;
-      if (descartePorUnallocatedRejected) summary.descarteUnallocatedRejected += 1;
+      if (descarteTecnico) summary.descarteTecnico += 1;
 
       return summary;
     }, { ...empty });
-  }, [data, fuzzionRules]);
+  }, [activePreview, data, fuzzionRules]);
 
   const visiblePreview = useMemo(() => {
     if (!data) return [];
     const query = search.trim().toLowerCase();
     const cutoff = rangeDays > 0 ? Date.now() - rangeDays * 86400000 : 0;
 
-    return data.preview.filter((lead) => {
+    return activePreview.filter((lead) => {
       const leadCategories = getLeadCategories(lead, fuzzionRules);
       if (exportMode === "DEPURADO" && !isLeadCallable(lead, fuzzionRules)) return false;
       const reviewingExcludedCatalog =
@@ -1058,7 +1032,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
       return [lead.linea, lead.razonSocial, lead.documento, lead.mercadoActual, lead.planActual, lead.ultimoEstado, lead.ultimoSubestado, lead.resultadoGestion, lead.subresultadoGestion, ...lead.bases]
         .some((value) => String(value).toLowerCase().includes(query));
     });
-  }, [data, exportMode, filterMode, filterValues, fuzzionRules, rangeDays, search, selectedCategories]);
+  }, [activePreview, data, exportMode, filterMode, filterValues, fuzzionRules, rangeDays, search, selectedCategories]);
 
   const flatDbName = data?.fileName
     ? data.fileName.replace(/\.[^.]+$/, "")
@@ -1684,7 +1658,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                   Reglas de depuracion
                 </span>
                 <Badge variant="outline" className="rounded px-2 text-[11px]">
-                  Ventanas 24 h · 7 d · 14 d · 30 d
+                  Descarte permanente · Pausa diaria
                 </Badge>
               </span>
               <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${rulesOpen ? "rotate-180" : ""}`} />
@@ -1693,48 +1667,88 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
             {rulesOpen ? (
               <div className="space-y-4 px-5 py-4">
                 <p className="text-xs text-muted-foreground">
-                  El descarte definitivo queda reservado para señales técnicas o
-                  comerciales. Las ventanas recientes sólo pausan líneas sin contacto
-                  efectivo y las reactivan automáticamente al vencer. La configuración
-                  queda guardada en este navegador.
+                  Las reglas de descarte quitan el ANI del lote depurado sin borrar su
+                  historial. Las reglas de pausa lo apartan hasta finalizar el día y se
+                  vuelven a evaluar al día siguiente.
                 </p>
 
-                <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-4">
-                  {FUZZION_RULE_FIELDS.map(({ key, label }) => (
-                    <label key={key} className="space-y-2 text-xs text-muted-foreground">
-                      <span className="block min-h-[28px] text-[10px] font-bold uppercase tracking-[0.12em]">
-                        {label}
-                      </span>
-                      <div className="grid h-10 grid-cols-[2.25rem_1fr_2.25rem] overflow-hidden border border-primary/25 bg-background transition-colors focus-within:border-primary/70 focus-within:ring-1 focus-within:ring-primary/50">
-                        <button
-                          type="button"
-                          className="flex items-center justify-center border-r border-primary/20 text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary disabled:opacity-40"
-                          disabled={fuzzionRules[key] <= 1}
-                          onClick={() => updateFuzzionRule(key, fuzzionRules[key] - 1)}
-                          aria-label={`Bajar ${label}`}
-                        >
-                          <Minus className="h-3.5 w-3.5" />
-                        </button>
-                        <Input
-                          type="text"
-                          inputMode="numeric"
-                          pattern="[0-9]*"
-                          value={fuzzionRules[key]}
-                          onChange={(event) => updateFuzzionRule(key, Number(event.target.value))}
-                          className="h-10 rounded-none border-0 bg-transparent px-2 text-center font-semibold shadow-none focus-visible:ring-0"
-                        />
-                        <button
-                          type="button"
-                          className="flex items-center justify-center border-l border-primary/20 text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
-                          onClick={() => updateFuzzionRule(key, fuzzionRules[key] + 1)}
-                          aria-label={`Subir ${label}`}
-                        >
-                          <Plus className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </label>
-                  ))}
-                </div>
+                {[
+                  {
+                    title: "Reglas de descarte",
+                    description:
+                      "UNALLOCATED, REJECTED o BUSY alcanzan el umbral configurado. También se mantienen las exclusiones comerciales.",
+                    fields: DISCARD_RULE_FIELDS,
+                    kind: "discard",
+                  },
+                  {
+                    title: "Reglas de pausa",
+                    description:
+                      "Cualquiera de los dos umbrales activa una pausa hasta las 23:59. La ventana de observación es modificable.",
+                    fields: PAUSE_RULE_FIELDS,
+                    kind: "pause",
+                  },
+                ].map((group) => (
+                  <div
+                    key={group.kind}
+                    className={cn(
+                      "border p-4",
+                      group.kind === "discard"
+                        ? "border-destructive/30 bg-destructive/[0.035]"
+                        : "border-warning/30 bg-warning/[0.035]",
+                    )}
+                  >
+                    <p
+                      className={cn(
+                        "text-xs font-black uppercase tracking-[0.14em]",
+                        group.kind === "discard"
+                          ? "text-destructive"
+                          : "text-warning",
+                      )}
+                    >
+                      {group.title}
+                    </p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      {group.description}
+                    </p>
+
+                    <div className="mt-4 grid gap-3 md:grid-cols-3">
+                      {group.fields.map(({ key, label }) => (
+                        <label key={key} className="space-y-2 text-xs text-muted-foreground">
+                          <span className="block min-h-[28px] text-[10px] font-bold uppercase tracking-[0.12em]">
+                            {label}
+                          </span>
+                          <div className="grid h-10 grid-cols-[2.25rem_1fr_2.25rem] overflow-hidden border border-primary/25 bg-background transition-colors focus-within:border-primary/70 focus-within:ring-1 focus-within:ring-primary/50">
+                            <button
+                              type="button"
+                              className="flex items-center justify-center border-r border-primary/20 text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary disabled:opacity-40"
+                              disabled={fuzzionRules[key] <= 1}
+                              onClick={() => updateFuzzionRule(key, fuzzionRules[key] - 1)}
+                              aria-label={`Bajar ${label}`}
+                            >
+                              <Minus className="h-3.5 w-3.5" />
+                            </button>
+                            <Input
+                              type="text"
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              value={fuzzionRules[key]}
+                              onChange={(event) => updateFuzzionRule(key, Number(event.target.value))}
+                              className="h-10 rounded-none border-0 bg-transparent px-2 text-center font-semibold shadow-none focus-visible:ring-0"
+                            />
+                            <button
+                              type="button"
+                              className="flex items-center justify-center border-l border-primary/20 text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
+                              onClick={() => updateFuzzionRule(key, fuzzionRules[key] + 1)}
+                              aria-label={`Subir ${label}`}
+                            >
+                              <Plus className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ))}
 
                 <Button
                   type="button"
@@ -2005,8 +2019,8 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                     <strong className="text-foreground">{cardDetailSummary.descarteComercial.toLocaleString("es-AR")}</strong>
                   </div>
                   <div className="flex items-center justify-between gap-3">
-                    <span className="text-muted-foreground">UNALLOCATED / REJECTED</span>
-                    <strong className="text-foreground">{cardDetailSummary.descarteUnallocatedRejected.toLocaleString("es-AR")}</strong>
+                    <span className="text-muted-foreground">UNALLOCATED / REJECTED / BUSY</span>
+                    <strong className="text-foreground">{cardDetailSummary.descarteTecnico.toLocaleString("es-AR")}</strong>
                   </div>
                 </div>
                 <p className="mt-3 text-xs text-muted-foreground">
@@ -2116,7 +2130,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                       {[
                         [showingSelectionComposition ? "Total selección" : "Total cargado", displayedComposition.totalLineas],
                         ["Queda en lote depurado", displayedComposition.loteDepurado],
-                        ["Pausa saturada sin contacto", displayedComposition.pausadasSaturacion ?? 0],
+                        ["Pausa diaria activa", displayedComposition.pausadasSaturacion ?? 0],
                         ["Descarte definitivo", displayedComposition.descartadas],
                         ["Máximo de intentos", displayedComposition.maxIntentos],
                       ].map(([label, value]) => (
@@ -2383,7 +2397,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                   <SlidersHorizontal className="h-4 w-4 text-primary" />
                   Reglas de depuración
                   <Badge variant="outline">
-                    Ventanas 24 h · 7 d · 14 d · 30 d
+                    Descarte permanente · Pausa diaria
                   </Badge>
                 </span>
                 <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${rulesOpen ? "rotate-180" : ""}`} />
@@ -2392,12 +2406,11 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
               {rulesOpen ? (
                 <div className="space-y-3 border-t border-border p-3">
                   <p className="text-xs text-muted-foreground">
-                    Descarte quita una línea por señal técnica o comercial. Saturación pausa
-                    líneas sin contacto efectivo para el lote diario, sin borrarlas del
-                    historial. La configuración queda guardada en este navegador.
+                    Descarte quita una línea por señal técnica o comercial. La pausa diaria
+                    usa una ventana variable de NOANSWER y ANSWERING MACHINE.
                   </p>
                   <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-4">
-                    {FUZZION_RULE_FIELDS.map(({ key, label }) => (
+                    {[...DISCARD_RULE_FIELDS, ...PAUSE_RULE_FIELDS].map(({ key, label }) => (
                       <label key={key} className="space-y-1 text-xs text-muted-foreground">
                         <span>{label}</span>
                         <div className="grid h-10 grid-cols-[2.25rem_1fr_2.25rem] overflow-hidden rounded-lg border border-border bg-card/60 transition-colors focus-within:border-primary/70 focus-within:ring-1 focus-within:ring-primary/50">
@@ -2524,11 +2537,14 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
             mismo tiempo.
           </p>
           <p>
-            Contacto efectivo = al menos 1 ANSWER + AGENT. Las pausas usan
-            ventanas móviles de 24 horas, 7, 14 y 30 días y se levantan
-            automáticamente al vencer. Descarte definitivo ={" "}
-            {fuzzionRules.unallocatedDescartar} UNALLOCATED o{" "}
-            {fuzzionRules.rejectedDescartar} REJECTED sin contacto efectivo.
+            Contacto efectivo = al menos 1 ANSWER + AGENT. La pausa evalúa los
+            últimos {fuzzionRules.pausaVentanaDias} días y dura hasta las 23:59
+            cuando hay {fuzzionRules.noAnswerPausa}+ NOANSWER o{" "}
+            {fuzzionRules.answeringMachinePausa}+ ANSWERING MACHINE. Descarte
+            definitivo ={" "}
+            {fuzzionRules.unallocatedDescartar} UNALLOCATED,{" "}
+            {fuzzionRules.rejectedDescartar} REJECTED o{" "}
+            {fuzzionRules.busyDescartar} BUSY.
           </p>
         </div>
 
@@ -2583,7 +2599,7 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
                   </p>
                 </div>
                 <div className="rounded-lg border border-amber-500/35 p-3">
-                  <p className="text-[11px] uppercase text-muted-foreground">Pausas sin contacto</p>
+                  <p className="text-[11px] uppercase text-muted-foreground">Pausas diarias activas</p>
                   <p className="mt-1 text-2xl font-bold text-amber-600 dark:text-amber-400">
                     {(exportReviewComposition?.pausadasSaturacion ?? 0).toLocaleString("es-AR")}
                   </p>
@@ -2773,5 +2789,14 @@ export function FuzzionTab({ onLog }: FuzzionTabProps) {
       </CardContent>
     </Card>
   );
+}
+
+export function FuzzionTab(props: FuzzionTabProps) {
+  const fuzzionV2LocalIntegration = import.meta.env.DEV &&
+    resolveFuzzionDevelopmentUi(window.location.search) === "v2";
+
+  return fuzzionV2LocalIntegration
+    ? <FuzzionV2Tab {...props} />
+    : <LegacyFuzzionTab {...props} />;
 }
 

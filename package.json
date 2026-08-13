@@ -8,6 +8,10 @@
     "build": "tsx script/build.ts",
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
+    "test:fuzzion-v2": "tsx --test server/fuzzionFilterEngine.test.ts server/fuzzionV2Ui.test.ts",
+    "test:fuzzion-v2:endpoints": "tsx script/test-fuzzion-v2-endpoints.ts",
+    "test:fuzzion-v2:configs": "tsx script/test-fuzzion-v2-configs.ts",
+    "validate:fuzzion-v2:operational": "tsx script/validate-fuzzion-v2-operational.ts",
     "db:push": "drizzle-kit push"
   },
   "dependencies": {

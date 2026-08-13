@@ -7,29 +7,40 @@ import fs from "fs";
 import path from "path";
 import { Worker } from "node:worker_threads";
 import { Readable } from "node:stream";
+import { performance } from "node:perf_hooks";
 
 import { storage, processCallRecords, generateCSV, applyRecordFilters, computeAnalysisMeta } from "./storage";
 import {
   deleteAllLocalHistory,
+  createFuzzionFilterConfig,
+  deleteFuzzionFilterConfig,
   deleteImportedFile,
   deleteTicketHistory,
   getAllHistoryRecords,
   getHistorySummaryForAnis,
+  getFuzzionHistorySnapshot,
+  getFuzzionFilterConfig,
   getLatestGestionForAnis,
   getLocalDbHealth,
   getOperationLogEntries,
+  getPauseWindowSummaryForAnis,
   getImportedFiles,
   getGestionAnisForCatalog,
   getGestionCatalog,
   getLocalHistoryStats,
+  listFuzzionFilterConfigs,
   getNeotelReportStats,
   getNeotelReportDates,
   getRecordsForImportedFile,
   getRecordsForImportedFiles,
   saveNeotelReport,
   saveOperationLogEntry,
+  setDefaultFuzzionFilterConfig,
+  updateFuzzionFilterConfig,
+  FuzzionFilterConfigStoreError,
 } from "./localDb";
 import type { AnalysisResult, RecordsFilter } from "@shared/schema";
+import type { FuzzionHistorySnapshot } from "@shared/fuzzionFilters";
 import type { LocalAniHistorySummary } from "./localDb";
 import { randomUUID } from "crypto";
 import { parseNeotelReport } from "./neotelReports.ts";
@@ -41,6 +52,12 @@ import {
   getNeotelFtpPublicStatus,
   syncNeotelReportsFromFtp,
 } from "./neotelFtp.ts";
+import { FuzzionFilterValidationError } from "./fuzzionFilterEngine.ts";
+import {
+  evaluateFuzzionSessionV2,
+  getFuzzionSessionOptionsV2,
+  withFuzzionV2FileMetrics,
+} from "./fuzzionV2.ts";
 
 // Guardamos archivos temporales en disco para no cargar todo en RAM.
 const UPLOAD_TMP_DIR = path.resolve(process.cwd(), "uploads_tmp");
@@ -393,16 +410,10 @@ type FuzzionCategory =
 type FuzzionRules = {
   unallocatedDescartar: number;
   rejectedDescartar: number;
-  intentos24hPausa: number;
-  pausa24hHoras: number;
-  intentos7dPausa: number;
-  pausa7dDias: number;
-  noAnswer7dPausa: number;
-  pausaNoAnswerDias: number;
-  buzon14dPausa: number;
-  pausaBuzonDias: number;
-  intentos30dPausa: number;
-  pausa30dDias: number;
+  busyDescartar: number;
+  pausaVentanaDias: number;
+  noAnswerPausa: number;
+  answeringMachinePausa: number;
 };
 
 type FuzzionLead = {
@@ -425,12 +436,13 @@ type FuzzionLead = {
   noAnswer: number;
   invalidos: number;
   rechazados: number;
+  ocupados: number;
   intentos24h: number;
   intentos7d: number;
   intentos14d: number;
   intentos30d: number;
-  noAnswer7d: number;
-  buzones14d: number;
+  noAnswerVentana: number;
+  answeringMachineVentana: number;
   ultimoLlamado: string;
   ultimoEstado: string;
   ultimoSubestado: string;
@@ -455,48 +467,187 @@ type FuzzionSession = {
   fileName: string;
   leads: FuzzionLead[];
   createdAt: number;
+  historySnapshot: FuzzionHistorySnapshot | null;
+  historySnapshotError: string;
+  pauseWindowCache: Map<
+    number,
+    {
+      createdAt: number;
+      values: Map<string, { noAnswer: number; answeringMachine: number }>;
+    }
+  >;
 };
 
+class FuzzionV2UnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FuzzionV2UnavailableError";
+  }
+}
+
 const fuzzionSessions = new Map<string, FuzzionSession>();
+
+function evaluateStoredFuzzionSessionV2(
+  session: FuzzionSession,
+  criteriaInput: unknown,
+) {
+  if (!session.historySnapshot) {
+    throw new FuzzionV2UnavailableError(
+      session.historySnapshotError ||
+      "La sesion no tiene un snapshot historico completo para ejecutar V2.",
+    );
+  }
+  return evaluateFuzzionSessionV2(
+    session.leads.map((lead) => lead.linea),
+    session.historySnapshot,
+    criteriaInput,
+  );
+}
+
+function getStoredFuzzionOptionsV2(
+  session: FuzzionSession,
+  input: unknown,
+) {
+  if (!session.historySnapshot) {
+    throw new FuzzionV2UnavailableError(
+      session.historySnapshotError ||
+      "La sesion no tiene un snapshot historico completo para ejecutar V2.",
+    );
+  }
+  return getFuzzionSessionOptionsV2(
+    session.leads.map((lead) => lead.linea),
+    session.historySnapshot,
+    input,
+  );
+}
+
+function sendFuzzionV2Error(res: Response, error: unknown) {
+  if (error instanceof FuzzionFilterValidationError) {
+    return res.status(400).json({
+      engine: "v2",
+      message: error.message,
+    });
+  }
+  if (error instanceof FuzzionV2UnavailableError) {
+    return res.status(503).json({
+      engine: "v2",
+      message: error.message,
+    });
+  }
+  console.error("Error interno Fuzzion V2:", error);
+  return res.status(500).json({
+    engine: "v2",
+    message: "No se pudo evaluar el lote con el motor V2.",
+    detail: error instanceof Error ? error.message : String(error),
+  });
+}
+
+function sendFuzzionFilterConfigError(res: Response, error: unknown) {
+  if (error instanceof FuzzionFilterValidationError) {
+    return res.status(400).json({ message: error.message });
+  }
+  if (error instanceof FuzzionFilterConfigStoreError) {
+    const status = error.code === "NOT_FOUND"
+      ? 404
+      : error.code === "DUPLICATE_NAME"
+        ? 409
+        : error.code === "VALIDATION"
+          ? 400
+          : 500;
+    return res.status(status).json({ message: error.message, code: error.code });
+  }
+  console.error("Error administrando configuraciones Fuzzion V2:", error);
+  return res.status(500).json({
+    message: "No se pudo administrar la configuracion Fuzzion V2.",
+  });
+}
+
+function buildFuzzionV2JsonResponse(
+  session: FuzzionSession,
+  result: ReturnType<typeof evaluateFuzzionSessionV2>,
+) {
+  return {
+    engine: "v2",
+    sessionId: session.id,
+    snapshot: session.historySnapshot,
+    criteria: result.criteria,
+    rows: result.evaluation.totals.included,
+    exportableLines: result.evaluation.totals.included,
+    totals: result.evaluation.totals,
+    stats: {
+      initial: result.evaluation.totals.initial,
+      included: result.evaluation.totals.included,
+      excluded: result.evaluation.totals.excluded,
+      protectedByEffectiveContact:
+        result.evaluation.totals.protectedByEffectiveContact,
+      conditionsMatched: result.breakdown.reduce(
+        (total, item) => total + item.matchingAnis,
+        0,
+      ),
+    },
+    breakdown: result.breakdown,
+    preview: result.evaluation.decisions.slice(0, 250),
+    metrics: result.metrics,
+  };
+}
 
 const DEFAULT_FUZZION_RULES: FuzzionRules = {
   unallocatedDescartar: 3,
   rejectedDescartar: 3,
-  intentos24hPausa: 3,
-  pausa24hHoras: 24,
-  intentos7dPausa: 9,
-  pausa7dDias: 7,
-  noAnswer7dPausa: 6,
-  pausaNoAnswerDias: 5,
-  buzon14dPausa: 5,
-  pausaBuzonDias: 3,
-  intentos30dPausa: 20,
-  pausa30dDias: 21,
+  busyDescartar: 3,
+  pausaVentanaDias: 5,
+  noAnswerPausa: 5,
+  answeringMachinePausa: 5,
 };
 
 function parseFuzzionRules(input: unknown): FuzzionRules {
   const raw = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
-  const read = (key: keyof FuzzionRules) => {
+  const read = (key: keyof FuzzionRules, max = 100) => {
     const value = Math.floor(Number(raw[key]));
     return Number.isFinite(value) && value > 0
-      ? Math.min(value, 100)
+      ? Math.min(value, max)
       : DEFAULT_FUZZION_RULES[key];
   };
 
   return {
     unallocatedDescartar: read("unallocatedDescartar"),
     rejectedDescartar: read("rejectedDescartar"),
-    intentos24hPausa: read("intentos24hPausa"),
-    pausa24hHoras: read("pausa24hHoras"),
-    intentos7dPausa: read("intentos7dPausa"),
-    pausa7dDias: read("pausa7dDias"),
-    noAnswer7dPausa: read("noAnswer7dPausa"),
-    pausaNoAnswerDias: read("pausaNoAnswerDias"),
-    buzon14dPausa: read("buzon14dPausa"),
-    pausaBuzonDias: read("pausaBuzonDias"),
-    intentos30dPausa: read("intentos30dPausa"),
-    pausa30dDias: read("pausa30dDias"),
+    busyDescartar: read("busyDescartar"),
+    pausaVentanaDias: read("pausaVentanaDias", 35),
+    noAnswerPausa: read("noAnswerPausa"),
+    answeringMachinePausa: read("answeringMachinePausa"),
   };
+}
+
+function getFuzzionLeadsForRules(
+  session: FuzzionSession,
+  rules: FuzzionRules,
+) {
+  const days = rules.pausaVentanaDias;
+  const cached = session.pauseWindowCache.get(days);
+  const cacheValid = cached && Date.now() - cached.createdAt < 5 * 60 * 1000;
+  const values = cacheValid
+    ? cached.values
+    : getPauseWindowSummaryForAnis(
+        session.leads.map((lead) => lead.linea),
+        days,
+      );
+
+  if (!cacheValid) {
+    session.pauseWindowCache.set(days, {
+      createdAt: Date.now(),
+      values,
+    });
+  }
+
+  return session.leads.map((lead) => {
+    const windowSummary = values.get(lead.linea);
+    return {
+      ...lead,
+      noAnswerVentana: windowSummary?.noAnswer ?? 0,
+      answeringMachineVentana: windowSummary?.answeringMachine ?? 0,
+    };
+  });
 }
 
 function normalizeHeader(value: unknown) {
@@ -545,17 +696,12 @@ function getFuzzionColumnText(row: Record<string, unknown>, column: string) {
 }
 
 type FuzzionPauseSource = {
-  contactosEfectivos: number;
-  intentos24h: number;
-  intentos7d: number;
-  intentos30d: number;
-  noAnswer7d: number;
-  buzones14d: number;
-  ultimoLlamado: string;
+  noAnswerVentana: number;
+  answeringMachineVentana: number;
 };
 
 type FuzzionPauseReason = {
-  key: "INTENTOS_24H" | "INTENTOS_7D" | "NOANSWER_7D" | "BUZON_14D" | "INTENTOS_30D";
+  key: "NOANSWER_VENTANA" | "ANSWERING_MACHINE_VENTANA";
   label: string;
   hasta: string;
 };
@@ -565,64 +711,35 @@ function getFuzzionPauseEvaluation(
   rules: FuzzionRules = DEFAULT_FUZZION_RULES,
   now = Date.now(),
 ) {
-  if (source.contactosEfectivos > 0) {
-    return { pausado: false, pausadoHasta: "", motivos: [] as FuzzionPauseReason[] };
-  }
-
-  const lastCall = new Date(source.ultimoLlamado).getTime();
-  if (!Number.isFinite(lastCall)) {
-    return { pausado: false, pausadoHasta: "", motivos: [] as FuzzionPauseReason[] };
-  }
-
   const reasons: FuzzionPauseReason[] = [];
+  const endOfDay = new Date(now);
+  endOfDay.setHours(23, 59, 59, 999);
+  const hasta = endOfDay.toISOString();
   const addReason = (
     active: boolean,
     key: FuzzionPauseReason["key"],
     label: string,
-    durationMs: number,
   ) => {
     if (!active) return;
-    const until = lastCall + durationMs;
-    if (until <= now) return;
-    reasons.push({ key, label, hasta: new Date(until).toISOString() });
+    reasons.push({ key, label, hasta });
   };
 
   addReason(
-    source.intentos24h >= rules.intentos24hPausa,
-    "INTENTOS_24H",
-    `${rules.intentos24hPausa}+ intentos en 24 h`,
-    rules.pausa24hHoras * 60 * 60 * 1000,
+    source.noAnswerVentana >= rules.noAnswerPausa,
+    "NOANSWER_VENTANA",
+    `${rules.noAnswerPausa}+ NOANSWER en ${rules.pausaVentanaDias} dias`,
   );
   addReason(
-    source.intentos7d >= rules.intentos7dPausa,
-    "INTENTOS_7D",
-    `${rules.intentos7dPausa}+ intentos en 7 dias`,
-    rules.pausa7dDias * 24 * 60 * 60 * 1000,
-  );
-  addReason(
-    source.noAnswer7d >= rules.noAnswer7dPausa,
-    "NOANSWER_7D",
-    `${rules.noAnswer7dPausa}+ NOANSWER en 7 dias`,
-    rules.pausaNoAnswerDias * 24 * 60 * 60 * 1000,
-  );
-  addReason(
-    source.buzones14d >= rules.buzon14dPausa,
-    "BUZON_14D",
-    `${rules.buzon14dPausa}+ buzones en 14 dias`,
-    rules.pausaBuzonDias * 24 * 60 * 60 * 1000,
-  );
-  addReason(
-    source.intentos30d >= rules.intentos30dPausa,
-    "INTENTOS_30D",
-    `${rules.intentos30dPausa}+ intentos en 30 dias`,
-    rules.pausa30dDias * 24 * 60 * 60 * 1000,
+    source.answeringMachineVentana >= rules.answeringMachinePausa,
+    "ANSWERING_MACHINE_VENTANA",
+    `${rules.answeringMachinePausa}+ ANSWERING MACHINE en ${rules.pausaVentanaDias} dias`,
   );
 
-  const pausadoHasta = reasons
-    .map((reason) => reason.hasta)
-    .sort()
-    .at(-1) ?? "";
-  return { pausado: reasons.length > 0, pausadoHasta, motivos: reasons };
+  return {
+    pausado: reasons.length > 0,
+    pausadoHasta: reasons.length > 0 ? hasta : "",
+    motivos: reasons,
+  };
 }
 
 function getFuzzionLeadCategories(
@@ -640,7 +757,8 @@ function getFuzzionLeadCategories(
   const contactado = lead.contactosEfectivos > 0;
   const descartar =
     lead.invalidos >= rules.unallocatedDescartar ||
-    (lead.rechazados >= rules.rejectedDescartar && !contactado) ||
+    lead.rechazados >= rules.rejectedDescartar ||
+    lead.ocupados >= rules.busyDescartar ||
     lead.exclusionComercial;
   const pause = getFuzzionPauseEvaluation(lead, rules);
 
@@ -669,7 +787,7 @@ function isFuzzionLeadCallable(
 ) {
   const categories = getFuzzionLeadCategories(lead, rules);
   return !categories.includes("DESCARTAR") &&
-    (lead.contactosEfectivos > 0 || !isFuzzionLeadSaturated(lead, rules));
+    !isFuzzionLeadSaturated(lead, rules);
 }
 
 type FuzzionFilterMode = "RECOMENDACION" | "ESTADO" | "CATALOGACION";
@@ -766,8 +884,11 @@ function getFuzzionDiscardReason(
   if (lead.invalidos >= rules.unallocatedDescartar) {
     technicalReasons.push(`UNALLOCATED ${rules.unallocatedDescartar}+`);
   }
-  if (lead.rechazados >= rules.rejectedDescartar && lead.contactosEfectivos === 0) {
-    technicalReasons.push(`REJECTED ${rules.rejectedDescartar}+ sin contacto`);
+  if (lead.rechazados >= rules.rejectedDescartar) {
+    technicalReasons.push(`REJECTED ${rules.rejectedDescartar}+`);
+  }
+  if (lead.ocupados >= rules.busyDescartar) {
+    technicalReasons.push(`BUSY ${rules.busyDescartar}+`);
   }
   return technicalReasons;
 }
@@ -899,7 +1020,7 @@ function buildFuzzionStats(
 }
 
 function buildFuzzionSelectionBreakdown(
-  session: FuzzionSession,
+  leads: FuzzionLead[],
   filterMode: FuzzionFilterMode,
   categories: FuzzionCategory[],
   filterValues: string[],
@@ -915,7 +1036,7 @@ function buildFuzzionSelectionBreakdown(
     const itemCategories = filterMode === "RECOMENDACION" ? [value as FuzzionCategory] : categories;
     const itemFilterValues = filterMode === "RECOMENDACION" ? filterValues : [value];
     const filtered = filterFuzzionLeads(
-      session.leads,
+      leads,
       itemCategories,
       search,
       filterMode,
@@ -1547,11 +1668,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
       const duplicateRows = parsedRows.length - uniqueParsedRows.length;
       const lineas = uniqueParsedRows.map((item) => item.linea);
+      let historySnapshot: FuzzionHistorySnapshot | null = null;
+      let historySnapshotError = "";
+      try {
+        historySnapshot = getFuzzionHistorySnapshot();
+      } catch (error) {
+        historySnapshotError = error instanceof Error
+          ? error.message
+          : String(error);
+        console.error("Snapshot Fuzzion V2 no disponible:", error);
+      }
       const history = getHistorySummaryForAnis(lineas);
+      const defaultPauseWindow = getPauseWindowSummaryForAnis(
+        lineas,
+        DEFAULT_FUZZION_RULES.pausaVentanaDias,
+      );
       const gestiones = getLatestGestionForAnis(lineas);
 
       const leads: FuzzionLead[] = uniqueParsedRows.map(({ row, rowNumber, linea }) => {
         const summary = history.get(linea);
+        const pauseWindow = defaultPauseWindow.get(linea);
         const gestion = gestiones.get(linea);
 
         const lead: FuzzionLead = {
@@ -1574,12 +1710,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           noAnswer: summary?.intentosNoAnswer ?? 0,
           invalidos: summary?.intentosUnallocated ?? 0,
           rechazados: summary?.intentosRejected ?? 0,
+          ocupados: summary?.intentosBusy ?? 0,
           intentos24h: summary?.intentos24h ?? 0,
           intentos7d: summary?.intentos7d ?? 0,
           intentos14d: summary?.intentos14d ?? 0,
           intentos30d: summary?.intentos30d ?? 0,
-          noAnswer7d: summary?.noAnswer7d ?? 0,
-          buzones14d: summary?.buzones14d ?? 0,
+          noAnswerVentana: pauseWindow?.noAnswer ?? 0,
+          answeringMachineVentana: pauseWindow?.answeringMachine ?? 0,
           ultimoLlamado: summary?.ultimoLlamado ?? "",
           ultimoEstado: summary?.ultimoEstado ?? "",
           ultimoSubestado: summary?.ultimoSubestado ?? "",
@@ -1602,6 +1739,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         fileName: uploadedFile.originalname,
         leads,
         createdAt: Date.now(),
+        historySnapshot,
+        historySnapshotError,
+        pauseWindowCache: new Map([
+          [
+            DEFAULT_FUZZION_RULES.pausaVentanaDias,
+            { createdAt: Date.now(), values: defaultPauseWindow },
+          ],
+        ]),
       };
       fuzzionSessions.set(session.id, session);
 
@@ -1655,7 +1800,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
     }
 
-    return res.json(buildFuzzionComposition(session.leads));
+    const leads = getFuzzionLeadsForRules(session, DEFAULT_FUZZION_RULES);
+    return res.json(buildFuzzionComposition(leads));
   });
 
   app.post("/api/fuzzion/:id/stats", (req, res) => {
@@ -1667,7 +1813,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     const rules = parseFuzzionRules(req.body?.rules);
-    return res.json(buildFuzzionStats(session.leads, rules));
+    const leads = getFuzzionLeadsForRules(session, rules);
+    return res.json(buildFuzzionStats(leads, rules));
   });
 
   app.post("/api/fuzzion/:id/count", (req, res) => {
@@ -1691,9 +1838,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const rangeDays = Math.max(0, Number(req.body?.rangeDays) || 0);
     const exportMode = String(req.body?.exportMode || "SEGMENTO") as FuzzionExportMode;
     const rules = parseFuzzionRules(req.body?.rules);
+    const leads = getFuzzionLeadsForRules(session, rules);
 
     const filtered = filterFuzzionLeads(
-      session.leads,
+      leads,
       categories,
       search,
       filterMode,
@@ -1703,7 +1851,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       rules,
     );
     const scoped = filterFuzzionLeads(
-      session.leads,
+      leads,
       categories,
       search,
       filterMode,
@@ -1719,7 +1867,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       exportableLines: countUniqueFuzzionLines(filtered),
       composition: buildFuzzionComposition(scoped, rules),
       selections: buildFuzzionSelectionBreakdown(
-        session,
+        leads,
         filterMode,
         categories,
         filterValues,
@@ -1728,6 +1876,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         exportMode,
         rules,
       ),
+      preview: leads.slice(0, 250),
     });
   });
 
@@ -1752,6 +1901,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const rangeDays = Math.max(0, Number(req.body?.rangeDays) || 0);
     const exportMode = String(req.body?.exportMode || "SEGMENTO") as FuzzionExportMode;
     const rules = parseFuzzionRules(req.body?.rules);
+    const leads = getFuzzionLeadsForRules(session, rules);
     const allowedCategories: FuzzionCategory[] = [
       "TODOS",
       "NUNCA_TRABAJADO",
@@ -1771,7 +1921,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
 
     const filtered = filterFuzzionLeads(
-      session.leads,
+      leads,
       categories,
       search,
       filterMode,
@@ -1804,6 +1954,208 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       `attachment; filename=lote_neotel_${exportMode === "DEPURADO" ? "depurado" : "segmento"}_${date}.${file.extension}`,
     );
     return res.send(file.buffer);
+  });
+
+  app.get("/api/fuzzion/filter-configs-v2", (_req, res) => {
+    try {
+      return res.json({ configs: listFuzzionFilterConfigs() });
+    } catch (error) {
+      return sendFuzzionFilterConfigError(res, error);
+    }
+  });
+
+  app.get("/api/fuzzion/filter-configs-v2/:id", (req, res) => {
+    try {
+      const config = getFuzzionFilterConfig(req.params.id);
+      if (!config) {
+        throw new FuzzionFilterConfigStoreError(
+          "La configuracion no existe.",
+          "NOT_FOUND",
+        );
+      }
+      return res.json({ config });
+    } catch (error) {
+      return sendFuzzionFilterConfigError(res, error);
+    }
+  });
+
+  app.post("/api/fuzzion/filter-configs-v2", (req, res) => {
+    try {
+      const config = createFuzzionFilterConfig(req.body);
+      return res.status(201).json({ config });
+    } catch (error) {
+      return sendFuzzionFilterConfigError(res, error);
+    }
+  });
+
+  app.put("/api/fuzzion/filter-configs-v2/:id", (req, res) => {
+    try {
+      const config = updateFuzzionFilterConfig(req.params.id, req.body);
+      return res.json({ config });
+    } catch (error) {
+      return sendFuzzionFilterConfigError(res, error);
+    }
+  });
+
+  app.delete("/api/fuzzion/filter-configs-v2/:id", (req, res) => {
+    try {
+      deleteFuzzionFilterConfig(req.params.id);
+      return res.json({ deleted: true, id: req.params.id });
+    } catch (error) {
+      return sendFuzzionFilterConfigError(res, error);
+    }
+  });
+
+  app.post("/api/fuzzion/filter-configs-v2/:id/default", (req, res) => {
+    try {
+      const config = setDefaultFuzzionFilterConfig(req.params.id);
+      return res.json({ config });
+    } catch (error) {
+      return sendFuzzionFilterConfigError(res, error);
+    }
+  });
+
+  app.post("/api/fuzzion/:id/count-v2", (req, res) => {
+    const session = fuzzionSessions.get(req.params.id);
+    if (!session) {
+      return res.status(404).json({
+        engine: "v2",
+        message: "La base Fuzzion ya no esta disponible. Volve a cargarla.",
+      });
+    }
+
+    try {
+      const result = evaluateStoredFuzzionSessionV2(
+        session,
+        req.body?.criteria ?? req.body,
+      );
+      return res.json(buildFuzzionV2JsonResponse(session, result));
+    } catch (error) {
+      return sendFuzzionV2Error(res, error);
+    }
+  });
+
+  app.post("/api/fuzzion/:id/options-v2", (req, res) => {
+    const session = fuzzionSessions.get(req.params.id);
+    if (!session) {
+      return res.status(404).json({
+        engine: "v2",
+        message: "La base Fuzzion ya no esta disponible. Volve a cargarla.",
+      });
+    }
+
+    try {
+      const options = getStoredFuzzionOptionsV2(
+        session,
+        req.body ?? {},
+      );
+      return res.json({
+        engine: "v2",
+        sessionId: session.id,
+        snapshot: session.historySnapshot,
+        ...options,
+      });
+    } catch (error) {
+      return sendFuzzionV2Error(res, error);
+    }
+  });
+
+  app.post("/api/fuzzion/:id/stats-v2", (req, res) => {
+    const session = fuzzionSessions.get(req.params.id);
+    if (!session) {
+      return res.status(404).json({
+        engine: "v2",
+        message: "La base Fuzzion ya no esta disponible. Volve a cargarla.",
+      });
+    }
+
+    try {
+      const result = evaluateStoredFuzzionSessionV2(
+        session,
+        req.body?.criteria ?? req.body,
+      );
+      return res.json(buildFuzzionV2JsonResponse(session, result));
+    } catch (error) {
+      return sendFuzzionV2Error(res, error);
+    }
+  });
+
+  app.post("/api/fuzzion/:id/export-v2", (req, res) => {
+    const requestStartedAt = performance.now();
+    const session = fuzzionSessions.get(req.params.id);
+    if (!session) {
+      return res.status(404).json({
+        engine: "v2",
+        message: "La base Fuzzion ya no esta disponible. Volve a cargarla.",
+      });
+    }
+
+    try {
+      const result = evaluateStoredFuzzionSessionV2(
+        session,
+        req.body?.criteria ?? req.body,
+      );
+      const includedAnis = new Set(result.evaluation.includedAnis);
+      const includedLeads = session.leads.filter((lead) =>
+        includedAnis.has(lead.linea),
+      );
+      const neotelRows = buildFuzzionNeotelRows(includedLeads);
+
+      if (neotelRows.length !== result.evaluation.totals.included) {
+        throw new Error(
+          `Inconsistencia V2: la evaluacion incluyo ${result.evaluation.totals.included} ANI y el archivo recibio ${neotelRows.length}.`,
+        );
+      }
+      if (neotelRows.length === 0) {
+        return res.status(422).json({
+          engine: "v2",
+          message: "No hay lineas para exportar con este filtro V2.",
+        });
+      }
+      if (neotelRows.length > MAX_XLSX_DATA_ROWS) {
+        return res.status(413).json({
+          engine: "v2",
+          message: `El lote supera el maximo de ${MAX_XLSX_DATA_ROWS.toLocaleString("es-AR")} lineas. Dividilo en segmentos antes de descargar.`,
+        });
+      }
+
+      const fileStartedAt = performance.now();
+      const file = buildNeotelFile(neotelRows);
+      const fileCreationMs = performance.now() - fileStartedAt;
+      const metrics = withFuzzionV2FileMetrics(
+        result,
+        fileCreationMs,
+        performance.now() - requestStartedAt,
+        neotelRows.length,
+      );
+
+      res.setHeader("Content-Type", file.contentType);
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("X-Fuzzion-Engine", "v2");
+      res.setHeader("X-Exported-Count", String(neotelRows.length));
+      res.setHeader("X-Input-Count", String(session.leads.length));
+      res.setHeader(
+        "X-Excluded-Count",
+        String(session.leads.length - neotelRows.length),
+      );
+      res.setHeader("X-Export-Format", file.extension);
+      res.setHeader("X-History-Query-Ms", String(metrics.historyQueryMs));
+      res.setHeader("X-Evaluation-Ms", String(metrics.evaluationMs));
+      res.setHeader("X-File-Creation-Ms", String(metrics.fileCreationMs));
+      res.setHeader("X-Total-Ms", String(metrics.totalMs));
+      res.setHeader("X-Condition-Count", String(metrics.conditionCount));
+      res.setHeader("X-Range-Days", String(metrics.rangeDays));
+      const date = getLocalFileDate();
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename=lote_neotel_v2_${
+          result.criteria.downloadType === "DEPURADO" ? "depurado" : "segmento"
+        }_${date}.${file.extension}`,
+      );
+      return res.send(file.buffer);
+    } catch (error) {
+      return sendFuzzionV2Error(res, error);
+    }
   });
 
   app.get("/api/history/stats", (_req, res) => {
